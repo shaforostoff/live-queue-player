@@ -1,0 +1,28 @@
+This player can be used as a backup for Tango DJs. Your smatphone only needs to have 3.5mm output
+to connect it to the mixer in case your laptop breaks, or you just want to DJ at open air event.
+
+On your SD card, prepare folders with your tango music and cortinas,
+optionally with tandas saved as m3u8 playlists in a software like foobar2000.
+Note that you must save your playlists to a folder containing your music, either directly or in subfolders.
+Playlists are regular text files containing relative paths to music files.
+Add replaygain info to your files, fill tags like Date, Genre, BPM, lyrics.
+
+The main app window is divided into to parts: on the top you find file browser, on the bottom there is play queue.
+Tapping an audio file or playlist in the browser adds it to the play queue.
+Tapping a track in play Queue starts its playback. When playback is active,
+if you want to play another track you must first stop the playback.
+playback is stopped with 10 second fade out (useful for cortinas).
+If you pressed Stop accidentally, just press Play.
+Swipe right to remove a track from the queue.
+
+Use a second smartphone for prelistening and adding tracks to the main phone queue via bluetooth.
+For this to work, add your tango music and cortines to both smartphones.
+Filenames of audio files should match, and ideally folder structure as well (but not necessary).
+Pair both your smartphones together.
+Then, enter "Remote queue fill" mode. On your main phone select "Receive requests".
+Use it normally for playing sound for the room. On the second phone, select "Send requests".
+Swipe left any track in the play queue, and if a track with such filename is found on the main phone,
+it will be added to its play queue.
+
+Important:
+- Please read the license!

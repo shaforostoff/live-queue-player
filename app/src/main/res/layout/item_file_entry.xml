@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:a="http://schemas.android.com/apk/res/android"
+  a:layout_width="match_parent"
+  a:layout_height="wrap_content"
+  a:orientation="horizontal"
+  a:padding="8dp">
+
+  <TextView
+    a:id="@+id/file_icon"
+    a:layout_width="wrap_content"
+    a:layout_height="wrap_content"
+    a:layout_gravity="center_vertical"
+    a:layout_marginEnd="8dp"
+    a:layout_marginRight="8dp"
+    a:textSize="20sp" />
+
+  <LinearLayout
+    a:layout_width="0dp"
+    a:layout_height="wrap_content"
+    a:layout_gravity="center_vertical"
+    a:layout_weight="1"
+    a:orientation="vertical">
+
+    <TextView
+      a:id="@+id/file_name"
+      a:layout_width="match_parent"
+      a:layout_height="wrap_content"
+      a:ellipsize="end"
+      a:singleLine="true"
+      a:textSize="15sp" />
+
+    <TextView
+      a:id="@+id/file_meta"
+      a:layout_width="match_parent"
+      a:layout_height="wrap_content"
+      a:ellipsize="end"
+      a:singleLine="true"
+      a:textSize="11sp"
+      a:visibility="gone" />
+  </LinearLayout>
+
+</LinearLayout>
+

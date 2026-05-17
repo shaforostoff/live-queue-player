@@ -1,0 +1,95 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:a="http://schemas.android.com/apk/res/android"
+  xmlns:tools="http://schemas.android.com/tools"
+  a:layout_width="match_parent"
+  a:layout_height="match_parent"
+  a:orientation="vertical"
+  tools:ignore="HardcodedText">
+
+  <LinearLayout
+    a:layout_width="match_parent"
+    a:layout_height="wrap_content"
+    a:orientation="vertical"
+    a:padding="10dp">
+
+    <TextView
+      a:layout_width="match_parent"
+      a:layout_height="wrap_content"
+      a:text="Live Queue Player"
+      a:textSize="40sp" />
+
+    <TextView
+      a:layout_width="match_parent"
+      a:layout_height="wrap_content"
+      a:layout_marginTop="10dp"
+      a:text="Preferred audio output:"/>
+
+    <RadioGroup
+      a:id="@+id/output_group"
+      a:layout_width="match_parent"
+      a:layout_height="wrap_content"
+      a:orientation="vertical">
+
+      <RadioButton
+        a:id="@+id/output_default"
+        a:layout_width="match_parent"
+        a:layout_height="wrap_content"
+        a:text="Default"/>
+
+      <RadioButton
+        a:id="@+id/output_bluetooth"
+        a:layout_width="match_parent"
+        a:layout_height="wrap_content"
+        a:text="Bluetooth"/>
+
+      <RadioButton
+        a:id="@+id/output_wired"
+        a:layout_width="match_parent"
+        a:layout_height="wrap_content"
+        a:text="3.5mm cable"/>
+    </RadioGroup>
+
+     <Button
+       a:id="@+id/browser_queue_opener"
+       a:layout_width="match_parent"
+       a:layout_height="wrap_content"
+       a:layout_margin="10dp"
+       a:text="Browse files &amp; build queue"/>
+
+     <Button
+       a:id="@+id/stop_after_current"
+       a:layout_width="match_parent"
+       a:layout_height="wrap_content"
+       a:layout_margin="10dp"
+       a:text="Stop after current track"/>
+
+     <Button
+       a:id="@+id/clear_queue"
+       a:layout_width="match_parent"
+       a:layout_height="wrap_content"
+       a:layout_margin="10dp"
+       a:text="Clear queue"/>
+
+     <Button
+       a:id="@+id/remote_queue_fill_opener"
+       a:layout_width="match_parent"
+       a:layout_height="wrap_content"
+       a:layout_margin="10dp"
+       a:text="Remote queue fill"/>
+
+    <TextView
+      a:layout_width="match_parent"
+      a:layout_height="wrap_content"
+      a:layout_marginTop="10dp"
+      a:text="Swipe left to add a track to queue of another smartphone (paired via bluetooth)"/>
+
+     <Button
+       a:id="@+id/show_license"
+       a:layout_width="match_parent"
+       a:layout_height="wrap_content"
+       a:layout_margin="10dp"
+       style="?android:attr/borderlessButtonStyle"
+a:text="License (GPLv3)"/>
+
+  </LinearLayout>
+</ScrollView>

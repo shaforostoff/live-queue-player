@@ -15,7 +15,7 @@ playback is stopped with 10 second fade out (useful for cortinas).
 If you pressed Stop accidentally, just press Play.
 Swipe right to remove a track from the queue.
 
-Use a second smartphone for prelistening and adding tracks to the main phone queue via bluetooth.
+TRACK PREVIEW: Use a second smartphone for prelistening and adding tracks to the main phone queue via bluetooth.
 For this to work, add your tango music and cortines to both smartphones.
 Filenames of audio files should match, and ideally folder structure as well (but not necessary).
 Pair both your smartphones together.

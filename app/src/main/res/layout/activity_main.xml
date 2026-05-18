@@ -15,7 +15,7 @@
     <TextView
       a:layout_width="match_parent"
       a:layout_height="wrap_content"
-      a:text="Live Queue Player"
+      a:text="Pocket Tandas"
       a:textSize="40sp" />
 
     <TextView

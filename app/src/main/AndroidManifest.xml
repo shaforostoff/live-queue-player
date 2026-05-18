@@ -17,7 +17,7 @@
 
   <application
     a:icon="@drawable/ic_launcher"
-    a:label="Live Queue Player"
+    a:label="Pocket Tandas"
     a:resizeableActivity="true"
     a:restoreAnyVersion="true"
     a:theme="@style/app_theme"

@@ -1,4 +1,4 @@
-# Live Queue Player
+# Pocket Tandas: Live Queue Player
 
 ![Icon](/docs/images/icon.webp)
 

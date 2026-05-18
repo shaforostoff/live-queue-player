@@ -1997,6 +1997,20 @@ public class FileBrowserQueueActivity extends Activity {
                 if (child.getName().equalsIgnoreCase(fileName)) return Uri.fromFile(child);
             }
         }
+        // Phase 3: fallback — match by name without extension.
+        String fileNameNoExt = stripExtension(fileName);
+        ArrayList<File> extStack = new ArrayList<>();
+        extStack.add(root);
+        while (!extStack.isEmpty()) {
+            File dir = extStack.remove(extStack.size() - 1);
+            File[] children = dir.listFiles();
+            if (children == null) continue;
+            for (File child : children) {
+                if (child == null) continue;
+                if (child.isDirectory()) { extStack.add(child); continue; }
+                if (stripExtension(child.getName()).equalsIgnoreCase(fileNameNoExt)) return Uri.fromFile(child);
+            }
+        }
         return null;
     }
 
@@ -2060,6 +2074,30 @@ public class FileBrowserQueueActivity extends Activity {
             } catch (Exception ignored) {
             }
         }
+        // Phase 3: fallback — match by name without extension.
+        String fileNameNoExt = stripExtension(fileName);
+        ArrayList<String> extStack = new ArrayList<>();
+        extStack.add(rootDocId);
+        while (!extStack.isEmpty()) {
+            String dirDocId = extStack.remove(extStack.size() - 1);
+            Uri childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(currentTreeUri, dirDocId);
+            try (Cursor cursor = getContentResolver().query(childrenUri, projection, null, null, null)) {
+                if (cursor == null) continue;
+                while (cursor.moveToNext()) {
+                    String childDocId = cursor.getString(0);
+                    String childName = cursor.getString(1);
+                    String mimeType = cursor.getString(2);
+                    if (childDocId == null || childName == null) continue;
+                    if (DocumentsContract.Document.MIME_TYPE_DIR.equals(mimeType)) {
+                        extStack.add(childDocId);
+                        continue;
+                    }
+                    if (stripExtension(childName).equalsIgnoreCase(fileNameNoExt))
+                        return DocumentsContract.buildDocumentUriUsingTree(currentTreeUri, childDocId);
+                }
+            } catch (Exception ignored) {
+            }
+        }
         return null;
     }
 
@@ -2076,6 +2114,11 @@ public class FileBrowserQueueActivity extends Activity {
         } else if (defaultPlayButtonText != null) {
             playButton.setText(defaultPlayButtonText);
         }
+    }
+
+    private static String stripExtension(String name) {
+        int dot = name.lastIndexOf('.');
+        return dot > 0 ? name.substring(0, dot) : name;
     }
 
     private Uri findFileInDocumentDir(String dirDocId, String fileName, String[] projection) {

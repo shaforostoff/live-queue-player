@@ -19,12 +19,15 @@ class MetadataExtractor {
             Pattern.compile("(^|\\D)((?:19|20)\\d{2})(?=\\D|$)");
     private static final Pattern BPM_PATTERN = Pattern.compile("\\d{1,3}");
     private static final Pattern YEAR_IN_STRING_PATTERN = Pattern.compile("(19|20)\\d{2}");
+    private static final Pattern DATE_IN_COMMENT_PATTERN =
+            Pattern.compile("((?:19|20)\\d{2}).(\\d{2}).(\\d{2})");
     private static final Pattern REPLAYGAIN_DB_PATTERN = Pattern.compile("[-+]?\\d+(?:\\.\\d+)?");
     private static final float FALLBACK_REPLAY_GAIN = 1.0f;
 
     static class TagEntry {
         String date;
         String genre;
+        String artist;
         int bpm = -1;
     }
 
@@ -47,7 +50,7 @@ class MetadataExtractor {
     boolean isAllTagsCached(Uri uri) {
         if (uri == null) return false;
         TagEntry e = tagCache.get(uri.toString());
-        return e != null && e.date != null && e.genre != null && e.bpm >= 0;
+        return e != null && e.date != null && e.genre != null && e.artist != null && e.bpm >= 0;
     }
 
     static String extractYearFromFileName(String fileName) {
@@ -91,6 +94,7 @@ class MetadataExtractor {
         if (e.genre != null) e.genre = normalizeGenreValue(e.genre);
         if (e.date == null) e.date = "";
         if (e.genre == null) e.genre = "";
+        if (e.artist == null) e.artist = "";
         if (e.bpm < 0) e.bpm = 0;
         return e;
     }
@@ -174,6 +178,10 @@ class MetadataExtractor {
                 String genre = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_GENRE);
                 if (genre != null && !genre.isEmpty()) e.genre = genre;
             }
+            if (e.artist == null) {
+                String artist = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ARTIST);
+                if (artist != null && !artist.isEmpty()) e.artist = artist;
+            }
         } catch (Exception ignored) {
         } finally {
             try { retriever.release(); } catch (Exception ignored) { }
@@ -209,6 +217,7 @@ class MetadataExtractor {
 
             boolean needDate = e.date == null;
             boolean needGenre = e.genre == null;
+            boolean needArtist = e.artist == null;
             boolean needBpm = e.bpm < 0;
             String tdrc = null, tyer = null;
 
@@ -230,18 +239,43 @@ class MetadataExtractor {
                 } else if (needGenre && "TCON".equals(frameId)) {
                     String v = decodeId3Text(tagData, offset + 10, frameSize);
                     if (v.length() > 0) { e.genre = v; needGenre = false; }
+                } else if (needArtist && "TPE1".equals(frameId)) {
+                    String v = decodeId3Text(tagData, offset + 10, frameSize);
+                    if (v.length() > 0) { e.artist = v; needArtist = false; }
                 } else if (needBpm && "TBPM".equals(frameId)) {
                     String v = decodeId3Text(tagData, offset + 10, frameSize);
                     if (v.length() > 0) { e.bpm = parseBpmValue(v); needBpm = false; }
                 }
 
-                if (!needDate && !needGenre && !needBpm) break;
+                if (!needDate && !needGenre && !needArtist && !needBpm) break;
                 offset += 10 + frameSize;
             }
 
             if (needDate) {
                 if (tdrc != null) e.date = tdrc;
                 else if (tyer != null) e.date = tyer;
+            }
+
+            // If date is absent or a bare year, scan the already-loaded tag bytes for a COMM frame
+            if (e.date == null || (e.date.length() > 0 && e.date.length() < 5)) {
+                for (int offset = startOffset; offset + 10 <= tagData.length; ) {
+                    String frameId = new String(tagData, offset, 4, "ISO-8859-1");
+                    if (isZeroFrameId(frameId)) break;
+                    int frameSize = majorVersion == 4
+                            ? decodeSyncSafeInt(tagData, offset + 4)
+                            : decodeInt(tagData, offset + 4);
+                    if (frameSize <= 0 || offset + 10 + frameSize > tagData.length) break;
+                    if ("COMM".equals(frameId)) {
+                        String comm = decodeUsltText(tagData, offset + 10, frameSize);
+                        if (!comm.isEmpty()) {
+                            Matcher m = DATE_IN_COMMENT_PATTERN.matcher(comm);
+                            if (m.find())
+                                e.date = m.group(1) + "-" + m.group(2) + "-" + m.group(3);
+                        }
+                        break;
+                    }
+                    offset += 10 + frameSize;
+                }
             }
         } catch (Exception ignored) {
         }
@@ -317,10 +351,22 @@ class MetadataExtractor {
                 if (e.date == null) {
                     String v = readVorbisCommentValue(commentData, "DATE");
                     if (v.length() > 0) e.date = normalizeDateValue(v);
+                    if (e.date == null || (e.date.length() > 0 && e.date.length() < 5)) {
+                        String comm = readVorbisCommentValue(commentData, "COMMENT");
+                        if (!comm.isEmpty()) {
+                            Matcher m = DATE_IN_COMMENT_PATTERN.matcher(comm);
+                            if (m.find())
+                                e.date = m.group(1) + "-" + m.group(2) + "-" + m.group(3);
+                        }
+                    }
                 }
                 if (e.genre == null) {
                     String v = readVorbisCommentValue(commentData, "GENRE");
                     if (v.length() > 0) e.genre = v;
+                }
+                if (e.artist == null) {
+                    String v = readVorbisCommentValue(commentData, "ARTIST");
+                    if (v.length() > 0) e.artist = v;
                 }
                 if (e.bpm < 0) {
                     String v = readVorbisCommentValue(commentData, "BPM");
@@ -431,6 +477,14 @@ class MetadataExtractor {
         if (e.bpm < 0) {
             String bpm = bpmCandidates[0].length() > 0 ? bpmCandidates[0] : bpmCandidates[1];
             if (bpm.length() > 0) e.bpm = parseBpmValue(bpm);
+        }
+        if (e.date == null || (e.date.length() > 0 && e.date.length() < 5)) {
+            String comm = readMp4TagValue(uri, 0xA9636D74);
+            if (!comm.isEmpty()) {
+                Matcher m = DATE_IN_COMMENT_PATTERN.matcher(comm);
+                if (m.find())
+                    e.date = m.group(1) + "-" + m.group(2) + "-" + m.group(3);
+            }
         }
     }
 
@@ -611,6 +665,9 @@ class MetadataExtractor {
             } else if (inIlst && atomType == 0xA967656E && e.genre == null) {
                 String genre = readMp4IlstDataAtom(stream, payloadSize, atomType);
                 if (genre.length() > 0) e.genre = genre;
+            } else if (inIlst && atomType == 0xA9415254 && e.artist == null) {
+                String artist = readMp4IlstDataAtom(stream, payloadSize, atomType);
+                if (artist.length() > 0) e.artist = artist;
             } else if (inIlst && atomType == 0x746D706F && bpmCandidates[0].length() == 0) {
                 String bpm = readMp4IlstDataAtom(stream, payloadSize, atomType);
                 if (bpm.length() > 0) bpmCandidates[0] = bpm;
@@ -635,6 +692,7 @@ class MetadataExtractor {
             consumed += payloadSize;
             if (e.date != null
                     && e.genre != null
+                    && e.artist != null
                     && (e.bpm >= 0 || bpmCandidates[0].length() > 0 || bpmCandidates[1].length() > 0)) {
                 long remaining = maxBytes - consumed;
                 if (remaining > 0) skipFully(stream, remaining);

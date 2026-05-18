@@ -77,6 +77,7 @@ public class FileBrowserQueueActivity extends Activity {
     private static final int SORT_YEAR = 1;
     private static final int SORT_GENRE = 2;
     private static final int SORT_BPM = 3;
+    private static final int SORT_ARTIST = 4;
 
     private static final String[] AUDIO_EXTENSIONS = {
             ".mp3", ".mp4", ".m4a", ".aac", ".ogg", ".flac",

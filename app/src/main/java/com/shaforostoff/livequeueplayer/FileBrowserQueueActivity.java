@@ -780,7 +780,8 @@ public class FileBrowserQueueActivity extends Activity {
                 getString(R.string.sort_mode_filename),
                 getString(R.string.sort_mode_year),
                 getString(R.string.sort_mode_genre),
-                getString(R.string.sort_mode_bpm)
+                getString(R.string.sort_mode_bpm),
+                getString(R.string.sort_mode_artist)
         };
         new AlertDialog.Builder(this)
                 .setTitle(R.string.sort_dialog_title)
@@ -1165,7 +1166,7 @@ public class FileBrowserQueueActivity extends Activity {
     }
 
     private boolean isTagSortMode(int mode) {
-        return mode == SORT_YEAR || mode == SORT_GENRE || mode == SORT_BPM;
+        return mode == SORT_YEAR || mode == SORT_GENRE || mode == SORT_BPM || mode == SORT_ARTIST;
     }
 
     private void applyFilenameYearsInPlace() {
@@ -1237,6 +1238,18 @@ public class FileBrowserQueueActivity extends Activity {
             if (dateCompare != 0) {
                 return dateCompare;
             }
+        } else if (fileSortMode == SORT_ARTIST) {
+            String leftArtist = left.sortArtist == null ? "" : left.sortArtist;
+            String rightArtist = right.sortArtist == null ? "" : right.sortArtist;
+            boolean leftHasArtist = leftArtist.length() > 0;
+            boolean rightHasArtist = rightArtist.length() > 0;
+            if (leftHasArtist != rightHasArtist) {
+                return leftHasArtist ? -1 : 1;
+            }
+            int artistCompare = leftArtist.compareToIgnoreCase(rightArtist);
+            if (artistCompare != 0) {
+                return artistCompare;
+            }
         }
         return left.name.compareToIgnoreCase(right.name);
     }
@@ -1247,8 +1260,8 @@ public class FileBrowserQueueActivity extends Activity {
         boolean cacheApplied = false;
         for (FileEntry entry : fileEntries) {
             if (entry.isDirectory ||
-                    ((entry.sortDateResolved && entry.sortGenreResolved && entry.sortBpmResolved)
-                            || entry.sortDateLoading || entry.sortGenreLoading || entry.sortBpmLoading)) {
+                    ((entry.sortDateResolved && entry.sortGenreResolved && entry.sortArtistResolved && entry.sortBpmResolved)
+                            || entry.sortDateLoading || entry.sortGenreLoading || entry.sortArtistLoading || entry.sortBpmLoading)) {
                 continue;
             }
 
@@ -1263,15 +1276,18 @@ public class FileBrowserQueueActivity extends Activity {
                 MetadataExtractor.TagEntry tags = metadataExtractor.readSortTags(entry.uri);
                 entry.sortDate = tags.date;
                 entry.sortGenre = tags.genre;
+                entry.sortArtist = tags.artist;
                 entry.sortBpm = tags.bpm;
                 entry.sortDateResolved = true;
                 entry.sortGenreResolved = true;
+                entry.sortArtistResolved = true;
                 entry.sortBpmResolved = true;
                 cacheApplied = true;
                 continue;
             }
             entry.sortDateLoading = true;
             entry.sortGenreLoading = true;
+            entry.sortArtistLoading = true;
             entry.sortBpmLoading = true;
             pendingEntries.add(entry);
         }
@@ -1300,7 +1316,7 @@ public class FileBrowserQueueActivity extends Activity {
         for (FileEntry entry : pendingEntries) {
             pool.submit(() -> {
                 MetadataExtractor.TagEntry tags = metadataExtractor.readSortTags(entry.uri);
-                results.add(new SortTagResult(entry, tags.date, tags.genre, tags.bpm));
+                results.add(new SortTagResult(entry, tags.date, tags.genre, tags.artist, tags.bpm));
                 runOnUiThread(() -> {
                     tagReadProgressDone = Math.min(tagReadProgressTotal, tagReadProgressDone + 1);
                     applySortButtonLoadingState();
@@ -1318,6 +1334,7 @@ public class FileBrowserQueueActivity extends Activity {
                             for (SortTagResult result : results) {
                                 result.entry.sortDateLoading = false;
                                 result.entry.sortGenreLoading = false;
+                                result.entry.sortArtistLoading = false;
                                 result.entry.sortBpmLoading = false;
                             }
                             return;
@@ -1327,12 +1344,15 @@ public class FileBrowserQueueActivity extends Activity {
                         for (SortTagResult result : results) {
                             result.entry.sortDate = result.date;
                             result.entry.sortGenre = result.genre;
+                            result.entry.sortArtist = result.artist;
                             result.entry.sortBpm = result.bpm;
                             result.entry.sortDateResolved = true;
                             result.entry.sortGenreResolved = true;
+                            result.entry.sortArtistResolved = true;
                             result.entry.sortBpmResolved = true;
                             result.entry.sortDateLoading = false;
                             result.entry.sortGenreLoading = false;
+                            result.entry.sortArtistLoading = false;
                             result.entry.sortBpmLoading = false;
                             changed = true;
                         }
@@ -2317,12 +2337,15 @@ public class FileBrowserQueueActivity extends Activity {
         final boolean isDirectory;
         String sortDate;
         String sortGenre;
+        String sortArtist;
         int sortBpm;
         boolean sortDateResolved;
         boolean sortGenreResolved;
+        boolean sortArtistResolved;
         boolean sortBpmResolved;
         boolean sortDateLoading;
         boolean sortGenreLoading;
+        boolean sortArtistLoading;
         boolean sortBpmLoading;
 
         FileEntry(File file, String name, boolean isDirectory) {
@@ -2332,12 +2355,15 @@ public class FileBrowserQueueActivity extends Activity {
             this.isDirectory = isDirectory;
             this.sortDate    = "";
             this.sortGenre   = "";
+            this.sortArtist  = "";
             this.sortBpm     = 0;
             this.sortDateResolved = false;
             this.sortGenreResolved = false;
+            this.sortArtistResolved = false;
             this.sortBpmResolved = false;
             this.sortDateLoading = false;
             this.sortGenreLoading = false;
+            this.sortArtistLoading = false;
             this.sortBpmLoading = false;
         }
 
@@ -2348,12 +2374,15 @@ public class FileBrowserQueueActivity extends Activity {
             this.isDirectory = isDirectory;
             this.sortDate    = "";
             this.sortGenre   = "";
+            this.sortArtist  = "";
             this.sortBpm     = 0;
             this.sortDateResolved = false;
             this.sortGenreResolved = false;
+            this.sortArtistResolved = false;
             this.sortBpmResolved = false;
             this.sortDateLoading = false;
             this.sortGenreLoading = false;
+            this.sortArtistLoading = false;
             this.sortBpmLoading = false;
         }
     }
@@ -2362,12 +2391,14 @@ public class FileBrowserQueueActivity extends Activity {
         final FileEntry entry;
         final String date;
         final String genre;
+        final String artist;
         final int bpm;
 
-        SortTagResult(FileEntry entry, String date, String genre, int bpm) {
+        SortTagResult(FileEntry entry, String date, String genre, String artist, int bpm) {
             this.entry = entry;
             this.date = date;
             this.genre = genre;
+            this.artist = artist;
             this.bpm = bpm;
         }
     }
@@ -2431,6 +2462,9 @@ public class FileBrowserQueueActivity extends Activity {
                 metaText = entry.sortGenre;
             } else if (!entry.isDirectory && fileSortMode == SORT_BPM && entry.sortBpm > 0) {
                 metaText = entry.sortBpm + " BPM";
+            } else if (!entry.isDirectory && fileSortMode == SORT_ARTIST
+                    && entry.sortArtist != null && entry.sortArtist.length() > 0) {
+                metaText = entry.sortArtist;
             }
             if (metaText.length() > 0) {
                 vh.meta.setText(metaText);

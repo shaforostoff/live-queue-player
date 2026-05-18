@@ -9,6 +9,7 @@
   <string name="sort_mode_year">Year</string>
   <string name="sort_mode_genre">Genre</string>
   <string name="sort_mode_bpm">BPM</string>
+  <string name="sort_mode_artist">Artist</string>
   <string name="file_filter_hint">Filter files by name</string>
   <string name="selected_folder">Selected folder</string>
   <string name="storage_picker_failed">Unable to open the selected storage location.</string>

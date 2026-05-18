@@ -24,7 +24,7 @@ Tapping an audio file or playlist in the browser adds it to the play queue.
 Tapping a track in play Queue starts its playback. When playback is active,
 if you want to play another track you must first stop the playback.
 playback is stopped with 10 second fade out (useful for cortinas).
-If you pressed Stop accidentally, just press Play.
+If you pressed Stop accidentally, just press Play while fade out is still running.
 Swipe right to remove a track from the queue.
 
 ### Audio preview and queueing from a second smartphone
@@ -35,8 +35,8 @@ but failed: when preview sound starts, the main output is interrupted for a seco
 and it seems to be Android limitation, at least as of 2026, using Android 15 on Sony smartphone.
 
 So the workaround is to use a second smartphone for prelistening, and adding tracks to the main phone queue via bluetooth.
-For this to work, add your tango music and cortines to both smartphones.
-Filenames of audio files should match, and ideally folder structure as well (but not necessary).
+For this to work, add your tango music and cortinas to both smartphones.
+Filenames of audio files should match, and ideally folder structure as well (but not necessarily).
 Pair both your smartphones together.
 Then, enter "Remote queue fill" mode. On your main phone select "Receive requests".
 Use it normally for playing sound for the room. On the second phone, select "Send requests".

@@ -1214,6 +1214,17 @@ public class FileBrowserQueueActivity extends Activity {
             if (genreCompare != 0) {
                 return genreCompare;
             }
+            String leftDate = left.sortDate == null ? "" : left.sortDate;
+            String rightDate = right.sortDate == null ? "" : right.sortDate;
+            boolean leftHasDate = leftDate.length() > 0;
+            boolean rightHasDate = rightDate.length() > 0;
+            if (leftHasDate != rightHasDate) {
+                return leftHasDate ? -1 : 1;
+            }
+            int dateCompare = leftDate.compareTo(rightDate);
+            if (dateCompare != 0) {
+                return dateCompare;
+            }
         } else if (fileSortMode == SORT_BPM) {
             int leftBpm = left.sortBpm;
             int rightBpm = right.sortBpm;
@@ -1249,6 +1260,28 @@ public class FileBrowserQueueActivity extends Activity {
             int artistCompare = leftArtist.compareToIgnoreCase(rightArtist);
             if (artistCompare != 0) {
                 return artistCompare;
+            }
+            String leftGenre = left.sortGenre == null ? "" : left.sortGenre;
+            String rightGenre = right.sortGenre == null ? "" : right.sortGenre;
+            boolean leftHasGenre = leftGenre.length() > 0;
+            boolean rightHasGenre = rightGenre.length() > 0;
+            if (leftHasGenre != rightHasGenre) {
+                return leftHasGenre ? -1 : 1;
+            }
+            int genreCompare = leftGenre.compareToIgnoreCase(rightGenre);
+            if (genreCompare != 0) {
+                return genreCompare;
+            }
+            String leftDate = left.sortDate == null ? "" : left.sortDate;
+            String rightDate = right.sortDate == null ? "" : right.sortDate;
+            boolean leftHasDate = leftDate.length() > 0;
+            boolean rightHasDate = rightDate.length() > 0;
+            if (leftHasDate != rightHasDate) {
+                return leftHasDate ? -1 : 1;
+            }
+            int dateCompare = leftDate.compareTo(rightDate);
+            if (dateCompare != 0) {
+                return dateCompare;
             }
         }
         return left.name.compareToIgnoreCase(right.name);
@@ -2460,11 +2493,29 @@ public class FileBrowserQueueActivity extends Activity {
             } else if (!entry.isDirectory && fileSortMode == SORT_GENRE
                     && entry.sortGenre != null && entry.sortGenre.length() > 0) {
                 metaText = entry.sortGenre;
+                if (entry.sortBpm > 0) {
+                    metaText = metaText + "  " + entry.sortBpm + " BPM";
+                }
+                if (entry.sortDate != null && entry.sortDate.length() > 0) {
+                    metaText = metaText + "  " + entry.sortDate;
+                }
             } else if (!entry.isDirectory && fileSortMode == SORT_BPM && entry.sortBpm > 0) {
                 metaText = entry.sortBpm + " BPM";
+                if (entry.sortGenre != null && entry.sortGenre.length() > 0) {
+                    metaText = metaText + "  " + entry.sortGenre;
+                }
+                if (entry.sortDate != null && entry.sortDate.length() > 0) {
+                    metaText = metaText + "  " + entry.sortDate;
+                }
             } else if (!entry.isDirectory && fileSortMode == SORT_ARTIST
                     && entry.sortArtist != null && entry.sortArtist.length() > 0) {
                 metaText = entry.sortArtist;
+                if (entry.sortBpm > 0) {
+                    metaText = metaText + "  " + entry.sortBpm + " BPM";
+                }
+                else if (entry.sortGenre != null && entry.sortGenre.length() > 0) {
+                    metaText = metaText + "  " + entry.sortGenre;
+                }
             }
             if (metaText.length() > 0) {
                 vh.meta.setText(metaText);

@@ -337,6 +337,11 @@ public class FileBrowserQueueActivity extends Activity {
             }
             if (stopFadeInProgress) {
                 cancelFadeOutAndContinue();
+            } else if (!Service.sIsPlaying && Service.sCurrentUri != null) {
+                // A track is paused (e.g. after audio focus loss): resume it
+                Intent resumeIntent = new Intent(this, Service.class);
+                resumeIntent.putExtra(Launcher.TYPE, Launcher.PLAY);
+                startService(resumeIntent);
             } else {
                 playQueue();
             }

@@ -363,6 +363,28 @@ public class Service extends android.app.Service implements MediaPlayerStateList
         sendBroadcast(intent);
     }
 
+    void onAudioFocusLoss(int currentPositionMs) {
+        hwListener.setState(false);
+        notifications.setState(false);
+        sPlaybackPositionMs = currentPositionMs;
+        progressAnchorPositionMs = currentPositionMs;
+        progressAnchorElapsedMs = 0L;
+        sIsPlaying = false;
+        stopProgressTicks();
+        sendPlaybackStateBroadcast();
+    }
+
+    void onAudioFocusResume(int currentPositionMs) {
+        hwListener.setState(true);
+        notifications.setState(true);
+        sPlaybackPositionMs = currentPositionMs;
+        progressAnchorPositionMs = currentPositionMs;
+        progressAnchorElapsedMs = SystemClock.elapsedRealtime();
+        sIsPlaying = true;
+        startProgressTicks();
+        sendPlaybackStateBroadcast();
+    }
+
     private void startProgressTicks() {
         progressHandler.removeCallbacks(progressTickRunnable);
         progressHandler.postDelayed(progressTickRunnable, PLAYBACK_PROGRESS_BROADCAST_INTERVAL_MS);

@@ -27,6 +27,7 @@ class AudioPlayer extends Thread implements MediaPlayer.OnCompletionListener, Me
   private AudioFocusRequest audioFocusRequest;
   private volatile boolean released;
   private volatile boolean fadeOutInProgress;
+  private volatile boolean pausedForFocusLoss;
   private final AtomicInteger fadeToken = new AtomicInteger();
   private final float baseGain;
 
@@ -112,8 +113,15 @@ class AudioPlayer extends Thread implements MediaPlayer.OnCompletionListener, Me
   @Override
   public void setState(boolean playing) {
     if (playing) {
+      if (pausedForFocusLoss) {
+        // Re-request focus lost to another app; this call comes from the main thread so the
+        // Looper requirement for AudioFocusRequest.Builder is satisfied.
+        pausedForFocusLoss = false;
+        requestAudioFocus();
+      }
       mediaPlayer.start();
     } else {
+      pausedForFocusLoss = false; // explicit user pause should not auto-resume on focus gain
       mediaPlayer.pause();
     }
   }
@@ -294,9 +302,19 @@ class AudioPlayer extends Thread implements MediaPlayer.OnCompletionListener, Me
           || focusChange == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT) {
         // Drag preview can trigger either LOSS or LOSS_TRANSIENT depending on the OEM.
         // Suppress both while preview is active; the drag is user-driven and brief.
-        if ((!DragPreviewManager.ENABLED || !DragPreviewManager.isPreviewActive) && mediaPlayer.isPlaying()) mediaPlayer.pause();
+        if ((!DragPreviewManager.ENABLED || !DragPreviewManager.isPreviewActive) && mediaPlayer.isPlaying()) {
+          int pos = mediaPlayer.getCurrentPosition();
+          mediaPlayer.pause();
+          pausedForFocusLoss = true;
+          service.onAudioFocusLoss(pos);
+        }
       } else if (focusChange == AudioManager.AUDIOFOCUS_GAIN) {
-        if (!fadeOutInProgress && !mediaPlayer.isPlaying()) mediaPlayer.start();
+        if (!fadeOutInProgress && pausedForFocusLoss && !mediaPlayer.isPlaying()) {
+          pausedForFocusLoss = false;
+          int pos = mediaPlayer.getCurrentPosition();
+          mediaPlayer.start();
+          service.onAudioFocusResume(pos);
+        }
       }
     } catch (IllegalStateException ignored) {
     }

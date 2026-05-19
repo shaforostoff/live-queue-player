@@ -122,6 +122,12 @@ public class FileBrowserQueueActivity extends Activity {
     private int currentTrackDurationMs;
     private PreviewManager dragPreviewManager;
     private Uri dragPreviewUri;
+    private Uri fileBrowserPreviewingUri;
+    private float fileBrowserSwipeDownX;
+    private float fileBrowserSwipeDownY;
+    private int fileBrowserSwipeStartPosition = -1;
+    private boolean fileBrowserSwipeHandled;
+    private View fileBrowserSwipingView;
     private final BroadcastReceiver playbackStateReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(android.content.Context context, Intent intent) {
@@ -227,31 +233,37 @@ public class FileBrowserQueueActivity extends Activity {
             }
         });
 
-        // -- file browser: tap to navigate / add ----------------------------
+        // -- file browser: tap to preview (when secondary output active) or add
         fileBrowserList.setOnItemClickListener((parent, view, position, id) -> {
             FileEntry entry = filteredFileEntries.get(position);
             if (entry.isDirectory) {
-                if (entry.file != null) {
-                    navigateTo(entry.file);
+                if (entry.file != null) navigateTo(entry.file);
+                else navigateToDocumentEntry(entry.uri, entry.name);
+                return;
+            }
+            if (PreviewManager.isEnabled(this) && !isRemoteClientMode()) {
+                Uri previewUri = isPlaylistFile(entry.name)
+                        ? resolveFirstPlaylistUri(entry) : entry.uri;
+                if (previewUri != null && previewUri.equals(fileBrowserPreviewingUri)) {
+                    resetFileBrowserPreview();
                 } else {
-                    navigateToDocumentEntry(entry.uri, entry.name);
-                }
-            } else if (isPlaylistFile(entry.name)) {
-                int addedCount = addPlaylistToQueue(entry);
-                if (addedCount > 0) {
-                    Toast.makeText(this,
-                            "Added " + addedCount + " files from " + entry.name,
-                            Toast.LENGTH_SHORT).show();
-                } else {
-                    Toast.makeText(this,
-                            "No playable files found in " + entry.name,
-                            Toast.LENGTH_SHORT).show();
+                    fileBrowserPreviewingUri = previewUri;
+                    dragPreviewUri = previewUri;
+                    startDragPreview(previewUri);
                 }
             } else {
-                addToQueue(entry.name, entry.uri);
-                //Toast.makeText(this, "Added: " + entry.name, Toast.LENGTH_SHORT).show();
+                if (isPlaylistFile(entry.name)) {
+                    int addedCount = addPlaylistToQueue(entry);
+                    if (addedCount > 0)
+                        Toast.makeText(this, "Added " + addedCount + " files from " + entry.name, Toast.LENGTH_SHORT).show();
+                    else
+                        Toast.makeText(this, "No playable files found in " + entry.name, Toast.LENGTH_SHORT).show();
+                } else {
+                    addToQueue(entry.name, entry.uri);
+                }
             }
         });
+        installFileBrowserSwipeAdd(fileBrowserList);
 
         // -- file browser: long-press to start drag --------------------------
         fileBrowserList.setOnItemLongClickListener((parent, view, position, id) -> {
@@ -300,8 +312,7 @@ public class FileBrowserQueueActivity extends Activity {
 
                 case DragEvent.ACTION_DRAG_ENDED:
                     v.setAlpha(1f);
-                    dragPreviewUri = null;
-                    stopDragPreview();
+                    resetFileBrowserPreview();
                     return true;
 
                 default:
@@ -530,6 +541,7 @@ public class FileBrowserQueueActivity extends Activity {
     }
 
     private void navigateTo(File dir) {
+        resetFileBrowserPreview();
         clearFileFilterInput();
         browsingDocumentTree = false;
         currentFileDirectory = dir;
@@ -635,6 +647,7 @@ public class FileBrowserQueueActivity extends Activity {
             return;
         }
 
+        resetFileBrowserPreview();
         clearFileFilterInput();
         documentUriStack.add(documentUri);
         if (!browseCurrentDocumentDirectory()) {
@@ -1850,6 +1863,103 @@ public class FileBrowserQueueActivity extends Activity {
         }
     }
 
+    private void installFileBrowserSwipeAdd(ListView fileBrowserList) {
+        final float verticalSlop = 40f * getResources().getDisplayMetrics().density;
+        fileBrowserList.setOnTouchListener((v, event) -> {
+            switch (event.getAction()) {
+                case MotionEvent.ACTION_DOWN:
+                    fileBrowserSwipeDownX = event.getX();
+                    fileBrowserSwipeDownY = event.getY();
+                    fileBrowserSwipeStartPosition = fileBrowserList.pointToPosition((int) event.getX(), (int) event.getY());
+                    fileBrowserSwipeHandled = false;
+                    fileBrowserSwipingView = null;
+                    if (fileBrowserSwipeStartPosition >= 0) {
+                        int firstVisible = fileBrowserList.getFirstVisiblePosition();
+                        int childIndex = fileBrowserSwipeStartPosition - firstVisible;
+                        if (childIndex >= 0 && childIndex < fileBrowserList.getChildCount()) {
+                            fileBrowserSwipingView = fileBrowserList.getChildAt(childIndex);
+                        }
+                    }
+                    return false;
+
+                case MotionEvent.ACTION_MOVE:
+                    if (fileBrowserSwipeHandled || fileBrowserSwipeStartPosition < 0) {
+                        return fileBrowserSwipeHandled;
+                    }
+                    float dx = event.getX() - fileBrowserSwipeDownX;
+                    float dy = event.getY() - fileBrowserSwipeDownY;
+                    if (Math.abs(dy) > verticalSlop && Math.abs(dy) > Math.abs(dx)) {
+                        resetFileBrowserSwipingView();
+                        fileBrowserSwipeStartPosition = -1;
+                        return false;
+                    }
+                    if (dx > 0 && fileBrowserSwipingView != null) {
+                        float clampedDx = Math.min(dx, fileBrowserSwipingView.getWidth());
+                        fileBrowserSwipingView.setTranslationX(clampedDx);
+                        fileBrowserList.getParent().requestDisallowInterceptTouchEvent(true);
+                        int viewWidth = fileBrowserSwipingView.getWidth();
+                        if (viewWidth > 0 && dx >= viewWidth / 2f) {
+                            fileBrowserSwipeHandled = true;
+                            fileBrowserSwipingView.setTranslationX(0);
+                            fileBrowserSwipingView = null;
+                            if (fileBrowserSwipeStartPosition < filteredFileEntries.size()) {
+                                FileEntry entry = filteredFileEntries.get(fileBrowserSwipeStartPosition);
+                                if (!entry.isDirectory) {
+                                    if (isPlaylistFile(entry.name)) {
+                                        int addedCount = addPlaylistToQueue(entry);
+                                        if (addedCount > 0)
+                                            Toast.makeText(FileBrowserQueueActivity.this, "Added " + addedCount + " files from " + entry.name, Toast.LENGTH_SHORT).show();
+                                        else
+                                            Toast.makeText(FileBrowserQueueActivity.this, "No playable files found in " + entry.name, Toast.LENGTH_SHORT).show();
+                                    } else {
+                                        addToQueue(entry.name, entry.uri);
+                                    }
+                                }
+                            }
+                            return true;
+                        }
+                        return true;
+                    }
+                    return false;
+
+                case MotionEvent.ACTION_UP:
+                case MotionEvent.ACTION_CANCEL:
+                    if (!fileBrowserSwipeHandled) v.performClick();
+                    resetFileBrowserSwipingView();
+                    boolean handled = fileBrowserSwipeHandled;
+                    fileBrowserSwipeStartPosition = -1;
+                    fileBrowserSwipeHandled = false;
+                    return handled;
+
+                default:
+                    return false;
+            }
+        });
+    }
+
+    private void resetFileBrowserSwipingView() {
+        if (fileBrowserSwipingView != null) {
+            fileBrowserSwipingView.setTranslationX(0);
+            fileBrowserSwipingView = null;
+        }
+    }
+
+    private Uri resolveFirstPlaylistUri(FileEntry playlistEntry) {
+        try (InputStream stream = getContentResolver().openInputStream(playlistEntry.uri)) {
+            if (stream == null) return null;
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(stream, "UTF-8"))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    String trimmed = line.trim();
+                    if (trimmed.isEmpty() || trimmed.startsWith("#")) continue;
+                    Uri uri = resolvePlaylistTargetUri(playlistEntry, trimmed);
+                    if (uri != null) return uri;
+                }
+            }
+        } catch (Exception ignored) {}
+        return null;
+    }
+
     private void updateQueueHint() {
         queueEmptyHint.setVisibility(queueEntries.isEmpty() ? View.VISIBLE : View.GONE);
     }
@@ -2289,6 +2399,12 @@ public class FileBrowserQueueActivity extends Activity {
 
     private void stopDragPreview() {
         if (dragPreviewManager != null) dragPreviewManager.stopPreview();
+    }
+
+    private void resetFileBrowserPreview() {
+        fileBrowserPreviewingUri = null;
+        dragPreviewUri = null;
+        stopDragPreview();
     }
 
     private int resolvePlayingQueueIndex(int serviceIndex, Uri currentUri) {

@@ -39,13 +39,6 @@ final class AudioOutputRouter {
         }
     }
 
-    static boolean applySecondaryOutputForDrag(Context context, MediaPlayer player) {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) return false;
-        AudioDeviceInfo device = resolveSecondaryDevice(context);
-        if (device == null) return false;
-        return player.setPreferredDevice(device);
-    }
-
     static boolean canUseDragPreview(Context context) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) return false;
 
@@ -77,7 +70,7 @@ final class AudioOutputRouter {
         return null;
     }
 
-    private static AudioDeviceInfo resolveSecondaryDevice(Context context) {
+    static AudioDeviceInfo resolveSecondaryDevice(Context context) {
         AudioManager am = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
         if (am == null) return null;
 

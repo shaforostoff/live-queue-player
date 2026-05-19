@@ -271,7 +271,7 @@ public class FileBrowserQueueActivity extends Activity {
             if (entry.isDirectory) return false;
 
             dragPreviewUri = entry.uri;
-            if (PreviewManager.isEnabled(this)) startDragPreview(dragPreviewUri);
+            startDragPreview(dragPreviewUri);
             android.content.ClipData clip = android.content.ClipData.newPlainText(
                     entry.name, entry.uri.toString());
             View.DragShadowBuilder shadow = new View.DragShadowBuilder(view);

@@ -40,6 +40,7 @@ public class Service extends android.app.Service implements MediaPlayerStateList
     private HWListener hwListener;
     private Notifications notifications;
     private AudioPlayer audioPlayer;
+    private SilenceStreamer silenceStreamer;
 
     private Playlist playlist;
     /** Index of the next entry to play in {@link #playlist}. */
@@ -187,16 +188,22 @@ public class Service extends android.app.Service implements MediaPlayerStateList
         } catch (IllegalArgumentException e) {
             Exceptions.throwError(this, Exceptions.IllegalArgument);
             playOrDestroy();
+            return;
         } catch (SecurityException e) {
             Exceptions.throwError(this, Exceptions.Security);
             playOrDestroy();
+            return;
         } catch (IllegalStateException e) {
             Exceptions.throwError(this, Exceptions.IllegalState);
             playOrDestroy();
+            return;
         } catch (IOException e) {
             Exceptions.throwError(this, Exceptions.IO);
             playOrDestroy();
+            return;
         }
+        if (silenceStreamer == null) silenceStreamer = new SilenceStreamer();
+        silenceStreamer.start(this);
     }
 
     public void playOrDestroy() {
@@ -294,6 +301,7 @@ public class Service extends android.app.Service implements MediaPlayerStateList
         hwListener.onMediaPlayerDestroy();
         if (audioPlayer != null)
             audioPlayer.onMediaPlayerDestroy();
+        if (silenceStreamer != null) { silenceStreamer.stop(); silenceStreamer = null; }
         playlist.clear();
 
         super.onDestroy();

@@ -10,7 +10,7 @@ import android.net.Uri;
 final class PreviewManager {
 
     static boolean isEnabled(Context context) {
-        return AudioOutputRouter.canUseDragPreview(context);
+        return AudioOutputRouter.canUseAudioPreview(context);
     }
 
     // Checked by AudioPlayer to suppress focus-loss handling during preview.

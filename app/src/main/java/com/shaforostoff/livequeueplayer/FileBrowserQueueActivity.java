@@ -120,8 +120,8 @@ public class FileBrowserQueueActivity extends Activity {
     private CharSequence defaultPlayButtonText;
     private int currentTrackPositionMs;
     private int currentTrackDurationMs;
-    private PreviewManager dragPreviewManager;
-    private Uri dragPreviewUri;
+    private PreviewManager audioPreviewManager;
+    private Uri audioPreviewUri;
     private Uri fileBrowserPreviewingUri;
     private Uri fileBrowserPreviewingEntryUri;
     private float fileBrowserSwipeDownX;
@@ -187,7 +187,7 @@ public class FileBrowserQueueActivity extends Activity {
         setContentView(R.layout.activity_file_browser_queue);
 
         // -- initialize drag preview manager --------------------------------
-        dragPreviewManager = new PreviewManager(this);
+        audioPreviewManager = new PreviewManager(this);
 
         // -- view references -------------------------------------------------
         fileFilterInput = findViewById(R.id.file_filter_input);
@@ -250,8 +250,8 @@ public class FileBrowserQueueActivity extends Activity {
                 } else {
                     fileBrowserPreviewingUri = previewUri;
                     fileBrowserPreviewingEntryUri = entry.uri;
-                    dragPreviewUri = previewUri;
-                    startDragPreview(previewUri);
+                    audioPreviewUri = previewUri;
+                    startAudioPreview(previewUri);
                 }
             } else {
                 if (isPlaylistFile(entry.name)) {
@@ -272,8 +272,8 @@ public class FileBrowserQueueActivity extends Activity {
             FileEntry entry = filteredFileEntries.get(position);
             if (entry.isDirectory) return false;
 
-            dragPreviewUri = entry.uri;
-            startDragPreview(dragPreviewUri);
+            audioPreviewUri = entry.uri;
+            startAudioPreview(audioPreviewUri);
             android.content.ClipData clip = android.content.ClipData.newPlainText(
                     entry.name, entry.uri.toString());
             View.DragShadowBuilder shadow = new View.DragShadowBuilder(view);
@@ -2396,20 +2396,20 @@ public class FileBrowserQueueActivity extends Activity {
         applyStopButtonState();
     }
 
-    private void startDragPreview(Uri uri) {
+    private void startAudioPreview(Uri uri) {
         if (uri == null || !PreviewManager.isEnabled(this) || isRemoteClientMode()) return;
-        dragPreviewManager.startPreview(uri);
+        audioPreviewManager.startPreview(uri);
     }
 
-    private void stopDragPreview() {
-        if (dragPreviewManager != null) dragPreviewManager.stopPreview();
+    private void stopAudioPreview() {
+        if (audioPreviewManager != null) audioPreviewManager.stopPreview();
     }
 
     private void resetFileBrowserPreview() {
         fileBrowserPreviewingUri = null;
         fileBrowserPreviewingEntryUri = null;
-        dragPreviewUri = null;
-        stopDragPreview();
+        audioPreviewUri = null;
+        stopAudioPreview();
     }
 
     private int resolvePlayingQueueIndex(int serviceIndex, Uri currentUri) {
@@ -2467,7 +2467,7 @@ public class FileBrowserQueueActivity extends Activity {
         unregisterPlaybackStateReceiver();
         btController.shutdown();
         uiHandler.removeCallbacks(stopFadeResetRunnable);
-        if (dragPreviewManager != null) dragPreviewManager.stopPreview();
+        if (audioPreviewManager != null) audioPreviewManager.stopPreview();
         super.onDestroy();
     }
 

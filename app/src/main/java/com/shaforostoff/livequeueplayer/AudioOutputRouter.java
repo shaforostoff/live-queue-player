@@ -39,7 +39,7 @@ final class AudioOutputRouter {
         }
     }
 
-    static boolean canUseDragPreview(Context context) {
+    static boolean canUseAudioPreview(Context context) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) return false;
 
         AudioManager am = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);

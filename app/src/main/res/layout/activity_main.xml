@@ -47,6 +47,12 @@
         a:layout_width="match_parent"
         a:layout_height="wrap_content"
         a:text="3.5mm cable"/>
+
+      <RadioButton
+        a:id="@+id/output_usb"
+        a:layout_width="match_parent"
+        a:layout_height="wrap_content"
+        a:text="USB audio"/>
     </RadioGroup>
 
      <Button

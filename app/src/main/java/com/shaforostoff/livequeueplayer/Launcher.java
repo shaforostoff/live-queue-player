@@ -55,6 +55,7 @@ public class Launcher extends Activity {
             switch (AudioOutputRouter.getPreferredOutput(this)) {
                 case AudioOutputRouter.OUTPUT_BLUETOOTH -> outputGroup.check(R.id.output_bluetooth);
                 case AudioOutputRouter.OUTPUT_WIRED -> outputGroup.check(R.id.output_wired);
+                case AudioOutputRouter.OUTPUT_USB -> outputGroup.check(R.id.output_usb);
                 default -> outputGroup.check(R.id.output_default);
             }
             outputGroup.setOnCheckedChangeListener((group, checkedId) -> {
@@ -63,6 +64,8 @@ public class Launcher extends Activity {
                     selected = AudioOutputRouter.OUTPUT_BLUETOOTH;
                 } else if (checkedId == R.id.output_wired) {
                     selected = AudioOutputRouter.OUTPUT_WIRED;
+                } else if (checkedId == R.id.output_usb) {
+                    selected = AudioOutputRouter.OUTPUT_USB;
                 }
                 AudioOutputRouter.setPreferredOutput(this, selected);
             });

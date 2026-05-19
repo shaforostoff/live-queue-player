@@ -12,6 +12,7 @@ final class AudioOutputRouter {
     static final int OUTPUT_DEFAULT = 0;
     static final int OUTPUT_BLUETOOTH = 1;
     static final int OUTPUT_WIRED = 2;
+    static final int OUTPUT_USB = 3;
 
     private static final String PREFS = "live_queue_player";
     private static final String KEY_OUTPUT = "preferred_output";
@@ -55,10 +56,12 @@ final class AudioOutputRouter {
         AudioDeviceInfo[] outputs = am.getDevices(AudioManager.GET_DEVICES_OUTPUTS);
         AudioDeviceInfo bluetooth = findBluetooth(outputs);
         AudioDeviceInfo wired = findWired(outputs);
+        AudioDeviceInfo usb = findUsb(outputs);
 
         // Keep main playback pinned to the preferred output whenever it exists.
         if (preferred == OUTPUT_BLUETOOTH && bluetooth != null) return bluetooth;
         if (preferred == OUTPUT_WIRED && wired != null) return wired;
+        if (preferred == OUTPUT_USB && usb != null) return usb;
         return null;
     }
 
@@ -107,6 +110,15 @@ final class AudioOutputRouter {
                 AudioDeviceInfo.TYPE_WIRED_HEADSET,
                 AudioDeviceInfo.TYPE_WIRED_HEADPHONES,
                 AudioDeviceInfo.TYPE_AUX_LINE
+        );
+    }
+
+    @SuppressLint("InlinedApi")
+    private static AudioDeviceInfo findUsb(AudioDeviceInfo[] outputs) {
+        return findFirst(outputs,
+                AudioDeviceInfo.TYPE_USB_DEVICE,
+                AudioDeviceInfo.TYPE_USB_ACCESSORY,
+                AudioDeviceInfo.TYPE_USB_HEADSET
         );
     }
 

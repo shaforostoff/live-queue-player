@@ -18,7 +18,7 @@ final class SilenceStreamer {
     static volatile long previewPositionMs;
     static volatile long previewDurationMs;
 
-    private static volatile SilenceStreamer current;
+    static volatile SilenceStreamer current;
 
     private AudioTrack audioTrack;
     private Thread thread;
@@ -121,6 +121,23 @@ final class SilenceStreamer {
             audioTrack.release();
             audioTrack = null;
         }
+    }
+
+    /**
+     * Start a SilenceStreamer on the secondary output if none is running yet.
+     * Resolves device outputs first so sResolvedSecondary is populated.
+     * Safe to call when a Service-owned instance is already active — it is a no-op then.
+     */
+    static void ensure(Context context) {
+        if (isActive) return;
+        AudioOutputRouter.resolve(context);
+        new SilenceStreamer().start();
+    }
+
+    /** Stop the current instance, if any. Counterpart to ensure(). */
+    static void release() {
+        SilenceStreamer inst = current;
+        if (inst != null) inst.stop();
     }
 
     static void startPreview(Context context, Uri uri) {

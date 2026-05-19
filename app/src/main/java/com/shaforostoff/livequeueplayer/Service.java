@@ -203,8 +203,8 @@ public class Service extends android.app.Service implements MediaPlayerStateList
             playOrDestroy();
             return;
         }
-        if (silenceStreamer == null) silenceStreamer = new SilenceStreamer();
-        silenceStreamer.start();
+        SilenceStreamer.ensure(this);
+        silenceStreamer = SilenceStreamer.current;
     }
 
     public void playOrDestroy() {
@@ -296,13 +296,15 @@ public class Service extends android.app.Service implements MediaPlayerStateList
     @Override
     public void onDestroy() {
         stopProgressTicks();
+        // Stop SilenceStreamer before broadcasting so the Activity can restart it for
+        // standalone preview (the broadcast receiver calls SilenceStreamer.ensure()).
+        if (silenceStreamer != null) { silenceStreamer.stop(); silenceStreamer = null; }
         notifyPlaybackState(false, -1, null);
         onMediaPlayerReset();
         notifications.onMediaPlayerDestroy();
         hwListener.onMediaPlayerDestroy();
         if (audioPlayer != null)
             audioPlayer.onMediaPlayerDestroy();
-        if (silenceStreamer != null) { silenceStreamer.stop(); silenceStreamer = null; }
         playlist.clear();
 
         super.onDestroy();

@@ -146,11 +146,13 @@ public class FileBrowserQueueActivity extends Activity {
                 currentPlayingQueueIndex = -1;
                 if (stopFadeInProgress) {
                     onFadeOutFinished();
+                    ensureSilenceStreamer();
                     return;
                 }
                 servicePlaybackOffset = 0;
                 resetCurrentTrackProgress();
                 QueueStore.savePlaybackOffset(FileBrowserQueueActivity.this, 0);
+                ensureSilenceStreamer();
             } else {
                 currentPlayingQueueIndex = resolvePlayingQueueIndex(serviceIndex, currentUri);
             }
@@ -2289,6 +2291,7 @@ public class FileBrowserQueueActivity extends Activity {
         syncWithServiceState();
         uiHandler.removeCallbacks(playbackStateSyncRunnable);
         uiHandler.postDelayed(playbackStateSyncRunnable, PLAYBACK_SYNC_INTERVAL_MS);
+        ensureSilenceStreamer();
     }
 
     @Override
@@ -2330,6 +2333,10 @@ public class FileBrowserQueueActivity extends Activity {
         persistQueue();
         unregisterPlaybackStateReceiver();
         uiHandler.removeCallbacks(playbackStateSyncRunnable);
+        resetFileBrowserPreview();
+        if (Service.sCurrentUri == null) {
+            SilenceStreamer.release();
+        }
         super.onStop();
     }
 
@@ -2337,6 +2344,12 @@ public class FileBrowserQueueActivity extends Activity {
         stopFadeInProgress = false;
         uiHandler.removeCallbacks(stopFadeResetRunnable);
         applyStopButtonState();
+    }
+
+    private void ensureSilenceStreamer() {
+        if (AudioOutputRouter.canUseAudioPreview(this)) {
+            SilenceStreamer.ensure(this);
+        }
     }
 
     private void startAudioPreview(Uri uri) {

@@ -10,7 +10,7 @@ import android.net.Uri;
 final class PreviewManager {
 
     static boolean isEnabled(Context context) {
-        return AudioOutputRouter.canUseAudioPreview(context);
+        return SilenceStreamer.isActive && AudioOutputRouter.canUseAudioPreview(context);
     }
 
     // Checked by AudioPlayer to suppress focus-loss handling during preview.
@@ -23,6 +23,7 @@ final class PreviewManager {
     }
 
     void startPreview(Uri uri) {
+        if (!SilenceStreamer.isActive) return;
         isPreviewActive = true;
         SilenceStreamer.startPreview(context, uri);
     }

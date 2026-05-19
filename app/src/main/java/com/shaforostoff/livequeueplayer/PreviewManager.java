@@ -12,8 +12,9 @@ import android.os.Build;
  */
 final class PreviewManager {
 
-    /** Flip to true to re-enable audio preview on a secondary output during drag. */
-    static final boolean ENABLED = false;
+    static boolean isEnabled(Context context) {
+        return AudioOutputRouter.canUseDragPreview(context);
+    }
 
     // Checked by AudioPlayer to suppress transient focus-loss handling during preview.
     static volatile boolean isPreviewActive = false;

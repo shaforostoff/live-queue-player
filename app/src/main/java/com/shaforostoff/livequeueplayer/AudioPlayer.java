@@ -302,7 +302,7 @@ class AudioPlayer extends Thread implements MediaPlayer.OnCompletionListener, Me
           || focusChange == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT) {
         // Drag preview can trigger either LOSS or LOSS_TRANSIENT depending on the OEM.
         // Suppress both while preview is active; the drag is user-driven and brief.
-        if ((!PreviewManager.ENABLED || !PreviewManager.isPreviewActive) && mediaPlayer.isPlaying()) {
+        if ((!PreviewManager.isEnabled(service) || !PreviewManager.isPreviewActive) && mediaPlayer.isPlaying()) {
           int pos = mediaPlayer.getCurrentPosition();
           mediaPlayer.pause();
           pausedForFocusLoss = true;

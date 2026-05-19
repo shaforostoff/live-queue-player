@@ -180,7 +180,7 @@ public class FileBrowserQueueActivity extends Activity {
         setContentView(R.layout.activity_file_browser_queue);
 
         // -- initialize drag preview manager --------------------------------
-        if (PreviewManager.ENABLED) dragPreviewManager = new PreviewManager(this);
+        dragPreviewManager = new PreviewManager(this);
 
         // -- view references -------------------------------------------------
         fileFilterInput = findViewById(R.id.file_filter_input);
@@ -259,7 +259,7 @@ public class FileBrowserQueueActivity extends Activity {
             if (entry.isDirectory) return false;
 
             dragPreviewUri = entry.uri;
-            if (PreviewManager.ENABLED) startDragPreview(dragPreviewUri);
+            if (PreviewManager.isEnabled(this)) startDragPreview(dragPreviewUri);
             android.content.ClipData clip = android.content.ClipData.newPlainText(
                     entry.name, entry.uri.toString());
             View.DragShadowBuilder shadow = new View.DragShadowBuilder(view);
@@ -301,7 +301,7 @@ public class FileBrowserQueueActivity extends Activity {
                 case DragEvent.ACTION_DRAG_ENDED:
                     v.setAlpha(1f);
                     dragPreviewUri = null;
-                    if (PreviewManager.ENABLED) stopDragPreview();
+                    stopDragPreview();
                     return true;
 
                 default:
@@ -2283,13 +2283,12 @@ public class FileBrowserQueueActivity extends Activity {
     }
 
     private void startDragPreview(Uri uri) {
-        if (uri == null || !PreviewManager.ENABLED) return;
+        if (uri == null || !PreviewManager.isEnabled(this) || isRemoteClientMode()) return;
         dragPreviewManager.startPreview(uri);
     }
 
     private void stopDragPreview() {
-        if (!PreviewManager.ENABLED) return;
-        dragPreviewManager.stopPreview();
+        if (dragPreviewManager != null) dragPreviewManager.stopPreview();
     }
 
     private int resolvePlayingQueueIndex(int serviceIndex, Uri currentUri) {
@@ -2338,7 +2337,7 @@ public class FileBrowserQueueActivity extends Activity {
         unregisterPlaybackStateReceiver();
         btController.shutdown();
         uiHandler.removeCallbacks(stopFadeResetRunnable);
-        if (PreviewManager.ENABLED) dragPreviewManager.stopPreview();
+        if (dragPreviewManager != null) dragPreviewManager.stopPreview();
         super.onDestroy();
     }
 

@@ -46,6 +46,18 @@ final class AudioOutputRouter {
         return player.setPreferredDevice(device);
     }
 
+    static boolean canUseDragPreview(Context context) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) return false;
+
+        AudioManager am = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
+        if (am == null) return false;
+
+        AudioDeviceInfo[] outputs = am.getDevices(AudioManager.GET_DEVICES_OUTPUTS);
+        return findBluetooth(outputs) == null
+                && findWired(outputs) != null
+                && findUsb(outputs) != null;
+    }
+
     private static AudioDeviceInfo resolvePrimaryDevice(Context context) {
         int preferred = getPreferredOutput(context);
         if (preferred == OUTPUT_DEFAULT) return null;
@@ -72,21 +84,26 @@ final class AudioOutputRouter {
         AudioDeviceInfo[] outputs = am.getDevices(AudioManager.GET_DEVICES_OUTPUTS);
         AudioDeviceInfo bluetooth = findBluetooth(outputs);
         AudioDeviceInfo wired = findWired(outputs);
+        AudioDeviceInfo usb = findUsb(outputs);
         AudioDeviceInfo speaker = findSpeaker(outputs);
+
+        // Preview playback must stay off whenever Bluetooth A2DP output is present.
+        if (bluetooth != null) return null;
 
         int preferred = getPreferredOutput(context);
 
-        if (bluetooth != null && wired != null) {
-            if (preferred == OUTPUT_BLUETOOTH) return wired;
-            // Bluetooth routing is exclusive on most devices; fall back to speaker.
-            if (preferred == OUTPUT_WIRED) return speaker;
-            return null;
+
+        if (wired != null && usb != null) {
+            if (preferred == OUTPUT_WIRED) return usb;
+            if (preferred == OUTPUT_USB) return wired;
+            return speaker;
         }
 
         // Single external output -> drag preview should use speakers.
         boolean hasBluetooth = bluetooth != null;
         boolean hasWired = wired != null;
-        if (hasBluetooth ^ hasWired) {
+        boolean hasUsb = usb != null;
+        if ((hasBluetooth ? 1 : 0) + (hasWired ? 1 : 0) + (hasUsb ? 1 : 0) == 1) {
             return speaker;
         }
 

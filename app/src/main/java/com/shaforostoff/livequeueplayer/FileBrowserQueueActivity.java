@@ -99,6 +99,7 @@ public class FileBrowserQueueActivity extends Activity {
     // -- queue state --------------------------------------------------------
     private final List<QueueEntry> queueEntries = new ArrayList<>();
     private QueueAdapter queueAdapter;
+    private ListView queueList;
     private TextView queueEmptyHint;
     private boolean playbackStopped = true;
     private boolean stopFadeInProgress;
@@ -186,7 +187,7 @@ public class FileBrowserQueueActivity extends Activity {
         queueEmptyHint  = findViewById(R.id.queue_empty_hint);
 
         ListView fileBrowserList = findViewById(R.id.file_browser_list);
-        ListView queueList       = findViewById(R.id.queue_list);
+        queueList                = findViewById(R.id.queue_list);
         View     queueContainer  = findViewById(R.id.queue_container);
         remoteQueueFillMode = getIntent().getBooleanExtra(EXTRA_REMOTE_QUEUE_FILL_MODE, false);
 
@@ -1660,6 +1661,7 @@ public class FileBrowserQueueActivity extends Activity {
         }
         queueEntries.addAll(entries);
         queueAdapter.notifyDataSetChanged();
+        queueList.smoothScrollToPosition(queueEntries.size() - 1);
         updateQueueHint();
         persistQueue();
 

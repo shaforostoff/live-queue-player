@@ -146,13 +146,11 @@ public class FileBrowserQueueActivity extends Activity {
                 currentPlayingQueueIndex = -1;
                 if (stopFadeInProgress) {
                     onFadeOutFinished();
-                    ensureSilenceStreamer();
                     return;
                 }
                 servicePlaybackOffset = 0;
                 resetCurrentTrackProgress();
                 QueueStore.savePlaybackOffset(FileBrowserQueueActivity.this, 0);
-                ensureSilenceStreamer();
             } else {
                 currentPlayingQueueIndex = resolvePlayingQueueIndex(serviceIndex, currentUri);
             }
@@ -1962,7 +1960,6 @@ public class FileBrowserQueueActivity extends Activity {
             return;
         }
 
-        resetFileBrowserPreview();
         Intent intent = new Intent(this, Service.class);
         intent.putExtra(Launcher.TYPE, Launcher.STOP);
         startService(intent);

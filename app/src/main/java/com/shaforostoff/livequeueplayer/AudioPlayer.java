@@ -194,7 +194,8 @@ class AudioPlayer extends Thread implements MediaPlayer.OnCompletionListener, Me
             fadeOutInProgress = false;
             return;
           }
-          float volume = baseGain * (i / (float) steps);
+          float t = i / (float) steps;
+          float volume = (t == 0f) ? 0f : baseGain * (float) Math.pow(10.0, -40.0 * (1.0 - t) / 20.0);
           try {
             mediaPlayer.setVolume(volume, volume);
           } catch (IllegalStateException ignored) {

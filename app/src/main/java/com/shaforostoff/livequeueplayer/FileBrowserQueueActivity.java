@@ -1960,6 +1960,7 @@ public class FileBrowserQueueActivity extends Activity {
             return;
         }
 
+        resetFileBrowserPreview();
         Intent intent = new Intent(this, Service.class);
         intent.putExtra(Launcher.TYPE, Launcher.STOP);
         startService(intent);
@@ -2268,6 +2269,7 @@ public class FileBrowserQueueActivity extends Activity {
     }
 
     private void onFadeOutFinished() {
+        resetFileBrowserPreview();
         stopFadeInProgress = false;
         playbackStopped = true;
         servicePlaybackOffset = 0;

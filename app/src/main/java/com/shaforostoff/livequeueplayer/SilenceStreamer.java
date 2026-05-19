@@ -111,6 +111,7 @@ final class SilenceStreamer {
 
     void stop() {
         current = null;
+        PreviewManager.isPreviewActive = false;
         doStopPreview();
         running = false;
         isActive = false;

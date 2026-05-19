@@ -21,7 +21,6 @@ import android.text.TextWatcher;
 import android.provider.DocumentsContract;
 import android.provider.MediaStore;
 import android.util.TypedValue;
-import android.graphics.Color;
 import android.graphics.drawable.ClipDrawable;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
@@ -2532,13 +2531,14 @@ public class FileBrowserQueueActivity extends Activity {
         private final LayoutInflater inflater = LayoutInflater.from(FileBrowserQueueActivity.this);
         private final int colorBackground;
         private final int colorQueueBase;
-        private final int colorQueueFill = Color.parseColor("#FFD3D3D3");
+        private final int colorQueueFill;
 
         QueueAdapter() {
             TypedValue out = new TypedValue();
             getTheme().resolveAttribute(android.R.attr.colorBackground, out, true);
             colorBackground = out.data;
             colorQueueBase = getColor(R.color.queueProgressBackground);
+            colorQueueFill = getColor(R.color.queueProgressFill);
         }
 
         @Override public int  getCount()              { return queueEntries.size(); }

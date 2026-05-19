@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
 
-  <style name="app_theme" parent="@android:style/Theme.Light.NoTitleBar">
+  <style name="app_theme" parent="@android:style/Theme.NoTitleBar">
     <item name="android:background">@color/background</item>
     <item name="android:colorForeground">@color/foreground</item>
     <item name="android:textColor">@color/foreground</item>
@@ -10,7 +10,7 @@
     <item name="android:buttonStyle">@style/buttonStyle</item>
     <item name="android:textSize">25sp</item>
     <item name="android:gravity">center</item>
-    <item name="android:alertDialogTheme">@android:style/Theme.DeviceDefault.Light.Dialog.Alert</item>
+    <item name="android:alertDialogTheme">@android:style/Theme.DeviceDefault.Dialog.Alert</item>
   </style>
 
   <style name="buttonStyle" parent="@android:style/Widget.Button">
@@ -19,3 +19,4 @@
     <item name="android:background">@color/buttonBackground</item>
   </style>
 </resources>
+

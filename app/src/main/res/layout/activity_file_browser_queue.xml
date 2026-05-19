@@ -41,9 +41,12 @@
         a:layout_height="wrap_content"
         a:layout_margin="4dp"
         a:layout_weight="1"
+        a:background="@color/inputBackground"
         a:hint="Filter files by name"
         a:importantForAutofill="no"
         a:maxLines="1"
+        a:textColor="@color/foreground"
+        a:textColorHint="@color/inputHint"
         a:textSize="14sp" />
     </LinearLayout>
 

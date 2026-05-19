@@ -3,4 +3,11 @@
   <color name="background">#2C2C2C</color>
   <color name="foreground">#EDEDED</color>
   <color name="buttonBackground">#5F5F5F</color>
+  <color name="stopButtonActive">#B71C1C</color>
+  <color name="stopButtonActiveText">#FFFFFF</color>
+  <color name="queuePlayingBackground">#5D4E1A</color>
+  <color name="queueProgressBackground">#3A3A3A</color>
+  <color name="queueProgressFill">#616161</color>
+  <color name="inputBackground">#4A4A4A</color>
+  <color name="inputHint">#C7C7C7</color>
 </resources>

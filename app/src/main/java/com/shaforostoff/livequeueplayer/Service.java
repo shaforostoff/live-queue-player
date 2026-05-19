@@ -169,6 +169,7 @@ public class Service extends android.app.Service implements MediaPlayerStateList
         int currentIndex = playlistPosition - 1;
         try {
 
+            AudioOutputRouter.resolve(this);
             /* get audio playback logic and start async */
             audioPlayer = new AudioPlayer(this, entry.location);
             audioPlayer.start();
@@ -203,7 +204,7 @@ public class Service extends android.app.Service implements MediaPlayerStateList
             return;
         }
         if (silenceStreamer == null) silenceStreamer = new SilenceStreamer();
-        silenceStreamer.start(this);
+        silenceStreamer.start();
     }
 
     public void playOrDestroy() {

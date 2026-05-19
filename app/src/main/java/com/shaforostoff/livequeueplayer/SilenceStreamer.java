@@ -25,11 +25,11 @@ final class SilenceStreamer {
     private volatile boolean running;
     private final AtomicReference<PcmDecoder> previewDecoder = new AtomicReference<>();
 
-    void start(Context context) {
+    void start() {
         if (running) return;
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) return;
 
-        AudioDeviceInfo secondary = AudioOutputRouter.resolveSecondaryDevice(context);
+        AudioDeviceInfo secondary = AudioOutputRouter.sResolvedSecondary;
         if (secondary == null) return;
 
         int sampleRate = 44100;

@@ -322,6 +322,7 @@ class AudioPlayer extends Thread implements MediaPlayer.OnCompletionListener, Me
 
   private void reapplyPreferredOutput() {
     if (released || Build.VERSION.SDK_INT < Build.VERSION_CODES.P) return;
+    AudioOutputRouter.resolve(service);
     try {
       AudioOutputRouter.applyPreferredOutput(service, mediaPlayer);
     } catch (IllegalStateException ignored) {

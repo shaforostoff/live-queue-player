@@ -17,6 +17,9 @@ final class AudioOutputRouter {
     private static final String PREFS = "live_queue_player";
     private static final String KEY_OUTPUT = "preferred_output";
 
+    static volatile AudioDeviceInfo sResolvedPrimary;
+    static volatile AudioDeviceInfo sResolvedSecondary;
+
     private AudioOutputRouter() {
     }
 
@@ -31,9 +34,43 @@ final class AudioOutputRouter {
         edit.apply();
     }
 
+    /** Snapshot getDevices() once and derive both primary and secondary from the same list. */
+    static void resolve(Context context) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) {
+            sResolvedPrimary = null;
+            sResolvedSecondary = null;
+            return;
+        }
+        AudioManager am = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
+        if (am == null) { sResolvedPrimary = null; sResolvedSecondary = null; return; }
+
+        AudioDeviceInfo[] outputs = am.getDevices(AudioManager.GET_DEVICES_OUTPUTS);
+        int preferred = getPreferredOutput(context);
+
+        AudioDeviceInfo bluetooth = findBluetooth(outputs);
+        AudioDeviceInfo wired     = findWired(outputs);
+        AudioDeviceInfo usb       = findUsb(outputs);
+        AudioDeviceInfo speaker   = findSpeaker(outputs);
+
+        AudioDeviceInfo primary = null;
+        if (preferred == OUTPUT_BLUETOOTH && bluetooth != null) primary = bluetooth;
+        else if (preferred == OUTPUT_WIRED && wired != null)   primary = wired;
+        else if (preferred == OUTPUT_USB   && usb  != null)    primary = usb;
+
+        AudioDeviceInfo secondary = null;
+        if (bluetooth == null && wired != null && usb != null) {
+            if (preferred == OUTPUT_WIRED)      secondary = usb;
+            else if (preferred == OUTPUT_USB)   secondary = wired;
+            else                                secondary = speaker;
+        }
+
+        sResolvedPrimary   = primary;
+        sResolvedSecondary = secondary;
+    }
+
     static void applyPreferredOutput(Context context, MediaPlayer player) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) return;
-        AudioDeviceInfo device = resolvePrimaryDevice(context);
+        AudioDeviceInfo device = sResolvedPrimary;
         if (device != null) {
             player.setPreferredDevice(device);
         }
@@ -49,59 +86,6 @@ final class AudioOutputRouter {
         return findBluetooth(outputs) == null
                 && findWired(outputs) != null
                 && findUsb(outputs) != null;
-    }
-
-    private static AudioDeviceInfo resolvePrimaryDevice(Context context) {
-        int preferred = getPreferredOutput(context);
-        if (preferred == OUTPUT_DEFAULT) return null;
-
-        AudioManager am = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
-        if (am == null) return null;
-
-        AudioDeviceInfo[] outputs = am.getDevices(AudioManager.GET_DEVICES_OUTPUTS);
-        AudioDeviceInfo bluetooth = findBluetooth(outputs);
-        AudioDeviceInfo wired = findWired(outputs);
-        AudioDeviceInfo usb = findUsb(outputs);
-
-        // Keep main playback pinned to the preferred output whenever it exists.
-        if (preferred == OUTPUT_BLUETOOTH && bluetooth != null) return bluetooth;
-        if (preferred == OUTPUT_WIRED && wired != null) return wired;
-        if (preferred == OUTPUT_USB && usb != null) return usb;
-        return null;
-    }
-
-    static AudioDeviceInfo resolveSecondaryDevice(Context context) {
-        AudioManager am = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
-        if (am == null) return null;
-
-        AudioDeviceInfo[] outputs = am.getDevices(AudioManager.GET_DEVICES_OUTPUTS);
-        AudioDeviceInfo bluetooth = findBluetooth(outputs);
-        AudioDeviceInfo wired = findWired(outputs);
-        AudioDeviceInfo usb = findUsb(outputs);
-        AudioDeviceInfo speaker = findSpeaker(outputs);
-
-        // Preview playback must stay off whenever Bluetooth A2DP output is present.
-        if (bluetooth != null) return null;
-
-        int preferred = getPreferredOutput(context);
-
-
-        if (wired != null && usb != null) {
-            if (preferred == OUTPUT_WIRED) return usb;
-            if (preferred == OUTPUT_USB) return wired;
-            return speaker;
-        }
-
-        // Single external output -> drag preview should use speakers.
-        boolean hasBluetooth = bluetooth != null;
-        boolean hasWired = wired != null;
-        boolean hasUsb = usb != null;
-        if ((hasBluetooth ? 1 : 0) + (hasWired ? 1 : 0) + (hasUsb ? 1 : 0) == 1) {
-            return speaker;
-        }
-
-        // No external outputs -> no preview while dragging.
-        return null;
     }
 
     @SuppressLint("InlinedApi")

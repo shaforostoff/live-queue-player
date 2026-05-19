@@ -123,6 +123,7 @@ public class FileBrowserQueueActivity extends Activity {
     private PreviewManager dragPreviewManager;
     private Uri dragPreviewUri;
     private Uri fileBrowserPreviewingUri;
+    private Uri fileBrowserPreviewingEntryUri;
     private float fileBrowserSwipeDownX;
     private float fileBrowserSwipeDownY;
     private int fileBrowserSwipeStartPosition = -1;
@@ -248,6 +249,7 @@ public class FileBrowserQueueActivity extends Activity {
                     resetFileBrowserPreview();
                 } else {
                     fileBrowserPreviewingUri = previewUri;
+                    fileBrowserPreviewingEntryUri = entry.uri;
                     dragPreviewUri = previewUri;
                     startDragPreview(previewUri);
                 }
@@ -2405,6 +2407,7 @@ public class FileBrowserQueueActivity extends Activity {
 
     private void resetFileBrowserPreview() {
         fileBrowserPreviewingUri = null;
+        fileBrowserPreviewingEntryUri = null;
         dragPreviewUri = null;
         stopDragPreview();
     }
@@ -2663,15 +2666,20 @@ public class FileBrowserQueueActivity extends Activity {
                 vh.meta.setVisibility(View.GONE);
             }
 
-            boolean isPreviewing = !entry.isDirectory
+            boolean isPreviewEntry = !entry.isDirectory
+                    && fileBrowserPreviewingEntryUri != null
+                    && fileBrowserPreviewingEntryUri.equals(entry.uri);
+            boolean hasProgress = isPreviewEntry
                     && fileBrowserPreviewingUri != null
                     && fileBrowserPreviewingUri.equals(entry.uri);
-            if (isPreviewing) {
+            if (isPreviewEntry) {
                 float progress = 0f;
-                long dur = SilenceStreamer.previewDurationMs;
-                if (dur > 0) {
-                    progress = Math.min(1f, Math.max(0f,
-                            SilenceStreamer.previewPositionMs / (float) dur));
+                if (hasProgress) {
+                    long dur = SilenceStreamer.previewDurationMs;
+                    if (dur > 0) {
+                        progress = Math.min(1f, Math.max(0f,
+                                SilenceStreamer.previewPositionMs / (float) dur));
+                    }
                 }
                 applyProgressBackground(convertView, progress, colorPreviewBase, colorPreviewFill);
             } else {

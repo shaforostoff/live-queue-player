@@ -27,7 +27,6 @@ import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.LayerDrawable;
 import android.view.Gravity;
 import android.view.MotionEvent;
-import android.view.DragEvent;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
@@ -57,7 +56,6 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Activity providing a split-screen file browser (top) and play queue (bottom).
- * Audio files can be dragged from the browser into the queue, or tapped to add directly.
  */
 public class FileBrowserQueueActivity extends Activity {
 
@@ -121,7 +119,6 @@ public class FileBrowserQueueActivity extends Activity {
     private int currentTrackPositionMs;
     private int currentTrackDurationMs;
     private PreviewManager audioPreviewManager;
-    private Uri audioPreviewUri;
     private Uri fileBrowserPreviewingUri;
     private Uri fileBrowserPreviewingEntryUri;
     private float fileBrowserSwipeDownX;
@@ -250,7 +247,6 @@ public class FileBrowserQueueActivity extends Activity {
                 } else {
                     fileBrowserPreviewingUri = previewUri;
                     fileBrowserPreviewingEntryUri = entry.uri;
-                    audioPreviewUri = previewUri;
                     startAudioPreview(previewUri);
                 }
             } else {
@@ -266,61 +262,6 @@ public class FileBrowserQueueActivity extends Activity {
             }
         });
         installFileBrowserSwipeAdd(fileBrowserList);
-
-        // -- file browser: long-press to start drag --------------------------
-        fileBrowserList.setOnItemLongClickListener((parent, view, position, id) -> {
-            FileEntry entry = filteredFileEntries.get(position);
-            if (entry.isDirectory) return false;
-
-            audioPreviewUri = entry.uri;
-            startAudioPreview(audioPreviewUri);
-            android.content.ClipData clip = android.content.ClipData.newPlainText(
-                    entry.name, entry.uri.toString());
-            View.DragShadowBuilder shadow = new View.DragShadowBuilder(view);
-
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                view.startDragAndDrop(clip, shadow, entry, 0);
-            } else {
-                view.startDrag(clip, shadow, entry, 0);
-            }
-            return true;
-        });
-
-        // -- queue container: drop target ------------------------------------
-        queueContainer.setOnDragListener((v, event) -> {
-            switch (event.getAction()) {
-
-                case DragEvent.ACTION_DRAG_STARTED:
-                    // only accept drags that carry a FileEntry
-                    return event.getLocalState() instanceof FileEntry;
-
-                case DragEvent.ACTION_DRAG_ENTERED:
-                    v.setAlpha(0.6f);
-                    // Preview is already playing (started when drag began)
-                    return true;
-
-                case DragEvent.ACTION_DRAG_EXITED:
-                    v.setAlpha(1f);
-                    return true;
-
-                case DragEvent.ACTION_DROP:
-                    v.setAlpha(1f);
-                    if (event.getLocalState() instanceof FileEntry entry) {
-                        addToQueue(entry.name, entry.uri);
-                        Toast.makeText(FileBrowserQueueActivity.this,
-                                "Added: " + entry.name, Toast.LENGTH_SHORT).show();
-                    }
-                    return true;
-
-                case DragEvent.ACTION_DRAG_ENDED:
-                    v.setAlpha(1f);
-                    resetFileBrowserPreview();
-                    return true;
-
-                default:
-                    return false;
-            }
-        });
 
         // -- queue: tap item to play when stopped ----------------------------
         queueList.setOnItemClickListener((parent, view, position, id) -> {
@@ -2408,7 +2349,6 @@ public class FileBrowserQueueActivity extends Activity {
     private void resetFileBrowserPreview() {
         fileBrowserPreviewingUri = null;
         fileBrowserPreviewingEntryUri = null;
-        audioPreviewUri = null;
         stopAudioPreview();
     }
 

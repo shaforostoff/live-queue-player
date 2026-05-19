@@ -100,6 +100,8 @@ final class SilenceStreamer {
                         previewPositionMs = dec.positionUs / 1000;
                         if (audioTrack.write(decBuf, 0, n) < 0) break;
                         continue;
+                    } else {
+                        continue; // codec pipeline momentarily dry; don't inject silence
                     }
                 }
                 if (audioTrack.write(silence, 0, silence.length) < 0) break;

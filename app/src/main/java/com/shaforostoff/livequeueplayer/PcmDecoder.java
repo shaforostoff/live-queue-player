@@ -71,7 +71,7 @@ final class PcmDecoder {
             }
         }
 
-        int outIdx = codec.dequeueOutputBuffer(bufInfo, 0);
+        int outIdx = codec.dequeueOutputBuffer(bufInfo, 5_000);
         if (outIdx >= 0) {
             if ((bufInfo.flags & MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
                 sawOutputEOS = true;

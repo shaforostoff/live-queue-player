@@ -660,6 +660,7 @@ public class FileBrowserQueueActivity extends Activity {
             return;
         }
 
+        resetFileBrowserPreview();
         clearFileFilterInput();
         if (documentUriStack.size() > 1) {
             documentUriStack.remove(documentUriStack.size() - 1);
@@ -2371,6 +2372,7 @@ public class FileBrowserQueueActivity extends Activity {
             currentPlayingQueueIndex = resolvePlayingQueueIndex(serviceIndex, serviceUri);
         }
         if (queueAdapter != null) queueAdapter.notifyDataSetChanged();
+        if (fileAdapter != null && fileBrowserPreviewingUri != null) fileAdapter.notifyDataSetChanged();
     }
 
     private void resetCurrentTrackProgress() {
@@ -2446,6 +2448,15 @@ public class FileBrowserQueueActivity extends Activity {
 
     private File getMusicDirectoryCompat() {
         return Environment.getExternalStoragePublicDirectory(MUSIC_DIRECTORY_NAME);
+    }
+
+    @Override
+    public void onBackPressed() {
+        if (canNavigateUpFromCurrentFolder()) {
+            navigateUpFromCurrentFolder();
+        } else {
+            super.onBackPressed();
+        }
     }
 
     @Override
@@ -2577,6 +2588,17 @@ public class FileBrowserQueueActivity extends Activity {
 
     private final class FileAdapter extends BaseAdapter {
         private final LayoutInflater inflater = LayoutInflater.from(FileBrowserQueueActivity.this);
+        private final int colorBackground;
+        private final int colorPreviewBase;
+        private final int colorPreviewFill;
+
+        FileAdapter() {
+            TypedValue out = new TypedValue();
+            getTheme().resolveAttribute(android.R.attr.colorBackground, out, true);
+            colorBackground = out.data;
+            colorPreviewBase = getColor(R.color.queueProgressBackground);
+            colorPreviewFill = getColor(R.color.queueProgressFill);
+        }
 
         @Override public int  getCount()              { return filteredFileEntries.size(); }
         @Override public FileEntry getItem(int pos)   { return filteredFileEntries.get(pos); }
@@ -2640,6 +2662,22 @@ public class FileBrowserQueueActivity extends Activity {
                 vh.meta.setText("");
                 vh.meta.setVisibility(View.GONE);
             }
+
+            boolean isPreviewing = !entry.isDirectory
+                    && fileBrowserPreviewingUri != null
+                    && fileBrowserPreviewingUri.equals(entry.uri);
+            if (isPreviewing) {
+                float progress = 0f;
+                long dur = SilenceStreamer.previewDurationMs;
+                if (dur > 0) {
+                    progress = Math.min(1f, Math.max(0f,
+                            SilenceStreamer.previewPositionMs / (float) dur));
+                }
+                applyProgressBackground(convertView, progress, colorPreviewBase, colorPreviewFill);
+            } else {
+                convertView.setBackgroundColor(colorBackground);
+            }
+
             return convertView;
         }
     }

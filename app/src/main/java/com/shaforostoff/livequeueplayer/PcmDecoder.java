@@ -22,6 +22,8 @@ final class PcmDecoder {
     private volatile boolean closed;
     final int sampleRate;
     final int channelCount;
+    final long durationUs;
+    volatile long positionUs;
 
     PcmDecoder(Context context, Uri uri) throws IOException {
         extractor.setDataSource(context, uri, null);
@@ -41,6 +43,8 @@ final class PcmDecoder {
                 ? fmt.getInteger(MediaFormat.KEY_SAMPLE_RATE) : 44100;
         channelCount = fmt.containsKey(MediaFormat.KEY_CHANNEL_COUNT)
                 ? fmt.getInteger(MediaFormat.KEY_CHANNEL_COUNT) : 2;
+        durationUs = fmt.containsKey(MediaFormat.KEY_DURATION)
+                ? fmt.getLong(MediaFormat.KEY_DURATION) : 0;
         String mime = fmt.getString(MediaFormat.KEY_MIME);
         codec = MediaCodec.createDecoderByType(mime);
         codec.configure(fmt, null, null, 0);
@@ -60,7 +64,8 @@ final class PcmDecoder {
                     codec.queueInputBuffer(inIdx, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM);
                     sawInputEOS = true;
                 } else {
-                    codec.queueInputBuffer(inIdx, 0, n, extractor.getSampleTime(), 0);
+                    positionUs = extractor.getSampleTime();
+                    codec.queueInputBuffer(inIdx, 0, n, positionUs, 0);
                     extractor.advance();
                 }
             }

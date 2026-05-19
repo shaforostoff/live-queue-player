@@ -15,6 +15,9 @@ final class SilenceStreamer {
     /** Checked by FileBrowserQueueActivity to gate drag-preview. */
     static volatile boolean isActive = false;
 
+    static volatile long previewPositionMs;
+    static volatile long previewDurationMs;
+
     private static volatile SilenceStreamer current;
 
     private AudioTrack audioTrack;
@@ -94,6 +97,7 @@ final class SilenceStreamer {
                         dec.close();
                         restorePlaybackRate();
                     } else if (n > 0) {
+                        previewPositionMs = dec.positionUs / 1000;
                         if (audioTrack.write(decBuf, 0, n) < 0) break;
                         continue;
                     }
@@ -136,6 +140,8 @@ final class SilenceStreamer {
             if (at != null) {
                 try { at.setPlaybackRate(decoder.sampleRate); } catch (Exception ignored) {}
             }
+            previewPositionMs = 0;
+            previewDurationMs = decoder.durationUs / 1000;
             previewDecoder.set(decoder);
         } catch (Exception ignored) {}
     }
@@ -146,6 +152,8 @@ final class SilenceStreamer {
             old.close();
             restorePlaybackRate();
         }
+        previewPositionMs = 0;
+        previewDurationMs = 0;
     }
 
     private void restorePlaybackRate() {

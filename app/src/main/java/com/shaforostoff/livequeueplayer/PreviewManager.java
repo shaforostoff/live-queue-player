@@ -10,7 +10,7 @@ import android.os.Build;
  * Manages audio playback for drag preview on a secondary output device.
  * Enables simultaneous playback on primary and secondary outputs without interference.
  */
-final class DragPreviewManager {
+final class PreviewManager {
 
     /** Flip to true to re-enable audio preview on a secondary output during drag. */
     static final boolean ENABLED = false;
@@ -21,7 +21,7 @@ final class DragPreviewManager {
     private final Context context;
     private MediaPlayer dragPreviewPlayer;
 
-    DragPreviewManager(Context context) {
+    PreviewManager(Context context) {
         this.context = context;
     }
 
@@ -87,4 +87,5 @@ final class DragPreviewManager {
         }
     }
 }
+
 

@@ -2336,7 +2336,7 @@ public class FileBrowserQueueActivity extends Activity {
         uiHandler.removeCallbacks(playbackStateSyncRunnable);
         resetFileBrowserPreview();
         if (Service.sCurrentUri == null) {
-            SilenceStreamer.release();
+            SilenceStreamer.fadeOutAndRelease();
         }
         super.onStop();
     }

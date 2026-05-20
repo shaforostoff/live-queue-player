@@ -23,6 +23,7 @@ final class SilenceStreamer {
     private AudioTrack audioTrack;
     private Thread thread;
     private volatile boolean running;
+    private volatile boolean fadingOut;
     private final AtomicReference<PcmDecoder> previewDecoder = new AtomicReference<>();
 
     void start() {
@@ -76,6 +77,7 @@ final class SilenceStreamer {
             return;
         }
 
+        final AudioTrack trackRef = track;
         audioTrack = track;
         final int bufSize = minBuffer * 4;
         running = true;
@@ -102,14 +104,24 @@ final class SilenceStreamer {
                         restorePlaybackRate();
                     } else if (n > 0) {
                         previewPositionMs = dec.positionUs / 1000;
-                        if (audioTrack.write(decBuf, 0, n) < 0) break;
+                        if (trackRef.write(decBuf, 0, n) < 0) break;
                         continue;
                     } else {
                         continue; // codec pipeline momentarily dry; don't inject silence
                     }
                 }
-                if (audioTrack.write(silence, 0, silence.length) < 0) break;
+                if (trackRef.write(silence, 0, silence.length) < 0) break;
             }
+            if (fadingOut) {
+                final int chunkSize = bufSize / 8; // ~10ms per write paces the loop naturally
+                for (int i = 20; i > 0; i--) {
+                    trackRef.setVolume(i / 20f);
+                    if (trackRef.write(silence, 0, chunkSize) < 0) break;
+                }
+            }
+            try { trackRef.stop(); } catch (IllegalStateException ignored) {}
+            trackRef.release();
+            audioTrack = null;
         }, "SilenceStreamer");
         thread.setDaemon(true);
         thread.start();
@@ -119,14 +131,21 @@ final class SilenceStreamer {
         current = null;
         PreviewManager.isPreviewActive = false;
         doStopPreview();
+        fadingOut = false;
         running = false;
         isActive = false;
         if (thread != null) { thread.interrupt(); thread = null; }
-        if (audioTrack != null) {
-            try { audioTrack.stop(); } catch (IllegalStateException ignored) {}
-            audioTrack.release();
-            audioTrack = null;
-        }
+        // audioTrack released by streaming thread on exit
+    }
+
+    private void fadeOutAndStop() {
+        current = null;
+        PreviewManager.isPreviewActive = false;
+        doStopPreview();
+        isActive = false;
+        fadingOut = true;
+        running = false;
+        thread = null; // detach; streaming thread cleans up itself
     }
 
     /**
@@ -140,10 +159,16 @@ final class SilenceStreamer {
         new SilenceStreamer().start();
     }
 
-    /** Stop the current instance, if any. Counterpart to ensure(). */
+    /** Stop the current instance immediately, if any. Counterpart to ensure(). */
     static void release() {
         SilenceStreamer inst = current;
         if (inst != null) inst.stop();
+    }
+
+    /** Stop the current instance with a short fade-out, if any. */
+    static void fadeOutAndRelease() {
+        SilenceStreamer inst = current;
+        if (inst != null) inst.fadeOutAndStop();
     }
 
     static void startPreview(Context context, Uri uri) {

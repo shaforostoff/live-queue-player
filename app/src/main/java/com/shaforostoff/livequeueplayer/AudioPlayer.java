@@ -63,7 +63,11 @@ class AudioPlayer extends Thread implements MediaPlayer.OnCompletionListener, Me
     mediaPlayer.setWakeMode(service.getApplicationContext(), PowerManager.PARTIAL_WAKE_LOCK);
 
     /* setup player variables */
-    mediaPlayer.setDataSource(service, location);
+    if (AiffConverter.isAiff(service, location)) {
+      mediaPlayer.setDataSource(new AiffMediaDataSource(service, location));
+    } else {
+      mediaPlayer.setDataSource(service, location);
+    }
     AudioOutputRouter.applyPreferredOutput(service, mediaPlayer);
     baseGain = new MetadataExtractor(service.getContentResolver()).readReplayGain(location);
 

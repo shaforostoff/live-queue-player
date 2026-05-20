@@ -26,7 +26,11 @@ final class PcmDecoder {
     volatile long positionUs;
 
     PcmDecoder(Context context, Uri uri) throws IOException {
-        extractor.setDataSource(context, uri, null);
+        if (AiffConverter.isAiff(context, uri)) {
+            extractor.setDataSource(new AiffMediaDataSource(context, uri));
+        } else {
+            extractor.setDataSource(context, uri, null);
+        }
         int audioIdx = -1;
         for (int i = 0; i < extractor.getTrackCount(); i++) {
             MediaFormat fmt = extractor.getTrackFormat(i);

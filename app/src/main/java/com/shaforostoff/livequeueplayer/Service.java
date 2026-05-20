@@ -431,7 +431,11 @@ public class Service extends android.app.Service implements MediaPlayerStateList
 
         MediaMetadataRetriever retriever = new MediaMetadataRetriever();
         try {
-            retriever.setDataSource(this, uri);
+            if (AiffConverter.isAiff(this, uri)) {
+                retriever.setDataSource(new AiffMediaDataSource(this, uri));
+            } else {
+                retriever.setDataSource(this, uri);
+            }
             String durationValue = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION);
             if (durationValue == null) {
                 return 0;

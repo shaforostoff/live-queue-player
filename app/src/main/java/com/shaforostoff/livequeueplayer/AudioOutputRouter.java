@@ -62,7 +62,6 @@ final class AudioOutputRouter {
         AudioDeviceInfo bluetooth = findBluetooth(outputs);
         AudioDeviceInfo wired     = findWired(outputs);
         AudioDeviceInfo usb       = findUsb(outputs);
-        AudioDeviceInfo speaker   = findSpeaker(outputs);
 
         AudioDeviceInfo primary = null;
         if (preferred == OUTPUT_BLUETOOTH && bluetooth != null) primary = bluetooth;
@@ -70,10 +69,13 @@ final class AudioOutputRouter {
         else if (preferred == OUTPUT_USB   && usb  != null)    primary = usb;
 
         AudioDeviceInfo secondary = null;
-        if (bluetooth == null && wired != null && usb != null) {
-            if (preferred == OUTPUT_WIRED)      secondary = usb;
-            else if (preferred == OUTPUT_USB)   secondary = wired;
-            else                                secondary = speaker;
+        if (primary != null) {
+            for (AudioDeviceInfo candidate : new AudioDeviceInfo[]{bluetooth, wired, usb}) {
+                if (candidate != null && candidate != primary) {
+                    secondary = candidate;
+                    break;
+                }
+            }
         }
 
         sResolvedPrimary   = primary;
@@ -95,9 +97,10 @@ final class AudioOutputRouter {
         if (am == null) return false;
 
         AudioDeviceInfo[] outputs = am.getDevices(AudioManager.GET_DEVICES_OUTPUTS);
-        return findBluetooth(outputs) == null
-                && findWired(outputs) != null
-                && findUsb(outputs) != null;
+        int available = (findBluetooth(outputs) != null ? 1 : 0)
+                      + (findWired(outputs)     != null ? 1 : 0)
+                      + (findUsb(outputs)       != null ? 1 : 0);
+        return available >= 2;
     }
 
     @SuppressLint("InlinedApi")
@@ -125,14 +128,6 @@ final class AudioOutputRouter {
                 AudioDeviceInfo.TYPE_USB_DEVICE,
                 AudioDeviceInfo.TYPE_USB_ACCESSORY,
                 AudioDeviceInfo.TYPE_USB_HEADSET
-        );
-    }
-
-    @SuppressLint("InlinedApi")
-    private static AudioDeviceInfo findSpeaker(AudioDeviceInfo[] outputs) {
-        return findFirst(outputs,
-                AudioDeviceInfo.TYPE_BUILTIN_SPEAKER,
-                Build.VERSION.SDK_INT >= Build.VERSION_CODES.P ? AudioDeviceInfo.TYPE_BUILTIN_SPEAKER_SAFE : -1
         );
     }
 

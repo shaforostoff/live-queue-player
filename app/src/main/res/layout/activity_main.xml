@@ -87,7 +87,23 @@
       a:layout_width="match_parent"
       a:layout_height="wrap_content"
       a:layout_marginTop="10dp"
-      a:text="Swipe left to add a track to queue of another smartphone (paired via bluetooth)"/>
+      a:text="Send mode: swipe left to add a track to a queue of receiving smartphone (paired via bluetooth)"/>
+
+    <TextView
+      a:id="@+id/fade_out_label"
+      a:layout_width="match_parent"
+      a:layout_height="wrap_content"
+      a:layout_marginTop="10dp"
+      a:text="Fade out duration: 5 s"/>
+
+    <SeekBar
+      a:id="@+id/fade_out_slider"
+      a:layout_width="match_parent"
+      a:layout_height="wrap_content"
+      a:max="9"
+      a:progressTint="@color/foreground"
+      a:thumbTint="@color/foreground"
+      a:progressBackgroundTint="@color/buttonBackground"/>
 
      <Button
        a:id="@+id/show_license"

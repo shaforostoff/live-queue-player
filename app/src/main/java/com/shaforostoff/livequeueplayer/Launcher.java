@@ -14,6 +14,7 @@ import android.view.View;
 import android.widget.Button;
 import android.widget.RadioGroup;
 import android.widget.ScrollView;
+import android.widget.SeekBar;
 import android.widget.TextView;
 import android.widget.Toast;
 import java.io.IOException;
@@ -68,6 +69,22 @@ public class Launcher extends Activity {
                     selected = AudioOutputRouter.OUTPUT_USB;
                 }
                 AudioOutputRouter.setPreferredOutput(this, selected);
+            });
+
+            var fadeOutLabel = (TextView) findViewById(R.id.fade_out_label);
+            var fadeOutSlider = (SeekBar) findViewById(R.id.fade_out_slider);
+            int savedFadeOut = AudioOutputRouter.getFadeOutSeconds(this);
+            fadeOutSlider.setProgress(savedFadeOut - 1); // 0-9 maps to 1-10 s
+            fadeOutLabel.setText("Fade out duration: " + savedFadeOut + " s");
+            fadeOutSlider.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+                @Override
+                public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                    int seconds = progress + 1;
+                    fadeOutLabel.setText("Fade out duration: " + seconds + " s");
+                    AudioOutputRouter.setFadeOutSeconds(Launcher.this, seconds);
+                }
+                @Override public void onStartTrackingTouch(SeekBar seekBar) {}
+                @Override public void onStopTrackingTouch(SeekBar seekBar) {}
             });
 
          /* open file-browser + queue screen */

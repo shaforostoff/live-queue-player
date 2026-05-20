@@ -134,7 +134,7 @@ public class Service extends android.app.Service implements MediaPlayerStateList
                 case Launcher.STOP -> {
                     sFadeOutInProgress = true;
                     sendPlaybackStateBroadcast();
-                    audioPlayer.fadeOutAndStop(10_000L);
+                    audioPlayer.fadeOutAndStop(AudioOutputRouter.getFadeOutSeconds(this) * 1_000L);
                 }
                 case Launcher.APPEND_QUEUE -> appendQueueFromIntent(intent);
                 case Launcher.CLEAR_QUEUE -> clearPendingQueue();

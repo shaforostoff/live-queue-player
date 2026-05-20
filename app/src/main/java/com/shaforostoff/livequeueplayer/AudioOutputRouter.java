@@ -16,6 +16,8 @@ final class AudioOutputRouter {
 
     private static final String PREFS = "live_queue_player";
     private static final String KEY_OUTPUT = "preferred_output";
+    private static final String KEY_FADE_OUT_SECONDS = "fade_out_seconds";
+    static final int DEFAULT_FADE_OUT_SECONDS = 5;
 
     static volatile AudioDeviceInfo sResolvedPrimary;
     static volatile AudioDeviceInfo sResolvedSecondary;
@@ -32,6 +34,16 @@ final class AudioOutputRouter {
         SharedPreferences prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
         var edit = prefs.edit().putInt(KEY_OUTPUT, value);
         edit.apply();
+    }
+
+    static int getFadeOutSeconds(Context context) {
+        SharedPreferences prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        return prefs.getInt(KEY_FADE_OUT_SECONDS, DEFAULT_FADE_OUT_SECONDS);
+    }
+
+    static void setFadeOutSeconds(Context context, int seconds) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+               .edit().putInt(KEY_FADE_OUT_SECONDS, seconds).apply();
     }
 
     /** Snapshot getDevices() once and derive both primary and secondary from the same list. */

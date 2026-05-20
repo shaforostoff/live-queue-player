@@ -53,7 +53,12 @@ public class Launcher extends Activity {
                 && !Intent.ACTION_SEND_MULTIPLE.equals(getIntent().getAction())) {
 
             var outputGroup = (RadioGroup) findViewById(R.id.output_group);
-            switch (AudioOutputRouter.getPreferredOutput(this)) {
+            var bluetoothButton = findViewById(R.id.output_bluetooth);
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                bluetoothButton.setVisibility(View.GONE);
+            }
+            int preferred = AudioOutputRouter.getPreferredOutput(this);
+            switch (preferred) {
                 case AudioOutputRouter.OUTPUT_BLUETOOTH -> outputGroup.check(R.id.output_bluetooth);
                 case AudioOutputRouter.OUTPUT_WIRED -> outputGroup.check(R.id.output_wired);
                 case AudioOutputRouter.OUTPUT_USB -> outputGroup.check(R.id.output_usb);

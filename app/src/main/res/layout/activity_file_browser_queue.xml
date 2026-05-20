@@ -119,7 +119,7 @@
       a:layout_height="wrap_content"
       a:gravity="center"
       a:padding="16dp"
-      a:text="Drag audio files here, or tap them to add"
+      a:text="@string/queue_hint_normal"
       a:textSize="14sp"
       a:visibility="visible" />
 

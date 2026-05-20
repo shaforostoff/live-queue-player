@@ -84,6 +84,9 @@ class MetadataExtractor {
             case "m4a": case "mp4": case "aac": case "alac":
                 fillSortTagsFromMp4(uri, e);
                 break;
+            case "aif": case "aiff":
+                fillFromAiff(uri, e);
+                break;
             default:
                 fillFromRetriever(uri, e);
                 if (e.date == null || e.genre == null || e.bpm < 0) fillFromId3(uri, e);
@@ -192,90 +195,125 @@ class MetadataExtractor {
     private void fillFromId3(Uri uri, TagEntry e) {
         try (InputStream stream = contentResolver.openInputStream(uri)) {
             if (stream == null) return;
+            fillFromId3Stream(stream, e);
+        } catch (Exception ignored) {
+        }
+    }
 
-            byte[] header = new byte[10];
-            if (!readFully(stream, header, 10)) return;
-            if (header[0] != 'I' || header[1] != 'D' || header[2] != '3') return;
+    private void fillFromId3Stream(InputStream stream, TagEntry e) throws Exception {
+        byte[] header = new byte[10];
+        if (!readFully(stream, header, 10)) return;
+        if (header[0] != 'I' || header[1] != 'D' || header[2] != '3') return;
 
-            int majorVersion = header[3] & 0xFF;
-            if (majorVersion < 2 || majorVersion > 4) return;
+        int majorVersion = header[3] & 0xFF;
+        if (majorVersion < 2 || majorVersion > 4) return;
 
-            int tagSize = decodeSyncSafeInt(header, 6);
-            if (tagSize <= 0 || tagSize > (2 * 1024 * 1024)) return;
+        int tagSize = decodeSyncSafeInt(header, 6);
+        if (tagSize <= 0 || tagSize > (2 * 1024 * 1024)) return;
 
-            byte[] tagData = new byte[tagSize];
-            if (!readFully(stream, tagData, tagSize)) return;
+        byte[] tagData = new byte[tagSize];
+        if (!readFully(stream, tagData, tagSize)) return;
 
-            int startOffset = 0;
-            boolean hasExtendedHeader = (header[5] & 0x40) != 0;
-            if (hasExtendedHeader && tagData.length >= 4) {
-                startOffset = majorVersion == 4
-                        ? decodeSyncSafeInt(tagData, 0)
-                        : decodeInt(tagData, 0);
-                if (startOffset < 0 || startOffset >= tagData.length) return;
+        int startOffset = 0;
+        boolean hasExtendedHeader = (header[5] & 0x40) != 0;
+        if (hasExtendedHeader && tagData.length >= 4) {
+            startOffset = majorVersion == 4
+                    ? decodeSyncSafeInt(tagData, 0)
+                    : decodeInt(tagData, 0);
+            if (startOffset < 0 || startOffset >= tagData.length) return;
+        }
+
+        boolean needDate = e.date == null;
+        boolean needGenre = e.genre == null;
+        boolean needArtist = e.artist == null;
+        boolean needBpm = e.bpm < 0;
+        String tdrc = null, tyer = null;
+
+        for (int offset = startOffset; offset + 10 <= tagData.length; ) {
+            String frameId = new String(tagData, offset, 4, "ISO-8859-1");
+            if (isZeroFrameId(frameId)) break;
+
+            int frameSize = majorVersion == 4
+                    ? decodeSyncSafeInt(tagData, offset + 4)
+                    : decodeInt(tagData, offset + 4);
+            if (frameSize <= 0 || offset + 10 + frameSize > tagData.length) break;
+
+            if (needDate && "TDRC".equals(frameId)) {
+                String v = decodeId3Text(tagData, offset + 10, frameSize);
+                if (v.length() > 0) tdrc = normalizeDateValue(v);
+            } else if (needDate && "TYER".equals(frameId)) {
+                String v = decodeId3Text(tagData, offset + 10, frameSize);
+                if (v.length() > 0) tyer = normalizeDateValue(v);
+            } else if (needGenre && "TCON".equals(frameId)) {
+                String v = decodeId3Text(tagData, offset + 10, frameSize);
+                if (v.length() > 0) { e.genre = v; needGenre = false; }
+            } else if (needArtist && "TPE1".equals(frameId)) {
+                String v = decodeId3Text(tagData, offset + 10, frameSize);
+                if (v.length() > 0) { e.artist = v; needArtist = false; }
+            } else if (needBpm && "TBPM".equals(frameId)) {
+                String v = decodeId3Text(tagData, offset + 10, frameSize);
+                if (v.length() > 0) { e.bpm = parseBpmValue(v); needBpm = false; }
             }
 
-            boolean needDate = e.date == null;
-            boolean needGenre = e.genre == null;
-            boolean needArtist = e.artist == null;
-            boolean needBpm = e.bpm < 0;
-            String tdrc = null, tyer = null;
+            if (!needDate && !needGenre && !needArtist && !needBpm) break;
+            offset += 10 + frameSize;
+        }
 
+        if (needDate) {
+            if (tdrc != null) e.date = tdrc;
+            else if (tyer != null) e.date = tyer;
+        }
+
+        // If date is absent or a bare year, scan the already-loaded tag bytes for a COMM frame
+        if (e.date == null || (e.date.length() > 0 && e.date.length() < 5)) {
             for (int offset = startOffset; offset + 10 <= tagData.length; ) {
                 String frameId = new String(tagData, offset, 4, "ISO-8859-1");
                 if (isZeroFrameId(frameId)) break;
-
                 int frameSize = majorVersion == 4
                         ? decodeSyncSafeInt(tagData, offset + 4)
                         : decodeInt(tagData, offset + 4);
                 if (frameSize <= 0 || offset + 10 + frameSize > tagData.length) break;
-
-                if (needDate && "TDRC".equals(frameId)) {
-                    String v = decodeId3Text(tagData, offset + 10, frameSize);
-                    if (v.length() > 0) tdrc = normalizeDateValue(v);
-                } else if (needDate && "TYER".equals(frameId)) {
-                    String v = decodeId3Text(tagData, offset + 10, frameSize);
-                    if (v.length() > 0) tyer = normalizeDateValue(v);
-                } else if (needGenre && "TCON".equals(frameId)) {
-                    String v = decodeId3Text(tagData, offset + 10, frameSize);
-                    if (v.length() > 0) { e.genre = v; needGenre = false; }
-                } else if (needArtist && "TPE1".equals(frameId)) {
-                    String v = decodeId3Text(tagData, offset + 10, frameSize);
-                    if (v.length() > 0) { e.artist = v; needArtist = false; }
-                } else if (needBpm && "TBPM".equals(frameId)) {
-                    String v = decodeId3Text(tagData, offset + 10, frameSize);
-                    if (v.length() > 0) { e.bpm = parseBpmValue(v); needBpm = false; }
+                if ("COMM".equals(frameId)) {
+                    String comm = decodeUsltText(tagData, offset + 10, frameSize);
+                    if (!comm.isEmpty()) {
+                        Matcher m = DATE_IN_COMMENT_PATTERN.matcher(comm);
+                        if (m.find())
+                            e.date = m.group(1) + "-" + m.group(2) + "-" + m.group(3);
+                    }
+                    break;
                 }
-
-                if (!needDate && !needGenre && !needArtist && !needBpm) break;
                 offset += 10 + frameSize;
             }
+        }
+    }
 
-            if (needDate) {
-                if (tdrc != null) e.date = tdrc;
-                else if (tyer != null) e.date = tyer;
-            }
+    private void fillFromAiff(Uri uri, TagEntry e) {
+        try (InputStream stream = contentResolver.openInputStream(uri)) {
+            if (stream == null) return;
 
-            // If date is absent or a bare year, scan the already-loaded tag bytes for a COMM frame
-            if (e.date == null || (e.date.length() > 0 && e.date.length() < 5)) {
-                for (int offset = startOffset; offset + 10 <= tagData.length; ) {
-                    String frameId = new String(tagData, offset, 4, "ISO-8859-1");
-                    if (isZeroFrameId(frameId)) break;
-                    int frameSize = majorVersion == 4
-                            ? decodeSyncSafeInt(tagData, offset + 4)
-                            : decodeInt(tagData, offset + 4);
-                    if (frameSize <= 0 || offset + 10 + frameSize > tagData.length) break;
-                    if ("COMM".equals(frameId)) {
-                        String comm = decodeUsltText(tagData, offset + 10, frameSize);
-                        if (!comm.isEmpty()) {
-                            Matcher m = DATE_IN_COMMENT_PATTERN.matcher(comm);
-                            if (m.find())
-                                e.date = m.group(1) + "-" + m.group(2) + "-" + m.group(3);
-                        }
-                        break;
-                    }
-                    offset += 10 + frameSize;
+            byte[] formHeader = new byte[12];
+            if (!readFully(stream, formHeader, 12)) return;
+            if (formHeader[0] != 'F' || formHeader[1] != 'O' || formHeader[2] != 'R' || formHeader[3] != 'M') return;
+            boolean isAiff = (formHeader[8] == 'A' && formHeader[9] == 'I' && formHeader[10] == 'F'
+                    && (formHeader[11] == 'F' || formHeader[11] == 'C'));
+            if (!isAiff) return;
+
+            byte[] chunkHeader = new byte[8];
+            while (readFully(stream, chunkHeader, 8)) {
+                String chunkId = new String(chunkHeader, 0, 4, "ISO-8859-1");
+                int chunkSize = ((chunkHeader[4] & 0xFF) << 24) | ((chunkHeader[5] & 0xFF) << 16)
+                        | ((chunkHeader[6] & 0xFF) << 8) | (chunkHeader[7] & 0xFF);
+                if (chunkSize < 0) return;
+
+                if ("ID3 ".equals(chunkId) && chunkSize >= 10 && chunkSize <= (4 * 1024 * 1024)) {
+                    byte[] id3Bytes = new byte[chunkSize];
+                    if (!readFully(stream, id3Bytes, chunkSize)) return;
+                    fillFromId3Stream(new java.io.ByteArrayInputStream(id3Bytes), e);
+                    return;
                 }
+
+                long skip = chunkSize + (chunkSize & 1);
+                if (!skipFully(stream, skip)) return;
             }
         } catch (Exception ignored) {
         }

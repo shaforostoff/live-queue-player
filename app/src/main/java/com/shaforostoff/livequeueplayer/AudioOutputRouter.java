@@ -21,6 +21,7 @@ final class AudioOutputRouter {
 
     static volatile AudioDeviceInfo sResolvedPrimary;
     static volatile AudioDeviceInfo sResolvedSecondary;
+    static volatile boolean sResolvedSecondaryIsDefault;
 
     private AudioOutputRouter() {
     }
@@ -63,6 +64,12 @@ final class AudioOutputRouter {
         AudioDeviceInfo wired     = findWired(outputs);
         AudioDeviceInfo usb       = findUsb(outputs);
 
+        // On Android 13 and older, setPreferredDevice to BT is ignored by the OS;
+        // default routing already sends audio to BT when connected.
+        final boolean defaultIsBluetooth = preferred == OUTPUT_DEFAULT
+                && Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE
+                && isBluetoothConnected(am, outputs);
+
         AudioDeviceInfo primary = null;
         if (preferred == OUTPUT_BLUETOOTH && bluetooth != null) primary = bluetooth;
         else if (preferred == OUTPUT_WIRED && wired != null)   primary = wired;
@@ -76,10 +83,25 @@ final class AudioOutputRouter {
                     break;
                 }
             }
+        } else if (defaultIsBluetooth) {
+            for (AudioDeviceInfo candidate : new AudioDeviceInfo[]{wired, usb}) {
+                if (candidate != null) {
+                    secondary = candidate;
+                    break;
+                }
+            }
         }
 
-        sResolvedPrimary   = primary;
-        sResolvedSecondary = secondary;
+        // Android 13 and older: explicit routing to BT device is ignored;
+        // fall back to OS default routing, which naturally sends audio to BT when connected.
+        boolean secondaryIsDefault = secondary == bluetooth
+                && bluetooth != null
+                && Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE;
+        if (secondaryIsDefault) secondary = null;
+
+        sResolvedPrimary            = primary;
+        sResolvedSecondary          = secondary;
+        sResolvedSecondaryIsDefault = secondaryIsDefault;
     }
 
     static void applyPreferredOutput(Context context, MediaPlayer player) {
@@ -97,9 +119,9 @@ final class AudioOutputRouter {
         if (am == null) return false;
 
         AudioDeviceInfo[] outputs = am.getDevices(AudioManager.GET_DEVICES_OUTPUTS);
-        int available = (findBluetooth(outputs) != null ? 1 : 0)
-                      + (findWired(outputs)     != null ? 1 : 0)
-                      + (findUsb(outputs)       != null ? 1 : 0);
+        int available = (isBluetoothConnected(am, outputs) ? 1 : 0)
+                      + (findWired(outputs) != null        ? 1 : 0)
+                      + (findUsb(outputs)   != null        ? 1 : 0);
         return available >= 2;
     }
 
@@ -129,6 +151,10 @@ final class AudioOutputRouter {
                 AudioDeviceInfo.TYPE_USB_ACCESSORY,
                 AudioDeviceInfo.TYPE_USB_HEADSET
         );
+    }
+
+    private static boolean isBluetoothConnected(AudioManager am, AudioDeviceInfo[] outputs) {
+        return findBluetooth(outputs) != null || am.isBluetoothA2dpOn();
     }
 
     private static AudioDeviceInfo findFirst(AudioDeviceInfo[] outputs, int... types) {

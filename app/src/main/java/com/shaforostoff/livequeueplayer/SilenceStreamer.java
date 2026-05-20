@@ -30,7 +30,8 @@ final class SilenceStreamer {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) return;
 
         AudioDeviceInfo secondary = AudioOutputRouter.sResolvedSecondary;
-        if (secondary == null) return;
+        boolean secondaryIsDefault = AudioOutputRouter.sResolvedSecondaryIsDefault;
+        if (secondary == null && !secondaryIsDefault) return;
 
         int sampleRate = 44100;
         int minBuffer = AudioTrack.getMinBufferSize(sampleRate,
@@ -61,8 +62,11 @@ final class SilenceStreamer {
         }
 
         try {
-            if (track.getState() != AudioTrack.STATE_INITIALIZED
-                    || !track.setPreferredDevice(secondary)) {
+            if (track.getState() != AudioTrack.STATE_INITIALIZED) {
+                track.release();
+                return;
+            }
+            if (secondary != null && !track.setPreferredDevice(secondary)) {
                 track.release();
                 return;
             }

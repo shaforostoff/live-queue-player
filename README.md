@@ -27,6 +27,17 @@ playback is stopped with 10 second fade out (useful for cortinas).
 If you pressed Stop accidentally, just press Play while fade out is still running.
 Swipe right to remove a track from the queue.
 
+### Prelistening when multiple outputs available
+
+When several outputs are available (3.5mm, bluetooth, usb audio), it is possible to pre-listen audio tracks directly in filebrowser.
+
+Audio preview is routed to the secondary output, which is different to the preferred one.
+For example, you can select 3.5mm as preferred and use it to play music for the audience,
+while pre-listening tracks in your bluetooth headphones or earbuds.
+
+Explicit selection of Bluetooth as preferred output is only possible on Android 14+. On older Androids, select 'Default'.
+
+
 ### Audio preview and queueing from a second smartphone
 
 I have tried implementing audio preview directly in the app

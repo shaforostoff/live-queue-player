@@ -67,7 +67,6 @@ public class FileBrowserQueueActivity extends Activity {
     private static final String MUSIC_DIRECTORY_NAME = "Music";
     private static final String BROWSER_PREFS = "browser_prefs";
     private static final String PREF_LAST_TREE_URI = "last_tree_uri";
-    private static final long STOP_FADE_DURATION_MS = 10_000L;
     private static final long PLAYBACK_SYNC_INTERVAL_MS = 1_000L;
     private static final int PROGRESS_LEVEL_MAX = 10_000;
     private static final int SORT_FILENAME = 0;
@@ -141,6 +140,11 @@ public class FileBrowserQueueActivity extends Activity {
                     Service.EXTRA_PLAYBACK_DURATION_MS,
                     Service.sPlaybackDurationMs);
             playbackStopped = !isPlaying;
+            boolean serviceFade = intent.getBooleanExtra(Service.EXTRA_FADE_OUT_IN_PROGRESS, false);
+            if (serviceFade && !stopFadeInProgress) {
+                stopFadeInProgress = true;
+                applyStopButtonState();
+            }
 
             if (serviceIndex < 0) {
                 currentPlayingQueueIndex = -1;
@@ -162,7 +166,6 @@ public class FileBrowserQueueActivity extends Activity {
     };
     private boolean playbackReceiverRegistered;
     private final Handler uiHandler = new Handler();
-    private final Runnable stopFadeResetRunnable = this::onFadeOutFinished;
     private final Runnable playbackStateSyncRunnable = new Runnable() {
         @Override
         public void run() {
@@ -1987,7 +1990,6 @@ public class FileBrowserQueueActivity extends Activity {
         sendStopNowCommand();
         playbackStopped = true;
         stopFadeInProgress = false;
-        uiHandler.removeCallbacks(stopFadeResetRunnable);
         currentPlayingQueueIndex = -1;
         servicePlaybackOffset = 0;
         QueueStore.savePlaybackOffset(this, 0);
@@ -2262,9 +2264,7 @@ public class FileBrowserQueueActivity extends Activity {
 
     private void showStopButtonFadingState() {
         stopFadeInProgress = true;
-        uiHandler.removeCallbacks(stopFadeResetRunnable);
         applyStopButtonState();
-        uiHandler.postDelayed(stopFadeResetRunnable, STOP_FADE_DURATION_MS);
     }
 
     private void onFadeOutFinished() {
@@ -2302,6 +2302,10 @@ public class FileBrowserQueueActivity extends Activity {
         Uri serviceUri = Service.sCurrentUri;
         currentTrackPositionMs = Service.sPlaybackPositionMs;
         currentTrackDurationMs = Service.sPlaybackDurationMs;
+        if (Service.sFadeOutInProgress && !stopFadeInProgress) {
+            stopFadeInProgress = true;
+            applyStopButtonState();
+        }
         if (serviceIndex < 0) {
             if (stopFadeInProgress) {
                 onFadeOutFinished();
@@ -2339,7 +2343,6 @@ public class FileBrowserQueueActivity extends Activity {
 
     private void resetStopButtonState() {
         stopFadeInProgress = false;
-        uiHandler.removeCallbacks(stopFadeResetRunnable);
         applyStopButtonState();
     }
 
@@ -2418,7 +2421,6 @@ public class FileBrowserQueueActivity extends Activity {
     protected void onDestroy() {
         unregisterPlaybackStateReceiver();
         btController.shutdown();
-        uiHandler.removeCallbacks(stopFadeResetRunnable);
         if (audioPreviewManager != null) audioPreviewManager.stopPreview();
         super.onDestroy();
     }

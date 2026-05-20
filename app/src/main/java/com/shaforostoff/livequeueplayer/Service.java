@@ -27,6 +27,7 @@ public class Service extends android.app.Service implements MediaPlayerStateList
     static final String EXTRA_PLAYBACK_POSITION_MS = "playback_position_ms";
     static final String EXTRA_PLAYBACK_DURATION_MS = "playback_duration_ms";
     static final String EXTRA_HAS_PENDING_TRACKS = "has_pending_tracks";
+    static final String EXTRA_FADE_OUT_IN_PROGRESS = "fade_out_in_progress";
     private static final long PLAYBACK_PROGRESS_BROADCAST_INTERVAL_MS = 1_000L;
 
     // Readable by the activity to re-sync state after missed broadcasts (e.g. screen off)
@@ -36,6 +37,7 @@ public class Service extends android.app.Service implements MediaPlayerStateList
     static volatile int sPlaybackPositionMs = 0;
     static volatile int sPlaybackDurationMs = 0;
     static volatile boolean sHasPendingTracks = false;
+    static volatile boolean sFadeOutInProgress = false;
 
     private HWListener hwListener;
     private Notifications notifications;
@@ -108,13 +110,19 @@ public class Service extends android.app.Service implements MediaPlayerStateList
             switch (action) {
                 /* start or pause audio playback */
                 case Launcher.PLAY_PAUSE -> {
-                    if (audioPlayer.isFadeOutInProgress()) audioPlayer.cancelFadeOutAndResume();
+                    if (audioPlayer.isFadeOutInProgress()) {
+                        sFadeOutInProgress = false;
+                        audioPlayer.cancelFadeOutAndResume();
+                    }
                     boolean shouldPlay = !isPLaying;
                     setState(shouldPlay);
                     notifyPlaybackState(shouldPlay, sCurrentIndex, sCurrentUri);
                 }
                 case Launcher.PLAY -> {
-                    if (audioPlayer.isFadeOutInProgress()) audioPlayer.cancelFadeOutAndResume();
+                    if (audioPlayer.isFadeOutInProgress()) {
+                        sFadeOutInProgress = false;
+                        audioPlayer.cancelFadeOutAndResume();
+                    }
                     setState(true);
                     notifyPlaybackState(true, sCurrentIndex, sCurrentUri);
                 }
@@ -123,7 +131,11 @@ public class Service extends android.app.Service implements MediaPlayerStateList
                     notifyPlaybackState(false, sCurrentIndex, sCurrentUri);
                 }
                 case Launcher.SKIP -> playNextEntry();
-                case Launcher.STOP -> audioPlayer.fadeOutAndStop(10_000L);
+                case Launcher.STOP -> {
+                    sFadeOutInProgress = true;
+                    sendPlaybackStateBroadcast();
+                    audioPlayer.fadeOutAndStop(10_000L);
+                }
                 case Launcher.APPEND_QUEUE -> appendQueueFromIntent(intent);
                 case Launcher.CLEAR_QUEUE -> clearPendingQueue();
                 /* cancel audio playback and kill service */
@@ -239,6 +251,7 @@ public class Service extends android.app.Service implements MediaPlayerStateList
 
     @Override
     public void onMediaPlayerDestroy() {
+        sFadeOutInProgress = false;
         notifyPlaybackState(false, -1, null);
         // calls onDestroy()
         stopSelf();
@@ -303,6 +316,7 @@ public class Service extends android.app.Service implements MediaPlayerStateList
             SilenceStreamer.stopPreview();
             silenceStreamer = null;
         }
+        sFadeOutInProgress = false;
         notifyPlaybackState(false, -1, null);
         onMediaPlayerReset();
         notifications.onMediaPlayerDestroy();
@@ -375,6 +389,7 @@ public class Service extends android.app.Service implements MediaPlayerStateList
         intent.putExtra(EXTRA_PLAYBACK_POSITION_MS, sPlaybackPositionMs);
         intent.putExtra(EXTRA_PLAYBACK_DURATION_MS, sPlaybackDurationMs);
         intent.putExtra(EXTRA_HAS_PENDING_TRACKS, sHasPendingTracks);
+        intent.putExtra(EXTRA_FADE_OUT_IN_PROGRESS, sFadeOutInProgress);
         sendBroadcast(intent);
     }
 

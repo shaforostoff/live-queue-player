@@ -147,6 +147,7 @@ public class FileBrowserQueueActivity extends Activity {
             }
 
             if (serviceIndex < 0) {
+                SilenceStreamer.reinitIfOutputChanged(FileBrowserQueueActivity.this);
                 currentPlayingQueueIndex = -1;
                 if (stopFadeInProgress) {
                     onFadeOutFinished();
@@ -2307,6 +2308,7 @@ public class FileBrowserQueueActivity extends Activity {
             applyStopButtonState();
         }
         if (serviceIndex < 0) {
+            SilenceStreamer.reinitIfOutputChanged(this);
             if (stopFadeInProgress) {
                 onFadeOutFinished();
                 return;

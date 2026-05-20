@@ -15,6 +15,9 @@ final class SilenceStreamer {
     /** Checked by FileBrowserQueueActivity to gate drag-preview. */
     static volatile boolean isActive = false;
 
+    /** Preferred output value in effect when the current instance was started. */
+    static volatile int sPreferredOutputAtStart = AudioOutputRouter.OUTPUT_DEFAULT;
+
     static volatile long previewPositionMs;
     static volatile long previewDurationMs;
 
@@ -156,7 +159,15 @@ final class SilenceStreamer {
     static void ensure(Context context) {
         if (isActive) return;
         AudioOutputRouter.resolve(context);
+        sPreferredOutputAtStart = AudioOutputRouter.getPreferredOutput(context);
         new SilenceStreamer().start();
+    }
+
+    static void reinitIfOutputChanged(Context context) {
+        if (!isActive) return;
+        if (AudioOutputRouter.getPreferredOutput(context) == sPreferredOutputAtStart) return;
+        release();
+        ensure(context);
     }
 
     /** Stop the current instance immediately, if any. Counterpart to ensure(). */

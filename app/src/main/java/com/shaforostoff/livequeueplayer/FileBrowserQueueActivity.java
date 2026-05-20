@@ -77,7 +77,7 @@ public class FileBrowserQueueActivity extends Activity {
 
     private static final String[] AUDIO_EXTENSIONS = {
             ".mp3", ".mp4", ".m4a", ".aac", ".ogg", ".flac",
-            ".wav", ".wma", ".opus", ".m3u", ".m3u8", ".3gp"
+            ".wav", ".wma", ".opus", ".m3u", ".m3u8", ".3gp", ".aiff", ".aif"
     };
 
     // -- file browser state -------------------------------------------------
@@ -1909,7 +1909,20 @@ public class FileBrowserQueueActivity extends Activity {
     }
 
     private void updateQueueHint() {
-        queueEmptyHint.setVisibility(queueEntries.isEmpty() ? View.VISIBLE : View.GONE);
+        if (queueEntries.isEmpty()) {
+            int hintRes;
+            if (isRemoteClientMode()) {
+                hintRes = R.string.queue_hint_remote;
+            } else if (PreviewManager.isEnabled(this)) {
+                hintRes = R.string.queue_hint_preview;
+            } else {
+                hintRes = R.string.queue_hint_normal;
+            }
+            queueEmptyHint.setText(hintRes);
+            queueEmptyHint.setVisibility(View.VISIBLE);
+        } else {
+            queueEmptyHint.setVisibility(View.GONE);
+        }
     }
 
     private void playQueue() {

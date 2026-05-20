@@ -281,7 +281,7 @@ public class FileBrowserQueueActivity extends Activity {
             } else if (playbackStopped) {
                 playQueueFrom(position);
             } else {
-                Toast.makeText(this, "Remove: swipe right. Play: stop playback first", Toast.LENGTH_SHORT).show();
+                Toast.makeText(this, "Stop playback first", Toast.LENGTH_SHORT).show();
                 //Toast.makeText(this, "Swipe right: remove. Stop playback to play this track", Toast.LENGTH_SHORT).show();
             }
         });

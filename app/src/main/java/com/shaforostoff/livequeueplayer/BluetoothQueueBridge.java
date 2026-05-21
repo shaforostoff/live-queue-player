@@ -6,12 +6,15 @@ import android.bluetooth.BluetoothDevice;
 import android.bluetooth.BluetoothServerSocket;
 import android.bluetooth.BluetoothSocket;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
 import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
 
 /**
@@ -19,8 +22,18 @@ import java.util.UUID;
  */
 final class BluetoothQueueBridge {
 
+    static final class TrackRequest {
+        final String file;
+        final String parent;
+
+        TrackRequest(String file, String parent) {
+            this.file = file;
+            this.parent = parent != null ? parent : "";
+        }
+    }
+
     interface Listener {
-        void onQueueRequestReceived(String fileName, String parentFolderName);
+        void onQueueRequestsReceived(List<TrackRequest> tracks);
 
         void onConnectionStateChanged(boolean connected, String message);
     }
@@ -110,8 +123,8 @@ final class BluetoothQueueBridge {
         return true;
     }
 
-    boolean sendQueueRequest(String fileName, String parentFolderName) {
-        if (fileName == null || fileName.trim().length() == 0) return false;
+    boolean sendQueueRequests(List<TrackRequest> requests) {
+        if (requests == null || requests.isEmpty()) return false;
         BluetoothSocket socket;
         BufferedWriter writer;
         synchronized (socketLock) {
@@ -123,9 +136,13 @@ final class BluetoothQueueBridge {
         }
 
         try {
-            JSONObject payload = new JSONObject();
-            payload.put("file", fileName);
-            payload.put("parent", parentFolderName != null ? parentFolderName : "");
+            JSONArray payload = new JSONArray();
+            for (TrackRequest req : requests) {
+                JSONObject obj = new JSONObject();
+                obj.put("file", req.file);
+                obj.put("parent", req.parent);
+                payload.put(obj);
+            }
             writer.write(payload.toString());
             writer.write('\n');
             writer.flush();
@@ -191,12 +208,15 @@ final class BluetoothQueueBridge {
             while (running || (socket.isConnected())) {
                 String line = reader.readLine();
                 if (line == null) break;
-                JSONObject json = new JSONObject(line);
-                String fileName = json.optString("file", "");
-                String parent = json.optString("parent", "");
-                if (fileName.length() > 0) {
-                    listener.onQueueRequestReceived(fileName, parent);
+                JSONArray arr = new JSONArray(line);
+                List<TrackRequest> tracks = new ArrayList<>();
+                for (int i = 0; i < arr.length(); i++) {
+                    JSONObject obj = arr.getJSONObject(i);
+                    String file = obj.optString("file", "");
+                    String parent = obj.optString("parent", "");
+                    if (file.length() > 0) tracks.add(new TrackRequest(file, parent));
                 }
+                if (!tracks.isEmpty()) listener.onQueueRequestsReceived(tracks);
             }
         } catch (Exception ignored) {
         } finally {

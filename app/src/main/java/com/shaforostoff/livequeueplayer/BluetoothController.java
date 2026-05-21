@@ -14,6 +14,7 @@ import android.os.Build;
 import android.widget.Toast;
 
 import java.util.ArrayList;
+import java.util.List;
 import java.util.Set;
 
 class BluetoothController {
@@ -24,7 +25,7 @@ class BluetoothController {
 
     interface Callback {
         void onModeSelected();
-        void onQueueRequestReceived(String fileName, String parentFolderName);
+        void onQueueRequestsReceived(List<BluetoothQueueBridge.TrackRequest> tracks);
     }
 
     private final Activity activity;
@@ -35,6 +36,7 @@ class BluetoothController {
     private boolean serverMode;
     private BroadcastReceiver bondingReceiver;
     private AlertDialog devicePickerDialog;
+    private int pendingMode = -1; // -1 = show dialog, 1 = server, 0 = client
 
     BluetoothController(Activity activity, Callback callback) {
         this.activity = activity;
@@ -48,14 +50,24 @@ class BluetoothController {
         return serverMode;
     }
 
+    void startRemoteSetupAsServer() {
+        pendingMode = 1;
+        startRemoteSetup();
+    }
+
+    void startRemoteSetupAsClient() {
+        pendingMode = 0;
+        startRemoteSetup();
+    }
+
     void startRemoteSetup() {
         if (bridge == null) {
             bridge = new BluetoothQueueBridge(new BluetoothQueueBridge.Listener() {
                 @Override
-                public void onQueueRequestReceived(String fileName, String parentFolderName) {
+                public void onQueueRequestsReceived(List<BluetoothQueueBridge.TrackRequest> tracks) {
                     activity.runOnUiThread(() -> {
                         if (!activity.isDestroyed())
-                            callback.onQueueRequestReceived(fileName, parentFolderName);
+                            callback.onQueueRequestsReceived(tracks);
                     });
                 }
 
@@ -75,16 +87,22 @@ class BluetoothController {
         showModeDialog();
     }
 
-    boolean sendQueueRequest(String name, String parentFolderName) {
+    boolean sendQueueRequests(List<BluetoothQueueBridge.TrackRequest> requests) {
         if (bridge == null || !bridge.isConnected()) {
             startRemoteSetup();
             return false;
         }
-        boolean sent = bridge.sendQueueRequest(name, parentFolderName);
+        boolean sent = bridge.sendQueueRequests(requests);
         if (!sent) {
             Toast.makeText(activity, "Not connected to Bluetooth server", Toast.LENGTH_SHORT).show();
         }
         return sent;
+    }
+
+    boolean sendQueueRequest(String name, String parentFolderName) {
+        List<BluetoothQueueBridge.TrackRequest> list = new ArrayList<>(1);
+        list.add(new BluetoothQueueBridge.TrackRequest(name, parentFolderName));
+        return sendQueueRequests(list);
     }
 
     void shutdown() {
@@ -129,23 +147,40 @@ class BluetoothController {
             activity.startActivity(new Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE));
             return;
         }
+        if (pendingMode == 1) {
+            applyServerMode();
+            return;
+        }
+        if (pendingMode == 0) {
+            applyClientMode();
+            return;
+        }
         String[] options = {"Receive requests", "Send requests"};
         new AlertDialog.Builder(activity)
                 .setTitle("Remote queue Bluetooth mode")
                 .setItems(options, (dialog, which) -> {
                     if (which == 0) {
-                        serverMode = true;
-                        bridge.disconnect();
-                        bridge.startServer(bluetoothAdapter);
+                        applyServerMode();
                     } else {
-                        serverMode = false;
-                        bridge.stopServer();
-                        pickServerDevice();
+                        applyClientMode();
                     }
-                    callback.onModeSelected();
                 })
                 .setNegativeButton(android.R.string.cancel, null)
                 .show();
+    }
+
+    private void applyServerMode() {
+        serverMode = true;
+        bridge.disconnect();
+        bridge.startServer(bluetoothAdapter);
+        callback.onModeSelected();
+    }
+
+    private void applyClientMode() {
+        serverMode = false;
+        bridge.stopServer();
+        pickServerDevice();
+        callback.onModeSelected();
     }
 
     private void pickServerDevice() {

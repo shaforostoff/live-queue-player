@@ -97,11 +97,24 @@ public class Launcher extends Activity {
                 startActivity(new Intent(this, FileBrowserQueueActivity.class));
             });
 
-             findViewById(R.id.remote_queue_fill_opener).setOnClickListener(v -> {
-                 Intent remoteQueueFillIntent = new Intent(this, FileBrowserQueueActivity.class);
-                 remoteQueueFillIntent.putExtra(FileBrowserQueueActivity.EXTRA_REMOTE_QUEUE_FILL_MODE, true);
-                 startActivity(remoteQueueFillIntent);
-             });
+             findViewById(R.id.browse_mode_opener).setOnClickListener(v -> {
+                Intent browseIntent = new Intent(this, FileBrowserQueueActivity.class);
+                browseIntent.putExtra(FileBrowserQueueActivity.EXTRA_BROWSE_MODE, true);
+                startActivity(browseIntent);
+            });
+
+            findViewById(R.id.remote_receive_opener).setOnClickListener(v -> {
+                Intent intent = new Intent(this, FileBrowserQueueActivity.class);
+                intent.putExtra(FileBrowserQueueActivity.EXTRA_REMOTE_QUEUE_FILL_MODE, true);
+                intent.putExtra(FileBrowserQueueActivity.EXTRA_REMOTE_QUEUE_SERVER_MODE, 1);
+                startActivity(intent);
+            });
+            findViewById(R.id.remote_send_opener).setOnClickListener(v -> {
+                Intent intent = new Intent(this, FileBrowserQueueActivity.class);
+                intent.putExtra(FileBrowserQueueActivity.EXTRA_REMOTE_QUEUE_FILL_MODE, true);
+                intent.putExtra(FileBrowserQueueActivity.EXTRA_REMOTE_QUEUE_SERVER_MODE, 0);
+                startActivity(intent);
+            });
 
              /* stop playback after the current track finishes */
              stopAfterCurrentButton = findViewById(R.id.stop_after_current);

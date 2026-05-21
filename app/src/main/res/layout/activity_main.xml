@@ -55,12 +55,60 @@
         a:text="USB audio"/>
     </RadioGroup>
 
-     <Button
-       a:id="@+id/browser_queue_opener"
-       a:layout_width="match_parent"
-       a:layout_height="wrap_content"
-       a:layout_margin="10dp"
-       a:text="Browse files &amp; build queue"/>
+    <TableLayout
+      a:layout_width="match_parent"
+      a:layout_height="wrap_content"
+      a:stretchColumns="0,1">
+
+      <TableRow>
+        <TextView
+          a:layout_width="0dp"
+          a:layout_height="wrap_content"
+          a:layout_weight="1"
+          a:text=""/>
+        <TextView
+          a:layout_width="0dp"
+          a:layout_height="wrap_content"
+          a:layout_weight="1"
+          a:gravity="center"
+          a:text="Track names via Bluetooth"/>
+      </TableRow>
+
+      <TableRow>
+        <Button
+          a:id="@+id/browse_mode_opener"
+          a:layout_width="0dp"
+          a:layout_height="wrap_content"
+          a:layout_weight="1"
+          a:layout_margin="10dp"
+          a:text="Browse"/>
+        <Button
+          a:id="@+id/remote_send_opener"
+          a:layout_width="0dp"
+          a:layout_height="wrap_content"
+          a:layout_weight="1"
+          a:layout_margin="10dp"
+          a:text="+ Send"/>
+      </TableRow>
+
+      <TableRow>
+        <Button
+          a:id="@+id/browser_queue_opener"
+          a:layout_width="0dp"
+          a:layout_height="wrap_content"
+          a:layout_weight="1"
+          a:layout_margin="10dp"
+          a:text="DJ"/>
+        <Button
+          a:id="@+id/remote_receive_opener"
+          a:layout_width="0dp"
+          a:layout_height="wrap_content"
+          a:layout_weight="1"
+          a:layout_margin="10dp"
+          a:text="+ Receive"/>
+      </TableRow>
+
+    </TableLayout>
 
      <Button
        a:id="@+id/stop_after_current"
@@ -75,19 +123,6 @@
        a:layout_height="wrap_content"
        a:layout_margin="10dp"
        a:text="Clear queue"/>
-
-     <Button
-       a:id="@+id/remote_queue_fill_opener"
-       a:layout_width="match_parent"
-       a:layout_height="wrap_content"
-       a:layout_margin="10dp"
-       a:text="Remote queue fill"/>
-
-    <TextView
-      a:layout_width="match_parent"
-      a:layout_height="wrap_content"
-      a:layout_marginTop="10dp"
-      a:text="Send mode: swipe left to add a track to a queue of receiving smartphone (paired via bluetooth)"/>
 
     <TextView
       a:id="@+id/fade_out_label"
@@ -111,7 +146,7 @@
        a:layout_height="wrap_content"
        a:layout_margin="10dp"
        style="?android:attr/borderlessButtonStyle"
-a:text="License (GPLv3)"/>
+       a:text="License (GPLv3)"/>
 
   </LinearLayout>
 </ScrollView>

@@ -60,6 +60,15 @@ import java.util.concurrent.atomic.AtomicInteger;
 public class FileBrowserQueueActivity extends Activity {
 
     public static final String EXTRA_REMOTE_QUEUE_FILL_MODE = "remote_queue_fill_mode";
+    public static final String EXTRA_REMOTE_QUEUE_SERVER_MODE = "remote_queue_server_mode";
+    public static final String EXTRA_BROWSE_MODE = "browse_mode";
+
+    enum Mode {
+        DJ,            // standard queue playback
+        BROWSE,        // tap-to-play from file browser
+        REMOTE_SEND,   // browse + BT: sends track requests to remote server
+        REMOTE_RECEIVE // DJ + BT: receives track requests from remote client
+    }
 
     private static final int PERMISSION_REQUEST_CODE = 2001;
     private static final int TREE_REQUEST_CODE = 2002;
@@ -67,6 +76,8 @@ public class FileBrowserQueueActivity extends Activity {
     private static final String MUSIC_DIRECTORY_NAME = "Music";
     private static final String BROWSER_PREFS = "browser_prefs";
     private static final String PREF_LAST_TREE_URI = "last_tree_uri";
+    private static final String PREF_BROWSE_FILE_PLAYING = "browse_file_playing";
+    private static final String PREF_BROWSE_FILE_URI = "browse_file_uri";
     private static final long PLAYBACK_SYNC_INTERVAL_MS = 1_000L;
     private static final int PROGRESS_LEVEL_MAX = 10_000;
     private static final int SORT_FILENAME = 0;
@@ -111,9 +122,15 @@ public class FileBrowserQueueActivity extends Activity {
     private Button stopButton;
     private Button sortButton;
     private Button openStorageButton;
-    private boolean remoteQueueFillMode;
+    private Mode mode = Mode.DJ;
+    private boolean browseFilePlaying;
+    private Uri browseFileUri;
+    private boolean browseNextQueued;
+    private Uri browseNextUri;
+    private boolean browseTransitionActive;
     private BluetoothController btController;
     private Button playButton;
+    private Button saveButton;
     private CharSequence defaultPlayButtonText;
     private int currentTrackPositionMs;
     private int currentTrackDurationMs;
@@ -125,6 +142,7 @@ public class FileBrowserQueueActivity extends Activity {
     private int fileBrowserSwipeStartPosition = -1;
     private boolean fileBrowserSwipeHandled;
     private View fileBrowserSwipingView;
+    private ListView fileBrowserList;
     private final BroadcastReceiver playbackStateReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(android.content.Context context, Intent intent) {
@@ -148,6 +166,12 @@ public class FileBrowserQueueActivity extends Activity {
 
             if (serviceIndex < 0) {
                 SilenceStreamer.reinitIfOutputChanged(FileBrowserQueueActivity.this);
+                if (browseTransitionActive && !stopFadeInProgress) {
+                    // Transient stop between sendStopNowCommand() and the new browse track starting.
+                    // Keep browse state intact; the next broadcast will update us.
+                    return;
+                }
+                clearBrowseState();
                 currentPlayingQueueIndex = -1;
                 if (stopFadeInProgress) {
                     onFadeOutFinished();
@@ -156,6 +180,16 @@ public class FileBrowserQueueActivity extends Activity {
                 servicePlaybackOffset = 0;
                 resetCurrentTrackProgress();
                 QueueStore.savePlaybackOffset(FileBrowserQueueActivity.this, 0);
+            } else if (browseFilePlaying) {
+                browseTransitionActive = false;
+                currentPlayingQueueIndex = -1;
+                if (browseNextUri != null && browseNextUri.equals(currentUri)) {
+                    browseFileUri = browseNextUri;
+                    browseNextQueued = false;
+                    browseNextUri = null;
+                    saveBrowseState();
+                    if (fileAdapter != null) fileAdapter.notifyDataSetChanged();
+                }
             } else {
                 currentPlayingQueueIndex = resolvePlayingQueueIndex(serviceIndex, currentUri);
             }
@@ -163,6 +197,7 @@ public class FileBrowserQueueActivity extends Activity {
             if (queueAdapter != null) {
                 queueAdapter.notifyDataSetChanged();
             }
+            maybeQueueNextBrowseTrack();
         }
     };
     private boolean playbackReceiverRegistered;
@@ -171,7 +206,7 @@ public class FileBrowserQueueActivity extends Activity {
         @Override
         public void run() {
             syncWithServiceState();
-            if (playbackReceiverRegistered) {
+            if (!isDestroyed()) {
                 uiHandler.postDelayed(this, PLAYBACK_SYNC_INTERVAL_MS);
             }
         }
@@ -194,24 +229,31 @@ public class FileBrowserQueueActivity extends Activity {
         fileFilterInput = findViewById(R.id.file_filter_input);
         queueEmptyHint  = findViewById(R.id.queue_empty_hint);
 
-        ListView fileBrowserList = findViewById(R.id.file_browser_list);
+        fileBrowserList = findViewById(R.id.file_browser_list);
         queueList                = findViewById(R.id.queue_list);
         View     queueContainer  = findViewById(R.id.queue_container);
-        remoteQueueFillMode = getIntent().getBooleanExtra(EXTRA_REMOTE_QUEUE_FILL_MODE, false);
+        if (getIntent().getBooleanExtra(EXTRA_BROWSE_MODE, false)) {
+            mode = Mode.BROWSE;
+        }
 
         playButton = findViewById(R.id.btn_play_queue);
         defaultPlayButtonText = playButton.getText();
         openStorageButton = findViewById(R.id.btn_open_storage);
         sortButton = findViewById(R.id.btn_sort_files);
-        Button btnSaveQueue = findViewById(R.id.btn_save_queue);
+        saveButton = findViewById(R.id.btn_save_queue);
         stopButton = findViewById(R.id.btn_stop_queue);
         metadataExtractor = new MetadataExtractor(getContentResolver());
         btController = new BluetoothController(this, new BluetoothController.Callback() {
             @Override
-            public void onModeSelected() { applyPlayButtonModeState(); }
+            public void onModeSelected() {
+                if (getIntent().getBooleanExtra(EXTRA_REMOTE_QUEUE_FILL_MODE, false) && mode == Mode.DJ) {
+                    mode = btController.isServerMode() ? Mode.REMOTE_RECEIVE : Mode.REMOTE_SEND;
+                }
+                applyPlayButtonModeState();
+            }
             @Override
-            public void onQueueRequestReceived(String fileName, String parentFolderName) {
-                onRemoteQueueRequestReceived(fileName, parentFolderName);
+            public void onQueueRequestsReceived(List<BluetoothQueueBridge.TrackRequest> tracks) {
+                onRemoteQueueRequestsReceived(tracks);
             }
         });
 
@@ -243,7 +285,7 @@ public class FileBrowserQueueActivity extends Activity {
                 else navigateToDocumentEntry(entry.uri, entry.name);
                 return;
             }
-            if (PreviewManager.isEnabled(this) && !isRemoteClientMode()) {
+            if (PreviewManager.isEnabled(this) && !hasBrowseBehavior()) {
                 Uri previewUri = isPlaylistFile(entry.name)
                         ? resolveFirstPlaylistUri(entry) : entry.uri;
                 if (previewUri != null && previewUri.equals(fileBrowserPreviewingUri)) {
@@ -254,14 +296,19 @@ public class FileBrowserQueueActivity extends Activity {
                     startAudioPreview(previewUri);
                 }
             } else {
-                if (isPlaylistFile(entry.name)) {
-                    int addedCount = addPlaylistToQueue(entry);
-                    if (addedCount > 0)
-                        Toast.makeText(this, "Added " + addedCount + " files from " + entry.name, Toast.LENGTH_SHORT).show();
-                    else
-                        Toast.makeText(this, "No playable files found in " + entry.name, Toast.LENGTH_SHORT).show();
+                boolean queueTrackPlaying = !playbackStopped && !browseFilePlaying && currentPlayingQueueIndex >= 0;
+                if (hasBrowseBehavior() && !stopFadeInProgress && !(mode == Mode.BROWSE && queueTrackPlaying)) {
+                    playBrowseFile(entry);
                 } else {
-                    addToQueue(entry.name, entry.uri);
+                    if (isPlaylistFile(entry.name)) {
+                        int addedCount = addPlaylistToQueue(entry);
+                        if (addedCount > 0)
+                            Toast.makeText(this, "Added " + addedCount + " files from " + entry.name, Toast.LENGTH_SHORT).show();
+                        else
+                            Toast.makeText(this, "No playable files found in " + entry.name, Toast.LENGTH_SHORT).show();
+                    } else {
+                        addToQueue(entry.name, entry.uri);
+                    }
                 }
             }
         });
@@ -269,7 +316,9 @@ public class FileBrowserQueueActivity extends Activity {
 
         // -- queue: tap item to play when stopped ----------------------------
         queueList.setOnItemClickListener((parent, view, position, id) -> {
-            if (isRemoteClientMode()) {
+            if (mode == Mode.REMOTE_SEND || browseFilePlaying) {
+                clearBrowseState();
+                fileAdapter.notifyDataSetChanged();
                 playQueueFrom(position, !playbackStopped || stopFadeInProgress);
                 return;
             }
@@ -290,7 +339,7 @@ public class FileBrowserQueueActivity extends Activity {
 
         // -- navigation & playback buttons -----------------------------------
         playButton.setOnClickListener(v -> {
-            if (isRemoteClientMode()) {
+            if (hasBrowseBehavior()) {
                 clearQueueAndStopPlayback();
                 return;
             }
@@ -307,17 +356,26 @@ public class FileBrowserQueueActivity extends Activity {
         });
         applyPlayButtonModeState();
 
-        if (remoteQueueFillMode) {
-            btController.startRemoteSetup();
+        if (getIntent().getBooleanExtra(EXTRA_REMOTE_QUEUE_FILL_MODE, false)) {
+            int serverMode = getIntent().getIntExtra(EXTRA_REMOTE_QUEUE_SERVER_MODE, -1);
+            if (serverMode == 1) {
+                mode = Mode.REMOTE_RECEIVE;
+                btController.startRemoteSetupAsServer();
+            } else if (serverMode == 0) {
+                mode = Mode.REMOTE_SEND;
+                btController.startRemoteSetupAsClient();
+            } else {
+                btController.startRemoteSetup(); // mode set in onModeSelected callback
+            }
         }
 
         openStorageButton.setOnClickListener(v -> handleStorageButtonPressed());
         sortButton.setOnClickListener(v -> showSortDialog());
-        btnSaveQueue.setOnClickListener(v -> promptSaveQueueFilename());
+        applySaveButtonModeState();
         applySortButtonLoadingState();
 
         stopButton.setOnClickListener(v -> {
-            if (isRemoteClientMode()) {
+            if (mode == Mode.REMOTE_SEND || browseFilePlaying) {
                 stopPlaybackImmediately();
             } else {
                 stopPlaybackWithFadeout();
@@ -555,6 +613,25 @@ public class FileBrowserQueueActivity extends Activity {
         prefs.edit().putString(PREF_LAST_TREE_URI, treeUri.toString()).apply();
     }
 
+    private void clearBrowseState() {
+        browseTransitionActive = false;
+        browseFilePlaying = false;
+        browseFileUri = null;
+        browseNextQueued = false;
+        browseNextUri = null;
+        saveBrowseState();
+    }
+
+    private void saveBrowseState() {
+        SharedPreferences.Editor ed = getSharedPreferences(BROWSER_PREFS, MODE_PRIVATE).edit();
+        ed.putBoolean(PREF_BROWSE_FILE_PLAYING, browseFilePlaying);
+        if (browseFilePlaying && browseFileUri != null)
+            ed.putString(PREF_BROWSE_FILE_URI, browseFileUri.toString());
+        else
+            ed.remove(PREF_BROWSE_FILE_URI);
+        ed.apply();
+    }
+
     private Uri getRememberedTreeUri() {
         SharedPreferences prefs = getSharedPreferences(BROWSER_PREFS, MODE_PRIVATE);
         String uriString = prefs.getString(PREF_LAST_TREE_URI, null);
@@ -751,6 +828,7 @@ public class FileBrowserQueueActivity extends Activity {
                         fileSortMode = which;
                         sortFileEntriesInPlace();
                         applyFileFilter();
+                        scrollToHighlightedFileEntry();
                     }
                     dialog.dismiss();
                 })
@@ -1461,6 +1539,23 @@ public class FileBrowserQueueActivity extends Activity {
         updateStorageButtonState();
     }
 
+    private void scrollToHighlightedFileEntry() {
+        if (fileBrowserList == null) return;
+        Uri highlightedUri = null;
+        if (browseFilePlaying && browseFileUri != null) {
+            highlightedUri = browseFileUri;
+        } else if (fileBrowserPreviewingEntryUri != null) {
+            highlightedUri = fileBrowserPreviewingEntryUri;
+        }
+        if (highlightedUri == null) return;
+        for (int i = 0; i < filteredFileEntries.size(); i++) {
+            if (highlightedUri.equals(filteredFileEntries.get(i).uri)) {
+                fileBrowserList.setSelection(i);
+                return;
+            }
+        }
+    }
+
     private static boolean isAudioFile(String name) {
         String lower = name.toLowerCase();
         for (String ext : AUDIO_EXTENSIONS) {
@@ -1763,7 +1858,7 @@ public class FileBrowserQueueActivity extends Activity {
                         return true; // consume: prevent list scrolling while swiping right
                     }
 
-                    if (dx < 0 && remoteQueueFillMode && queueSwipingView != null) {
+                    if (dx < 0 && (mode == Mode.REMOTE_SEND || mode == Mode.REMOTE_RECEIVE) && queueSwipingView != null) {
                         float clampedDx = Math.max(dx, -queueSwipingView.getWidth());
                         queueSwipingView.setTranslationX(clampedDx);
                         queueList.getParent().requestDisallowInterceptTouchEvent(true);
@@ -1773,7 +1868,7 @@ public class FileBrowserQueueActivity extends Activity {
                             queueSwipeHandled = true;
                             queueSwipingView.setTranslationX(0);
                             queueSwipingView = null;
-                            if (isRemoteClientMode()
+                            if (mode == Mode.REMOTE_SEND
                                     && queueSwipeStartPosition >= 0
                                     && queueSwipeStartPosition < queueEntries.size()) {
                                 QueueEntry swipeEntry = queueEntries.get(queueSwipeStartPosition);
@@ -1911,8 +2006,10 @@ public class FileBrowserQueueActivity extends Activity {
     private void updateQueueHint() {
         if (queueEntries.isEmpty()) {
             int hintRes;
-            if (isRemoteClientMode()) {
+            if (mode == Mode.REMOTE_SEND) {
                 hintRes = R.string.queue_hint_remote;
+            } else if (mode == Mode.BROWSE) {
+                hintRes = R.string.queue_hint_browse;
             } else if (PreviewManager.isEnabled(this)) {
                 hintRes = R.string.queue_hint_preview;
             } else {
@@ -1972,7 +2069,7 @@ public class FileBrowserQueueActivity extends Activity {
         }
 
         // Do not show fading UI when nothing is currently playing.
-        if (playbackStopped || currentPlayingQueueIndex < 0) {
+        if (playbackStopped || (currentPlayingQueueIndex < 0 && !browseFilePlaying)) {
             resetStopButtonState();
             return;
         }
@@ -2004,20 +2101,81 @@ public class FileBrowserQueueActivity extends Activity {
         sendStopNowCommand();
         playbackStopped = true;
         stopFadeInProgress = false;
+        clearBrowseState();
         currentPlayingQueueIndex = -1;
         servicePlaybackOffset = 0;
         QueueStore.savePlaybackOffset(this, 0);
         resetCurrentTrackProgress();
         applyStopButtonState();
         queueAdapter.notifyDataSetChanged();
+        fileAdapter.notifyDataSetChanged();
     }
 
     private void clearQueueAndStopPlayback() {
-        stopPlaybackImmediately();
+        if (!browseFilePlaying) {
+            stopPlaybackImmediately();
+        }
         queueEntries.clear();
         queueAdapter.notifyDataSetChanged();
         updateQueueHint();
         QueueStore.clear(this);
+    }
+
+    private void playBrowseFile(FileEntry entry) {
+        Uri uri = isPlaylistFile(entry.name) ? resolveFirstPlaylistUri(entry) : entry.uri;
+        if (uri == null) return;
+
+        ArrayList<Uri> uris = new ArrayList<>(1);
+        uris.add(uri);
+
+        Intent intent = new Intent(this, Launcher.class);
+        intent.setAction(ACTION_SEND_MULTIPLE_COMPAT);
+        intent.setType("audio/*");
+        intent.putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris);
+
+        browseTransitionActive = true;
+        sendStopNowCommand();
+        resetStopButtonState();
+        startActivity(intent);
+
+        browseFilePlaying = true;
+        browseFileUri = uri;
+        browseNextQueued = false;
+        browseNextUri = null;
+        saveBrowseState();
+        playbackStopped = false;
+        currentPlayingQueueIndex = -1;
+        queueAdapter.notifyDataSetChanged();
+        fileAdapter.notifyDataSetChanged();
+    }
+
+    private void maybeQueueNextBrowseTrack() {
+        if (!browseFilePlaying || browseNextQueued || browseFileUri == null) return;
+        if (currentTrackDurationMs <= 0 || currentTrackDurationMs - currentTrackPositionMs > 5_000) return;
+        int currentPos = -1;
+        for (int i = 0; i < filteredFileEntries.size(); i++) {
+            FileEntry e = filteredFileEntries.get(i);
+            if (!e.isDirectory && browseFileUri.equals(e.uri)) {
+                currentPos = i;
+                break;
+            }
+        }
+        if (currentPos < 0) return;
+        for (int i = currentPos + 1; i < filteredFileEntries.size(); i++) {
+            FileEntry e = filteredFileEntries.get(i);
+            if (!e.isDirectory && !isPlaylistFile(e.name)) {
+                ArrayList<Uri> uris = new ArrayList<>(1);
+                uris.add(e.uri);
+                Intent appendIntent = new Intent(this, Service.class);
+                appendIntent.putExtra(Launcher.TYPE, Launcher.APPEND_QUEUE);
+                appendIntent.putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris);
+                startService(appendIntent);
+                browseNextQueued = true;
+                browseNextUri = e.uri;
+                scrollToHighlightedFileEntry();
+                return;
+            }
+        }
     }
 
     private String getParentFolderName(Uri uri) {
@@ -2052,111 +2210,164 @@ public class FileBrowserQueueActivity extends Activity {
         return path.substring(prevSlash + 1, lastSlash);
     }
 
-    private void onRemoteQueueRequestReceived(String fileName, String parentFolderName) {
-        if (!btController.isServerMode()) {
-            return;
-        }
+    private void onRemoteQueueRequestsReceived(List<BluetoothQueueBridge.TrackRequest> tracks) {
+        if (!btController.isServerMode() || tracks == null || tracks.isEmpty()) return;
         new Thread(() -> {
-            Uri foundUri = findRequestedAudioUri(fileName, parentFolderName);
-            runOnUiThread(() -> {
-                if (foundUri == null) {
-                    Toast.makeText(this, "Requested file not found: " + fileName, Toast.LENGTH_SHORT).show();
-                    return;
+            List<Uri> foundUris = findRequestedAudioUris(tracks);
+            List<QueueEntry> toAdd = new ArrayList<>();
+            List<String> notFound = new ArrayList<>();
+            for (int i = 0; i < tracks.size(); i++) {
+                Uri uri = foundUris.get(i);
+                if (uri != null) {
+                    toAdd.add(new QueueEntry(tracks.get(i).file, uri));
+                } else {
+                    notFound.add(tracks.get(i).file);
                 }
-                addToQueue(fileName, foundUri);
-                Toast.makeText(this, "Added from remote: " + fileName, Toast.LENGTH_SHORT).show();
+            }
+            runOnUiThread(() -> {
+                if (!toAdd.isEmpty()) {
+                    addToQueue(toAdd);
+                    Toast.makeText(this, "Added " + toAdd.size() + " track(s) from remote", Toast.LENGTH_SHORT).show();
+                }
+                for (String name : notFound) {
+                    Toast.makeText(this, "Requested file not found: " + name, Toast.LENGTH_SHORT).show();
+                }
             });
         }).start();
     }
 
-    private Uri findRequestedAudioUri(String fileName, String parentFolderHint) {
-        if (fileName == null || fileName.trim().length() == 0) {
-            return null;
-        }
-
-        String normalizedHint = parentFolderHint != null ? parentFolderHint.trim() : "";
+    private List<Uri> findRequestedAudioUris(List<BluetoothQueueBridge.TrackRequest> requests) {
         if (browsingDocumentTree && !documentUriStack.isEmpty() && currentTreeUri != null) {
-            Uri rootDocumentDir = documentUriStack.get(0);
-            return findInDocumentTree(rootDocumentDir, fileName, normalizedHint);
+            return findAllInDocumentTree(documentUriStack.get(0), requests);
         }
-
         if (currentFileRootDirectory != null && currentFileRootDirectory.exists()) {
-            return findInFileDirectory(currentFileRootDirectory, fileName, normalizedHint);
+            return findAllInFileDirectory(currentFileRootDirectory, requests);
         }
-        return null;
+        List<Uri> nulls = new ArrayList<>(requests.size());
+        for (int i = 0; i < requests.size(); i++) nulls.add(null);
+        return nulls;
     }
 
-    private Uri findInFileDirectory(File root, String fileName, String parentFolderHint) {
-        if (parentFolderHint.length() > 0) {
-            // Phase 1: find directories matching the hint and search inside them first.
-            ArrayList<File> hintStack = new ArrayList<>();
-            hintStack.add(root);
-            while (!hintStack.isEmpty()) {
-                File dir = hintStack.remove(hintStack.size() - 1);
-                File[] children = dir.listFiles();
-                if (children == null) continue;
-                for (File child : children) {
-                    if (child == null || !child.isDirectory()) continue;
-                    hintStack.add(child);
-                    if (parentFolderHint.equalsIgnoreCase(child.getName())) {
-                        File[] files = child.listFiles();
-                        if (files == null) continue;
-                        for (File f : files) {
-                            if (f != null && !f.isDirectory() && f.getName().equalsIgnoreCase(fileName))
-                                return Uri.fromFile(f);
-                        }
+    /**
+     * Finds all requested files in the file-based directory tree with a single DFS pass per phase.
+     * Hint-matched results (parent folder name matches) take priority over plain name matches.
+     */
+    private List<Uri> findAllInFileDirectory(File root, List<BluetoothQueueBridge.TrackRequest> requests) {
+        int n = requests.size();
+        Uri[] hintMatches = new Uri[n];
+        Uri[] nameMatches = new Uri[n];
+
+        // Phase 1+2: single DFS — one query per directory for all requests simultaneously.
+        ArrayList<File> stack = new ArrayList<>();
+        stack.add(root);
+        while (!stack.isEmpty()) {
+            File dir = stack.remove(stack.size() - 1);
+            File[] children = dir.listFiles();
+            if (children == null) continue;
+            String dirName = dir.getName();
+            for (File child : children) {
+                if (child == null) continue;
+                if (child.isDirectory()) { stack.add(child); continue; }
+                String childName = child.getName();
+                for (int i = 0; i < n; i++) {
+                    if (hintMatches[i] != null) continue;
+                    if (!childName.equalsIgnoreCase(requests.get(i).file)) continue;
+                    String hint = requests.get(i).parent;
+                    if (hint.length() > 0 && dirName.equalsIgnoreCase(hint)) {
+                        hintMatches[i] = Uri.fromFile(child);
+                    } else if (nameMatches[i] == null) {
+                        nameMatches[i] = Uri.fromFile(child);
                     }
                 }
             }
         }
-        // Phase 2: fallback — return first filename match anywhere in the tree.
-        ArrayList<File> fallbackStack = new ArrayList<>();
-        fallbackStack.add(root);
-        while (!fallbackStack.isEmpty()) {
-            File dir = fallbackStack.remove(fallbackStack.size() - 1);
-            File[] children = dir.listFiles();
-            if (children == null) continue;
-            for (File child : children) {
-                if (child == null) continue;
-                if (child.isDirectory()) { fallbackStack.add(child); continue; }
-                if (child.getName().equalsIgnoreCase(fileName)) return Uri.fromFile(child);
+
+        // Phase 3: extension-stripped fallback for still-unresolved requests.
+        if (anyUnresolved(hintMatches, nameMatches)) {
+            ArrayList<File> extStack = new ArrayList<>();
+            extStack.add(root);
+            while (!extStack.isEmpty()) {
+                File dir = extStack.remove(extStack.size() - 1);
+                File[] children = dir.listFiles();
+                if (children == null) continue;
+                for (File child : children) {
+                    if (child == null) continue;
+                    if (child.isDirectory()) { extStack.add(child); continue; }
+                    applyExtFallbackMatch(stripExtension(child.getName()), Uri.fromFile(child),
+                            requests, hintMatches, nameMatches);
+                }
             }
         }
-        // Phase 3: fallback — match by name without extension.
-        String fileNameNoExt = stripExtension(fileName);
-        ArrayList<File> extStack = new ArrayList<>();
-        extStack.add(root);
-        while (!extStack.isEmpty()) {
-            File dir = extStack.remove(extStack.size() - 1);
-            File[] children = dir.listFiles();
-            if (children == null) continue;
-            for (File child : children) {
-                if (child == null) continue;
-                if (child.isDirectory()) { extStack.add(child); continue; }
-                if (stripExtension(child.getName()).equalsIgnoreCase(fileNameNoExt)) return Uri.fromFile(child);
-            }
-        }
-        return null;
+
+        return mergeMatchResults(hintMatches, nameMatches);
     }
 
-    private Uri findInDocumentTree(Uri rootDocumentUri, String fileName, String parentFolderHint) {
+    /**
+     * Finds all requested files in the SAF document tree with a single DFS pass per phase.
+     * Each directory is queried exactly once. Hint-matched results take priority.
+     */
+    private List<Uri> findAllInDocumentTree(Uri rootDocumentUri, List<BluetoothQueueBridge.TrackRequest> requests) {
+        int n = requests.size();
+        Uri[] hintMatches = new Uri[n];
+        Uri[] nameMatches = new Uri[n];
+
         String rootDocId;
         try {
             rootDocId = DocumentsContract.getDocumentId(rootDocumentUri);
         } catch (Exception ignored) {
-            return null;
+            List<Uri> nulls = new ArrayList<>(n);
+            for (int i = 0; i < n; i++) nulls.add(null);
+            return nulls;
         }
+
         String[] projection = {
                 DocumentsContract.Document.COLUMN_DOCUMENT_ID,
                 DocumentsContract.Document.COLUMN_DISPLAY_NAME,
                 DocumentsContract.Document.COLUMN_MIME_TYPE
         };
-        if (parentFolderHint.length() > 0) {
-            // Phase 1: find directories matching the hint and search inside them first.
-            ArrayList<String> hintStack = new ArrayList<>();
-            hintStack.add(rootDocId);
-            while (!hintStack.isEmpty()) {
-                String dirDocId = hintStack.remove(hintStack.size() - 1);
+
+        // Phase 1+2: single DFS — stack holds [docId, displayName] pairs.
+        // displayName of the current dir is used to check parentHint.
+        ArrayList<String[]> stack = new ArrayList<>();
+        stack.add(new String[]{rootDocId, ""});
+        while (!stack.isEmpty()) {
+            String[] current = stack.remove(stack.size() - 1);
+            String dirDocId = current[0];
+            String dirName = current[1];
+            Uri childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(currentTreeUri, dirDocId);
+            try (Cursor cursor = getContentResolver().query(childrenUri, projection, null, null, null)) {
+                if (cursor == null) continue;
+                while (cursor.moveToNext()) {
+                    String childDocId = cursor.getString(0);
+                    String childName = cursor.getString(1);
+                    String mimeType = cursor.getString(2);
+                    if (childDocId == null || childName == null) continue;
+                    if (DocumentsContract.Document.MIME_TYPE_DIR.equals(mimeType)) {
+                        stack.add(new String[]{childDocId, childName});
+                        continue;
+                    }
+                    for (int i = 0; i < n; i++) {
+                        if (hintMatches[i] != null) continue;
+                        if (!childName.equalsIgnoreCase(requests.get(i).file)) continue;
+                        String hint = requests.get(i).parent;
+                        if (hint.length() > 0 && dirName.equalsIgnoreCase(hint)) {
+                            hintMatches[i] = DocumentsContract.buildDocumentUriUsingTree(currentTreeUri, childDocId);
+                        } else if (nameMatches[i] == null) {
+                            nameMatches[i] = DocumentsContract.buildDocumentUriUsingTree(currentTreeUri, childDocId);
+                        }
+                    }
+                }
+            } catch (Exception ignored) {
+            }
+        }
+
+        // Phase 3: extension-stripped fallback for still-unresolved requests.
+        if (anyUnresolved(hintMatches, nameMatches)) {
+            ArrayList<String[]> extStack = new ArrayList<>();
+            extStack.add(new String[]{rootDocId, ""});
+            while (!extStack.isEmpty()) {
+                String[] current = extStack.remove(extStack.size() - 1);
+                String dirDocId = current[0];
                 Uri childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(currentTreeUri, dirDocId);
                 try (Cursor cursor = getContentResolver().query(childrenUri, projection, null, null, null)) {
                     if (cursor == null) continue;
@@ -2165,79 +2376,60 @@ public class FileBrowserQueueActivity extends Activity {
                         String childName = cursor.getString(1);
                         String mimeType = cursor.getString(2);
                         if (childDocId == null || childName == null) continue;
-                        if (!DocumentsContract.Document.MIME_TYPE_DIR.equals(mimeType)) continue;
-                        hintStack.add(childDocId);
-                        if (parentFolderHint.equalsIgnoreCase(childName)) {
-                            Uri match = findFileInDocumentDir(childDocId, fileName, projection);
-                            if (match != null) return match;
+                        if (DocumentsContract.Document.MIME_TYPE_DIR.equals(mimeType)) {
+                            extStack.add(new String[]{childDocId, childName});
+                            continue;
                         }
+                        applyExtFallbackMatch(stripExtension(childName),
+                                DocumentsContract.buildDocumentUriUsingTree(currentTreeUri, childDocId),
+                                requests, hintMatches, nameMatches);
                     }
                 } catch (Exception ignored) {
                 }
             }
         }
-        // Phase 2: fallback — return first filename match anywhere in the tree.
-        ArrayList<String> fallbackStack = new ArrayList<>();
-        fallbackStack.add(rootDocId);
-        while (!fallbackStack.isEmpty()) {
-            String dirDocId = fallbackStack.remove(fallbackStack.size() - 1);
-            Uri childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(currentTreeUri, dirDocId);
-            try (Cursor cursor = getContentResolver().query(childrenUri, projection, null, null, null)) {
-                if (cursor == null) continue;
-                while (cursor.moveToNext()) {
-                    String childDocId = cursor.getString(0);
-                    String childName = cursor.getString(1);
-                    String mimeType = cursor.getString(2);
-                    if (childDocId == null || childName == null) continue;
-                    if (DocumentsContract.Document.MIME_TYPE_DIR.equals(mimeType)) {
-                        fallbackStack.add(childDocId);
-                        continue;
-                    }
-                    if (childName.equalsIgnoreCase(fileName))
-                        return DocumentsContract.buildDocumentUriUsingTree(currentTreeUri, childDocId);
-                }
-            } catch (Exception ignored) {
-            }
-        }
-        // Phase 3: fallback — match by name without extension.
-        String fileNameNoExt = stripExtension(fileName);
-        ArrayList<String> extStack = new ArrayList<>();
-        extStack.add(rootDocId);
-        while (!extStack.isEmpty()) {
-            String dirDocId = extStack.remove(extStack.size() - 1);
-            Uri childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(currentTreeUri, dirDocId);
-            try (Cursor cursor = getContentResolver().query(childrenUri, projection, null, null, null)) {
-                if (cursor == null) continue;
-                while (cursor.moveToNext()) {
-                    String childDocId = cursor.getString(0);
-                    String childName = cursor.getString(1);
-                    String mimeType = cursor.getString(2);
-                    if (childDocId == null || childName == null) continue;
-                    if (DocumentsContract.Document.MIME_TYPE_DIR.equals(mimeType)) {
-                        extStack.add(childDocId);
-                        continue;
-                    }
-                    if (stripExtension(childName).equalsIgnoreCase(fileNameNoExt))
-                        return DocumentsContract.buildDocumentUriUsingTree(currentTreeUri, childDocId);
-                }
-            } catch (Exception ignored) {
-            }
-        }
-        return null;
+
+        return mergeMatchResults(hintMatches, nameMatches);
     }
 
-    private boolean isRemoteClientMode() {
-        return remoteQueueFillMode && !btController.isServerMode();
+    private boolean hasBrowseBehavior() {
+        return mode == Mode.BROWSE || mode == Mode.REMOTE_SEND;
     }
 
     private void applyPlayButtonModeState() {
         if (playButton == null) {
             return;
         }
-        if (isRemoteClientMode()) {
+        if (hasBrowseBehavior()) {
             playButton.setText(R.string.clear_button_text);
         } else if (defaultPlayButtonText != null) {
             playButton.setText(defaultPlayButtonText);
+        }
+        applySaveButtonModeState();
+    }
+
+    private void applySaveButtonModeState() {
+        if (saveButton == null) return;
+        if (mode == Mode.REMOTE_SEND) {
+            saveButton.setText(R.string.send_queue_button);
+            saveButton.setOnClickListener(v -> sendQueueToRemote());
+        } else {
+            saveButton.setText(R.string.save_queue_button);
+            saveButton.setOnClickListener(v -> promptSaveQueueFilename());
+        }
+    }
+
+    private void sendQueueToRemote() {
+        if (queueEntries.isEmpty()) {
+            Toast.makeText(this, R.string.save_queue_empty, Toast.LENGTH_SHORT).show();
+            return;
+        }
+        List<BluetoothQueueBridge.TrackRequest> requests = new ArrayList<>(queueEntries.size());
+        for (QueueEntry entry : queueEntries) {
+            requests.add(new BluetoothQueueBridge.TrackRequest(entry.name, getParentFolderName(entry.uri)));
+        }
+        if (btController.sendQueueRequests(requests)) {
+            Toast.makeText(this, "Sent " + requests.size() + " track(s)", Toast.LENGTH_SHORT).show();
         }
     }
 
@@ -2246,21 +2438,29 @@ public class FileBrowserQueueActivity extends Activity {
         return dot > 0 ? name.substring(0, dot) : name;
     }
 
-    private Uri findFileInDocumentDir(String dirDocId, String fileName, String[] projection) {
-        Uri childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(currentTreeUri, dirDocId);
-        try (Cursor cursor = getContentResolver().query(childrenUri, projection, null, null, null)) {
-            if (cursor == null) return null;
-            while (cursor.moveToNext()) {
-                String childDocId = cursor.getString(0);
-                String childName = cursor.getString(1);
-                String mimeType = cursor.getString(2);
-                if (childDocId == null || childName == null) continue;
-                if (!DocumentsContract.Document.MIME_TYPE_DIR.equals(mimeType) && childName.equalsIgnoreCase(fileName))
-                    return DocumentsContract.buildDocumentUriUsingTree(currentTreeUri, childDocId);
-            }
-        } catch (Exception ignored) {
+    private static boolean anyUnresolved(Uri[] hintMatches, Uri[] nameMatches) {
+        for (int i = 0; i < hintMatches.length; i++) {
+            if (hintMatches[i] == null && nameMatches[i] == null) return true;
         }
-        return null;
+        return false;
+    }
+
+    private static void applyExtFallbackMatch(String childNoExt, Uri childUri,
+            List<BluetoothQueueBridge.TrackRequest> requests, Uri[] hintMatches, Uri[] nameMatches) {
+        for (int i = 0; i < requests.size(); i++) {
+            if (hintMatches[i] != null || nameMatches[i] != null) continue;
+            if (childNoExt.equalsIgnoreCase(stripExtension(requests.get(i).file))) {
+                nameMatches[i] = childUri;
+            }
+        }
+    }
+
+    private static List<Uri> mergeMatchResults(Uri[] hintMatches, Uri[] nameMatches) {
+        List<Uri> results = new ArrayList<>(hintMatches.length);
+        for (int i = 0; i < hintMatches.length; i++) {
+            results.add(hintMatches[i] != null ? hintMatches[i] : nameMatches[i]);
+        }
+        return results;
     }
 
     private void applyStopButtonState() {
@@ -2284,6 +2484,7 @@ public class FileBrowserQueueActivity extends Activity {
     private void onFadeOutFinished() {
         resetFileBrowserPreview();
         stopFadeInProgress = false;
+        clearBrowseState();
         playbackStopped = true;
         servicePlaybackOffset = 0;
         QueueStore.savePlaybackOffset(this, 0);
@@ -2291,6 +2492,7 @@ public class FileBrowserQueueActivity extends Activity {
         resetCurrentTrackProgress();
         applyStopButtonState();
         queueAdapter.notifyDataSetChanged();
+        fileAdapter.notifyDataSetChanged();
     }
 
     @Override
@@ -2298,8 +2500,15 @@ public class FileBrowserQueueActivity extends Activity {
         super.onStart();
         restorePersistedQueue();
         servicePlaybackOffset = QueueStore.loadPlaybackOffset(this);
+        SharedPreferences browsePrefs = getSharedPreferences(BROWSER_PREFS, MODE_PRIVATE);
+        if (browsePrefs.getBoolean(PREF_BROWSE_FILE_PLAYING, false)) {
+            browseFilePlaying = true;
+            String uriStr = browsePrefs.getString(PREF_BROWSE_FILE_URI, null);
+            browseFileUri = uriStr != null ? Uri.parse(uriStr) : null;
+        }
         registerPlaybackStateReceiver();
         syncWithServiceState();
+        scrollToHighlightedFileEntry();
         uiHandler.removeCallbacks(playbackStateSyncRunnable);
         uiHandler.postDelayed(playbackStateSyncRunnable, PLAYBACK_SYNC_INTERVAL_MS);
         ensureSilenceStreamer();
@@ -2322,6 +2531,11 @@ public class FileBrowserQueueActivity extends Activity {
         }
         if (serviceIndex < 0) {
             SilenceStreamer.reinitIfOutputChanged(this);
+            if (browseFilePlaying) {
+                // Transient stop between sendStopNowCommand() and the browse track starting.
+                // The broadcast receiver is authoritative for actual browse-track completion.
+                return;
+            }
             if (stopFadeInProgress) {
                 onFadeOutFinished();
                 return;
@@ -2333,10 +2547,27 @@ public class FileBrowserQueueActivity extends Activity {
             QueueStore.savePlaybackOffset(this, 0);
         } else {
             playbackStopped = false;
-            currentPlayingQueueIndex = resolvePlayingQueueIndex(serviceIndex, serviceUri);
+            if (browseFilePlaying) {
+                currentPlayingQueueIndex = -1;
+                if (browseNextUri != null && browseNextUri.equals(serviceUri)) {
+                    browseFileUri = browseNextUri;
+                    browseNextQueued = false;
+                    browseNextUri = null;
+                    saveBrowseState();
+                } else if (serviceUri != null && browseFileUri != null && !serviceUri.equals(browseFileUri)) {
+                    // Activity was recreated mid-transition; accept what the service is playing
+                    browseFileUri = serviceUri;
+                    browseNextQueued = false;
+                    browseNextUri = null;
+                    saveBrowseState();
+                }
+            } else {
+                currentPlayingQueueIndex = resolvePlayingQueueIndex(serviceIndex, serviceUri);
+            }
         }
         if (queueAdapter != null) queueAdapter.notifyDataSetChanged();
-        if (fileAdapter != null && fileBrowserPreviewingUri != null) fileAdapter.notifyDataSetChanged();
+        if (fileAdapter != null && (fileBrowserPreviewingUri != null || browseFilePlaying)) fileAdapter.notifyDataSetChanged();
+        maybeQueueNextBrowseTrack();
     }
 
     private void resetCurrentTrackProgress() {
@@ -2348,7 +2579,6 @@ public class FileBrowserQueueActivity extends Activity {
     protected void onStop() {
         persistQueue();
         unregisterPlaybackStateReceiver();
-        uiHandler.removeCallbacks(playbackStateSyncRunnable);
         resetFileBrowserPreview();
         if (Service.sCurrentUri == null) {
             SilenceStreamer.fadeOutAndRelease();
@@ -2368,7 +2598,7 @@ public class FileBrowserQueueActivity extends Activity {
     }
 
     private void startAudioPreview(Uri uri) {
-        if (uri == null || !PreviewManager.isEnabled(this) || isRemoteClientMode()) return;
+        if (uri == null || !PreviewManager.isEnabled(this) || mode == Mode.REMOTE_SEND) return;
         audioPreviewManager.startPreview(uri);
     }
 
@@ -2434,6 +2664,7 @@ public class FileBrowserQueueActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        uiHandler.removeCallbacks(playbackStateSyncRunnable);
         unregisterPlaybackStateReceiver();
         btController.shutdown();
         if (audioPreviewManager != null) audioPreviewManager.stopPreview();
@@ -2635,13 +2866,24 @@ public class FileBrowserQueueActivity extends Activity {
                 vh.meta.setVisibility(View.GONE);
             }
 
+            boolean isBrowseEntry = browseFilePlaying
+                    && !entry.isDirectory
+                    && browseFileUri != null
+                    && browseFileUri.equals(entry.uri);
             boolean isPreviewEntry = !entry.isDirectory
                     && fileBrowserPreviewingEntryUri != null
                     && fileBrowserPreviewingEntryUri.equals(entry.uri);
             boolean hasProgress = isPreviewEntry
                     && fileBrowserPreviewingUri != null
                     && fileBrowserPreviewingUri.equals(entry.uri);
-            if (isPreviewEntry) {
+            if (isBrowseEntry) {
+                float progress = 0f;
+                if (currentTrackDurationMs > 0) {
+                    progress = Math.min(1f, Math.max(0f,
+                            currentTrackPositionMs / (float) currentTrackDurationMs));
+                }
+                applyProgressBackground(convertView, progress, colorPreviewBase, colorPreviewFill);
+            } else if (isPreviewEntry) {
                 float progress = 0f;
                 if (hasProgress) {
                     long dur = SilenceStreamer.previewDurationMs;

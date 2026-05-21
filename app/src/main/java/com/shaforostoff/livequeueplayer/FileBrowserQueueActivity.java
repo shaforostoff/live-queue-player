@@ -73,6 +73,23 @@ public class FileBrowserQueueActivity extends Activity {
 
     enum TagState { UNKNOWN, LOADING, RESOLVED }
 
+    @FunctionalInterface
+    private interface SwipeAction { void onSwipe(int position); }
+
+    private static final class SwipeState {
+        float downX, downY;
+        int startPosition = -1;
+        boolean handled;
+        View swipingView;
+
+        void resetView() {
+            if (swipingView != null) {
+                swipingView.setTranslationX(0);
+                swipingView = null;
+            }
+        }
+    }
+
     private static final int PERMISSION_REQUEST_CODE = 2001;
     private static final int TREE_REQUEST_CODE = 2002;
     private static final String ACTION_SEND_MULTIPLE_COMPAT = "android.intent.action.SEND_MULTIPLE";
@@ -117,11 +134,6 @@ public class FileBrowserQueueActivity extends Activity {
     private boolean browsingDocumentTree;
     private int currentPlayingQueueIndex = -1;
     private int servicePlaybackOffset = 0;
-    private float queueSwipeDownX;
-    private float queueSwipeDownY;
-    private int queueSwipeStartPosition = -1;
-    private boolean queueSwipeHandled;
-    private View queueSwipingView;
     private Button stopButton;
     private Button sortButton;
     private Button openStorageButton;
@@ -140,11 +152,6 @@ public class FileBrowserQueueActivity extends Activity {
     private PreviewManager audioPreviewManager;
     private Uri fileBrowserPreviewingUri;
     private Uri fileBrowserPreviewingEntryUri;
-    private float fileBrowserSwipeDownX;
-    private float fileBrowserSwipeDownY;
-    private int fileBrowserSwipeStartPosition = -1;
-    private boolean fileBrowserSwipeHandled;
-    private View fileBrowserSwipingView;
     private ListView fileBrowserList;
     private final BroadcastReceiver playbackStateReceiver = new BroadcastReceiver() {
         @Override
@@ -1744,190 +1751,108 @@ public class FileBrowserQueueActivity extends Activity {
     }
 
     private void installQueueSwipeRemove(ListView queueList) {
-        final float verticalSlop = 40f * getResources().getDisplayMetrics().density;
+        installSwipeListener(queueList,
+            position -> {
+                if (!removeQueueAt(position)) {
+                    Toast.makeText(this, "Cannot remove currently playing track", Toast.LENGTH_SHORT).show();
+                }
+            },
+            position -> {
+                if (mode != Mode.REMOTE_SEND && mode != Mode.REMOTE_RECEIVE) return;
+                if (position < 0 || position >= queueEntries.size()) return;
+                QueueEntry entry = queueEntries.get(position);
+                if (mode == Mode.REMOTE_SEND
+                        && btController.sendQueueRequest(entry.name, getParentFolderName(entry.uri))) {
+                    Toast.makeText(this, "Track request sent", Toast.LENGTH_SHORT).show();
+                }
+            }
+        );
+    }
 
-        queueList.setOnTouchListener((v, event) -> {
+    private void installSwipeListener(ListView list, SwipeAction onRightSwipe, SwipeAction onLeftSwipe) {
+        SwipeState state = new SwipeState();
+        float verticalSlop = 40f * getResources().getDisplayMetrics().density;
+        list.setOnTouchListener((v, event) -> {
             switch (event.getAction()) {
                 case MotionEvent.ACTION_DOWN:
-                    queueSwipeDownX = event.getX();
-                    queueSwipeDownY = event.getY();
-                    queueSwipeStartPosition = queueList.pointToPosition((int) event.getX(), (int) event.getY());
-                    queueSwipeHandled = false;
-                    queueSwipingView = null;
-                    if (queueSwipeStartPosition >= 0) {
-                        int firstVisible = queueList.getFirstVisiblePosition();
-                        int childIndex = queueSwipeStartPosition - firstVisible;
-                        if (childIndex >= 0 && childIndex < queueList.getChildCount()) {
-                            queueSwipingView = queueList.getChildAt(childIndex);
+                    state.downX = event.getX();
+                    state.downY = event.getY();
+                    state.startPosition = list.pointToPosition((int) event.getX(), (int) event.getY());
+                    state.handled = false;
+                    state.swipingView = null;
+                    if (state.startPosition >= 0) {
+                        int firstVisible = list.getFirstVisiblePosition();
+                        int childIndex = state.startPosition - firstVisible;
+                        if (childIndex >= 0 && childIndex < list.getChildCount()) {
+                            state.swipingView = list.getChildAt(childIndex);
                         }
                     }
                     return false;
 
                 case MotionEvent.ACTION_MOVE:
-                    if (queueSwipeHandled || queueSwipeStartPosition < 0) {
-                        return queueSwipeHandled;
-                    }
-
-                    float dx = event.getX() - queueSwipeDownX;
-                    float dy = event.getY() - queueSwipeDownY;
-
-                    // vertical scroll started - abandon swipe
+                    if (state.handled || state.startPosition < 0) return state.handled;
+                    float dx = event.getX() - state.downX;
+                    float dy = event.getY() - state.downY;
                     if (Math.abs(dy) > verticalSlop && Math.abs(dy) > Math.abs(dx)) {
-                        resetSwipingView();
-                        queueSwipeStartPosition = -1;
+                        state.resetView();
+                        state.startPosition = -1;
                         return false;
                     }
-
-                    if (dx > 0 && queueSwipingView != null) {
-                        // clamp so the view can't slide past its own right edge
-                        float clampedDx = Math.min(dx, queueSwipingView.getWidth());
-                        queueSwipingView.setTranslationX(clampedDx);
-                        // disallow list from intercepting a horizontal swipe
-                        queueList.getParent().requestDisallowInterceptTouchEvent(true);
-
-                        int viewWidth = queueSwipingView.getWidth();
-                        if (viewWidth > 0 && dx >= viewWidth / 2f) {
-                            // reached midpoint -> remove
-                            queueSwipeHandled = true;
-                            queueSwipingView.setTranslationX(0);
-                            queueSwipingView = null;
-                            if (removeQueueAt(queueSwipeStartPosition)) {
-                                ;//Toast.makeText(this, "Removed from queue", Toast.LENGTH_SHORT).show();
-                            } else {
-                                Toast.makeText(this, "Cannot remove currently playing track", Toast.LENGTH_SHORT).show();
-                            }
-                            return true;
-                        }
-                        return true; // consume: prevent list scrolling while swiping right
-                    }
-
-                    if (dx < 0 && (mode == Mode.REMOTE_SEND || mode == Mode.REMOTE_RECEIVE) && queueSwipingView != null) {
-                        float clampedDx = Math.max(dx, -queueSwipingView.getWidth());
-                        queueSwipingView.setTranslationX(clampedDx);
-                        queueList.getParent().requestDisallowInterceptTouchEvent(true);
-
-                        int viewWidth = queueSwipingView.getWidth();
-                        if (viewWidth > 0 && Math.abs(dx) >= viewWidth / 2f) {
-                            queueSwipeHandled = true;
-                            queueSwipingView.setTranslationX(0);
-                            queueSwipingView = null;
-                            if (mode == Mode.REMOTE_SEND
-                                    && queueSwipeStartPosition >= 0
-                                    && queueSwipeStartPosition < queueEntries.size()) {
-                                QueueEntry swipeEntry = queueEntries.get(queueSwipeStartPosition);
-                                if (btController.sendQueueRequest(swipeEntry.name, getParentFolderName(swipeEntry.uri))) {
-                                    Toast.makeText(this, "Track request sent", Toast.LENGTH_SHORT).show();
-                                }
-                            }
-                            return true;
+                    if (dx > 0 && state.swipingView != null) {
+                        state.swipingView.setTranslationX(Math.min(dx, state.swipingView.getWidth()));
+                        list.getParent().requestDisallowInterceptTouchEvent(true);
+                        if (state.swipingView.getWidth() > 0 && dx >= state.swipingView.getWidth() / 2f) {
+                            state.handled = true;
+                            state.resetView();
+                            onRightSwipe.onSwipe(state.startPosition);
                         }
                         return true;
                     }
-                    return false; // dx <= 0: let the list handle normally
+                    if (dx < 0 && onLeftSwipe != null && state.swipingView != null) {
+                        state.swipingView.setTranslationX(Math.max(dx, -state.swipingView.getWidth()));
+                        list.getParent().requestDisallowInterceptTouchEvent(true);
+                        if (state.swipingView.getWidth() > 0 && Math.abs(dx) >= state.swipingView.getWidth() / 2f) {
+                            state.handled = true;
+                            state.resetView();
+                            onLeftSwipe.onSwipe(state.startPosition);
+                        }
+                        return true;
+                    }
+                    return false;
 
                 case MotionEvent.ACTION_UP:
                 case MotionEvent.ACTION_CANCEL:
-                    if (!queueSwipeHandled) {
-                        v.performClick();
-                    }
-                    resetSwipingView();
-                    boolean handled = queueSwipeHandled;
-                    queueSwipeStartPosition = -1;
-                    queueSwipeHandled = false;
+                    if (!state.handled) v.performClick();
+                    state.resetView();
+                    boolean handled = state.handled;
+                    state.startPosition = -1;
+                    state.handled = false;
                     return handled;
 
                 default:
                     return false;
             }
         });
-    }
-
-    private void resetSwipingView() {
-        if (queueSwipingView != null) {
-            queueSwipingView.setTranslationX(0);
-            queueSwipingView = null;
-        }
     }
 
     private void installFileBrowserSwipeAdd(ListView fileBrowserList) {
-        final float verticalSlop = 40f * getResources().getDisplayMetrics().density;
-        fileBrowserList.setOnTouchListener((v, event) -> {
-            switch (event.getAction()) {
-                case MotionEvent.ACTION_DOWN:
-                    fileBrowserSwipeDownX = event.getX();
-                    fileBrowserSwipeDownY = event.getY();
-                    fileBrowserSwipeStartPosition = fileBrowserList.pointToPosition((int) event.getX(), (int) event.getY());
-                    fileBrowserSwipeHandled = false;
-                    fileBrowserSwipingView = null;
-                    if (fileBrowserSwipeStartPosition >= 0) {
-                        int firstVisible = fileBrowserList.getFirstVisiblePosition();
-                        int childIndex = fileBrowserSwipeStartPosition - firstVisible;
-                        if (childIndex >= 0 && childIndex < fileBrowserList.getChildCount()) {
-                            fileBrowserSwipingView = fileBrowserList.getChildAt(childIndex);
-                        }
-                    }
-                    return false;
-
-                case MotionEvent.ACTION_MOVE:
-                    if (fileBrowserSwipeHandled || fileBrowserSwipeStartPosition < 0) {
-                        return fileBrowserSwipeHandled;
-                    }
-                    float dx = event.getX() - fileBrowserSwipeDownX;
-                    float dy = event.getY() - fileBrowserSwipeDownY;
-                    if (Math.abs(dy) > verticalSlop && Math.abs(dy) > Math.abs(dx)) {
-                        resetFileBrowserSwipingView();
-                        fileBrowserSwipeStartPosition = -1;
-                        return false;
-                    }
-                    if (dx > 0 && fileBrowserSwipingView != null) {
-                        float clampedDx = Math.min(dx, fileBrowserSwipingView.getWidth());
-                        fileBrowserSwipingView.setTranslationX(clampedDx);
-                        fileBrowserList.getParent().requestDisallowInterceptTouchEvent(true);
-                        int viewWidth = fileBrowserSwipingView.getWidth();
-                        if (viewWidth > 0 && dx >= viewWidth / 2f) {
-                            fileBrowserSwipeHandled = true;
-                            fileBrowserSwipingView.setTranslationX(0);
-                            fileBrowserSwipingView = null;
-                            if (fileBrowserSwipeStartPosition < filteredFileEntries.size()) {
-                                FileEntry entry = filteredFileEntries.get(fileBrowserSwipeStartPosition);
-                                if (!entry.isDirectory) {
-                                    if (isPlaylistFile(entry.name)) {
-                                        int addedCount = addPlaylistToQueue(entry);
-                                        if (addedCount > 0)
-                                            Toast.makeText(FileBrowserQueueActivity.this, "Added " + addedCount + " files from " + entry.name, Toast.LENGTH_SHORT).show();
-                                        else
-                                            Toast.makeText(FileBrowserQueueActivity.this, "No playable files found in " + entry.name, Toast.LENGTH_SHORT).show();
-                                    } else {
-                                        addToQueue(entry.name, entry.uri);
-                                    }
-                                }
-                            }
-                            return true;
-                        }
-                        return true;
-                    }
-                    return false;
-
-                case MotionEvent.ACTION_UP:
-                case MotionEvent.ACTION_CANCEL:
-                    if (!fileBrowserSwipeHandled) v.performClick();
-                    resetFileBrowserSwipingView();
-                    boolean handled = fileBrowserSwipeHandled;
-                    fileBrowserSwipeStartPosition = -1;
-                    fileBrowserSwipeHandled = false;
-                    return handled;
-
-                default:
-                    return false;
-            }
-        });
-    }
-
-    private void resetFileBrowserSwipingView() {
-        if (fileBrowserSwipingView != null) {
-            fileBrowserSwipingView.setTranslationX(0);
-            fileBrowserSwipingView = null;
-        }
+        installSwipeListener(fileBrowserList,
+            position -> {
+                if (position >= filteredFileEntries.size()) return;
+                FileEntry entry = filteredFileEntries.get(position);
+                if (entry.isDirectory) return;
+                if (isPlaylistFile(entry.name)) {
+                    int addedCount = addPlaylistToQueue(entry);
+                    if (addedCount > 0)
+                        Toast.makeText(this, "Added " + addedCount + " files from " + entry.name, Toast.LENGTH_SHORT).show();
+                    else
+                        Toast.makeText(this, "No playable files found in " + entry.name, Toast.LENGTH_SHORT).show();
+                } else {
+                    addToQueue(entry.name, entry.uri);
+                }
+            },
+            null
+        );
     }
 
     private Uri resolveFirstPlaylistUri(FileEntry playlistEntry) {

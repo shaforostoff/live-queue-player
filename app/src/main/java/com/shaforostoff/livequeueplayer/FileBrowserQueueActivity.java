@@ -2581,10 +2581,6 @@ public class FileBrowserQueueActivity extends Activity {
             this.uri         = Uri.fromFile(file);
             this.name        = name;
             this.isDirectory = isDirectory;
-            this.sortDate    = "";
-            this.sortGenre   = "";
-            this.sortArtist  = "";
-            this.sortBpm     = 0;
         }
 
         FileEntry(Uri uri, String name, boolean isDirectory) {
@@ -2592,10 +2588,6 @@ public class FileBrowserQueueActivity extends Activity {
             this.uri         = uri;
             this.name        = name;
             this.isDirectory = isDirectory;
-            this.sortDate    = "";
-            this.sortGenre   = "";
-            this.sortArtist  = "";
-            this.sortBpm     = 0;
         }
     }
 

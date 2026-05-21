@@ -20,6 +20,7 @@ import android.text.Editable;
 import android.text.TextWatcher;
 import android.provider.DocumentsContract;
 import android.provider.MediaStore;
+import android.util.Pair;
 import android.util.TypedValue;
 import android.graphics.drawable.ClipDrawable;
 import android.graphics.drawable.Drawable;
@@ -1387,12 +1388,11 @@ public class FileBrowserQueueActivity extends Activity {
 
         int threadCount = Math.min(4, pendingEntries.size());
         AtomicInteger pending = new AtomicInteger(pendingEntries.size());
-        List<SortTagResult> results = Collections.synchronizedList(new ArrayList<>(pendingEntries.size()));
+        List<Pair<FileEntry, MetadataExtractor.TagEntry>> results = Collections.synchronizedList(new ArrayList<>(pendingEntries.size()));
         ExecutorService pool = Executors.newFixedThreadPool(threadCount);
         for (FileEntry entry : pendingEntries) {
             pool.submit(() -> {
-                MetadataExtractor.TagEntry tags = metadataExtractor.readSortTags(entry.uri);
-                results.add(new SortTagResult(entry, tags.date, tags.genre, tags.artist, tags.bpm));
+                results.add(Pair.create(entry, metadataExtractor.readSortTags(entry.uri)));
                 runOnUiThread(() -> {
                     tagReadProgressDone = Math.min(tagReadProgressTotal, tagReadProgressDone + 1);
                     applySortButtonLoadingState();
@@ -1407,25 +1407,25 @@ public class FileBrowserQueueActivity extends Activity {
                         applySortButtonLoadingState();
 
                         if (versionAtStart != fileEntriesVersion) {
-                            for (SortTagResult result : results) {
-                                result.entry.sortDateState   = TagState.UNKNOWN;
-                                result.entry.sortGenreState  = TagState.UNKNOWN;
-                                result.entry.sortArtistState = TagState.UNKNOWN;
-                                result.entry.sortBpmState    = TagState.UNKNOWN;
+                            for (Pair<FileEntry, MetadataExtractor.TagEntry> result : results) {
+                                result.first.sortDateState   = TagState.UNKNOWN;
+                                result.first.sortGenreState  = TagState.UNKNOWN;
+                                result.first.sortArtistState = TagState.UNKNOWN;
+                                result.first.sortBpmState    = TagState.UNKNOWN;
                             }
                             return;
                         }
 
                         boolean changed = false;
-                        for (SortTagResult result : results) {
-                            result.entry.sortDate = result.date;
-                            result.entry.sortGenre = result.genre;
-                            result.entry.sortArtist = result.artist;
-                            result.entry.sortBpm = result.bpm;
-                            result.entry.sortDateState   = TagState.RESOLVED;
-                            result.entry.sortGenreState  = TagState.RESOLVED;
-                            result.entry.sortArtistState = TagState.RESOLVED;
-                            result.entry.sortBpmState    = TagState.RESOLVED;
+                        for (Pair<FileEntry, MetadataExtractor.TagEntry> result : results) {
+                            result.first.sortDate = result.second.date;
+                            result.first.sortGenre = result.second.genre;
+                            result.first.sortArtist = result.second.artist;
+                            result.first.sortBpm = result.second.bpm;
+                            result.first.sortDateState   = TagState.RESOLVED;
+                            result.first.sortGenreState  = TagState.RESOLVED;
+                            result.first.sortArtistState = TagState.RESOLVED;
+                            result.first.sortBpmState    = TagState.RESOLVED;
                             changed = true;
                         }
 
@@ -2728,22 +2728,6 @@ public class FileBrowserQueueActivity extends Activity {
             this.sortGenre   = "";
             this.sortArtist  = "";
             this.sortBpm     = 0;
-        }
-    }
-
-    static final class SortTagResult {
-        final FileEntry entry;
-        final String date;
-        final String genre;
-        final String artist;
-        final int bpm;
-
-        SortTagResult(FileEntry entry, String date, String genre, String artist, int bpm) {
-            this.entry = entry;
-            this.date = date;
-            this.genre = genre;
-            this.artist = artist;
-            this.bpm = bpm;
         }
     }
 

@@ -22,11 +22,14 @@ import android.provider.DocumentsContract;
 import android.provider.MediaStore;
 import android.util.Pair;
 import android.util.TypedValue;
+import android.graphics.Bitmap;
+import android.graphics.Canvas;
 import android.graphics.drawable.ClipDrawable;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.LayerDrawable;
 import android.view.Gravity;
+import android.view.HapticFeedbackConstants;
 import android.view.MotionEvent;
 import android.view.LayoutInflater;
 import android.view.View;
@@ -34,6 +37,8 @@ import android.view.ViewGroup;
 import android.widget.EditText;
 import android.widget.BaseAdapter;
 import android.widget.Button;
+import android.widget.FrameLayout;
+import android.widget.ImageView;
 import android.widget.ListView;
 import android.widget.ScrollView;
 import android.widget.TextView;
@@ -90,6 +95,22 @@ public class FileBrowserQueueActivity extends Activity {
         }
     }
 
+    private static final class DragState {
+        int currentPosition = -1;
+        boolean active;
+        View ghostView;
+        float touchOffsetX;
+        float touchOffsetY;
+
+        void reset() {
+            currentPosition = -1;
+            active = false;
+            ghostView = null;
+            touchOffsetX = 0;
+            touchOffsetY = 0;
+        }
+    }
+
     private static final int PERMISSION_REQUEST_CODE = 2001;
     private static final int TREE_REQUEST_CODE = 2002;
     private static final String ACTION_SEND_MULTIPLE_COMPAT = "android.intent.action.SEND_MULTIPLE";
@@ -133,6 +154,7 @@ public class FileBrowserQueueActivity extends Activity {
     private boolean stopFadeInProgress;
     private boolean browsingDocumentTree;
     private int currentPlayingQueueIndex = -1;
+    private int draggingQueueIndex = -1;
     private int servicePlaybackOffset = 0;
     private Button stopButton;
     private Button sortButton;
@@ -345,7 +367,7 @@ public class FileBrowserQueueActivity extends Activity {
                 //Toast.makeText(this, "Swipe right: remove. Stop playback to play this track", Toast.LENGTH_SHORT).show();
             }
         });
-        installQueueSwipeRemove(queueList);
+        installQueueGestureHandler(queueList);
 
         // -- navigation & playback buttons -----------------------------------
         playButton.setOnClickListener(v -> {
@@ -1708,6 +1730,20 @@ public class FileBrowserQueueActivity extends Activity {
         return true;
     }
 
+    private void moveQueueItem(int from, int to) {
+        if (from == to || from < 0 || to < 0
+                || from >= queueEntries.size() || to >= queueEntries.size()) return;
+        queueEntries.add(to, queueEntries.remove(from));
+        if (currentPlayingQueueIndex == from) {
+            currentPlayingQueueIndex = to;
+        } else if (from < to && currentPlayingQueueIndex > from && currentPlayingQueueIndex <= to) {
+            currentPlayingQueueIndex--;
+        } else if (from > to && currentPlayingQueueIndex >= to && currentPlayingQueueIndex < from) {
+            currentPlayingQueueIndex++;
+        }
+        queueAdapter.notifyDataSetChanged();
+    }
+
     private void syncServicePendingQueue() {
         if (currentPlayingQueueIndex < 0) {
             return;
@@ -1750,23 +1786,175 @@ public class FileBrowserQueueActivity extends Activity {
         QueueStore.save(this, persisted);
     }
 
-    private void installQueueSwipeRemove(ListView queueList) {
-        installSwipeListener(queueList,
-            position -> {
-                if (!removeQueueAt(position)) {
-                    Toast.makeText(this, "Cannot remove currently playing track", Toast.LENGTH_SHORT).show();
+    private void installQueueGestureHandler(ListView list) {
+        SwipeState swipeState = new SwipeState();
+        DragState dragState = new DragState();
+        float verticalSlop = 40f * getResources().getDisplayMetrics().density;
+        float horizontalSlop = 10f * getResources().getDisplayMetrics().density;
+        Runnable[] longPressRunnable = {null};
+
+        list.setOnTouchListener((v, event) -> {
+            switch (event.getAction()) {
+                case MotionEvent.ACTION_DOWN: {
+                    swipeState.downX = event.getX();
+                    swipeState.downY = event.getY();
+                    swipeState.startPosition = list.pointToPosition((int) event.getX(), (int) event.getY());
+                    swipeState.handled = false;
+                    swipeState.swipingView = null;
+                    dragState.reset();
+                    if (longPressRunnable[0] != null) {
+                        uiHandler.removeCallbacks(longPressRunnable[0]);
+                        longPressRunnable[0] = null;
+                    }
+                    if (swipeState.startPosition >= 0) {
+                        int firstVisible = list.getFirstVisiblePosition();
+                        int childIndex = swipeState.startPosition - firstVisible;
+                        if (childIndex >= 0 && childIndex < list.getChildCount()) {
+                            swipeState.swipingView = list.getChildAt(childIndex);
+                            int[] itemScreenPos = new int[2];
+                            swipeState.swipingView.getLocationOnScreen(itemScreenPos);
+                            dragState.touchOffsetX = event.getRawX() - itemScreenPos[0];
+                            dragState.touchOffsetY = event.getRawY() - itemScreenPos[1];
+                        }
+                        if (swipeState.startPosition != currentPlayingQueueIndex) {
+                            int pos = swipeState.startPosition;
+                            longPressRunnable[0] = () -> {
+                                if (!swipeState.handled && !dragState.active
+                                        && swipeState.swipingView != null) {
+                                    View src = swipeState.swipingView;
+                                    Bitmap bmp = Bitmap.createBitmap(
+                                            src.getWidth(), src.getHeight(), Bitmap.Config.ARGB_8888);
+                                    src.draw(new Canvas(bmp));
+                                    ImageView ghost = new ImageView(FileBrowserQueueActivity.this);
+                                    ghost.setImageBitmap(bmp);
+                                    ghost.setAlpha(0.85f);
+                                    ghost.setElevation(8f * getResources().getDisplayMetrics().density);
+                                    ViewGroup decor = (ViewGroup) getWindow().getDecorView();
+                                    int[] decorPos = new int[2];
+                                    decor.getLocationOnScreen(decorPos);
+                                    int[] itemPos = new int[2];
+                                    src.getLocationOnScreen(itemPos);
+                                    decor.addView(ghost, new FrameLayout.LayoutParams(
+                                            src.getWidth(), src.getHeight()));
+                                    ghost.setX(itemPos[0] - decorPos[0]);
+                                    ghost.setY(itemPos[1] - decorPos[1]);
+                                    src.setAlpha(0f);
+                                    dragState.ghostView = ghost;
+                                    dragState.currentPosition = pos;
+                                    dragState.active = true;
+                                    draggingQueueIndex = pos;
+                                    longPressRunnable[0] = null;
+                                    list.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
+                                    list.getParent().requestDisallowInterceptTouchEvent(true);
+                                }
+                            };
+                            uiHandler.postDelayed(longPressRunnable[0], 400L);
+                        }
+                    }
+                    return false;
                 }
-            },
-            position -> {
-                if (mode != Mode.REMOTE_SEND && mode != Mode.REMOTE_RECEIVE) return;
-                if (position < 0 || position >= queueEntries.size()) return;
-                QueueEntry entry = queueEntries.get(position);
-                if (mode == Mode.REMOTE_SEND
-                        && btController.sendQueueRequest(entry.name, getParentFolderName(entry.uri))) {
-                    Toast.makeText(this, "Track request sent", Toast.LENGTH_SHORT).show();
+
+                case MotionEvent.ACTION_MOVE: {
+                    if (dragState.active) {
+                        if (dragState.ghostView != null) {
+                            ViewGroup decor = (ViewGroup) getWindow().getDecorView();
+                            int[] decorPos = new int[2];
+                            decor.getLocationOnScreen(decorPos);
+                            dragState.ghostView.setX(event.getRawX() - dragState.touchOffsetX - decorPos[0]);
+                            dragState.ghostView.setY(event.getRawY() - dragState.touchOffsetY - decorPos[1]);
+                        }
+                        int targetPos = list.pointToPosition((int) event.getX(), (int) event.getY());
+                        if (targetPos >= 0 && targetPos < queueEntries.size()
+                                && targetPos != dragState.currentPosition
+                                && (targetPos != currentPlayingQueueIndex
+                                        || currentPlayingQueueIndex == queueEntries.size() - 1
+                                        || currentPlayingQueueIndex == 0)) {
+                            moveQueueItem(dragState.currentPosition, targetPos);
+                            dragState.currentPosition = targetPos;
+                            draggingQueueIndex = targetPos;
+                        }
+                        return true;
+                    }
+
+                    if (swipeState.handled || swipeState.startPosition < 0) return swipeState.handled;
+                    float dx = event.getX() - swipeState.downX;
+                    float dy = event.getY() - swipeState.downY;
+
+                    if (Math.abs(dx) > horizontalSlop || Math.abs(dy) > verticalSlop) {
+                        if (longPressRunnable[0] != null) {
+                            uiHandler.removeCallbacks(longPressRunnable[0]);
+                            longPressRunnable[0] = null;
+                        }
+                    }
+                    if (Math.abs(dy) > verticalSlop && Math.abs(dy) > Math.abs(dx)) {
+                        swipeState.resetView();
+                        swipeState.startPosition = -1;
+                        return false;
+                    }
+                    if (dx > 0 && swipeState.swipingView != null) {
+                        swipeState.swipingView.setTranslationX(Math.min(dx, swipeState.swipingView.getWidth()));
+                        list.getParent().requestDisallowInterceptTouchEvent(true);
+                        if (swipeState.swipingView.getWidth() > 0 && dx >= swipeState.swipingView.getWidth() / 2f) {
+                            swipeState.handled = true;
+                            swipeState.resetView();
+                            if (!removeQueueAt(swipeState.startPosition)) {
+                                Toast.makeText(this, "Cannot remove currently playing track", Toast.LENGTH_SHORT).show();
+                            }
+                        }
+                        return true;
+                    }
+                    if (dx < 0 && swipeState.swipingView != null) {
+                        swipeState.swipingView.setTranslationX(Math.max(dx, -swipeState.swipingView.getWidth()));
+                        list.getParent().requestDisallowInterceptTouchEvent(true);
+                        if (swipeState.swipingView.getWidth() > 0 && Math.abs(dx) >= swipeState.swipingView.getWidth() / 2f) {
+                            swipeState.handled = true;
+                            swipeState.resetView();
+                            int pos = swipeState.startPosition;
+                            if ((mode == Mode.REMOTE_SEND || mode == Mode.REMOTE_RECEIVE)
+                                    && pos >= 0 && pos < queueEntries.size()) {
+                                QueueEntry entry = queueEntries.get(pos);
+                                if (mode == Mode.REMOTE_SEND
+                                        && btController.sendQueueRequest(entry.name, getParentFolderName(entry.uri))) {
+                                    Toast.makeText(this, "Track request sent", Toast.LENGTH_SHORT).show();
+                                }
+                            }
+                        }
+                        return true;
+                    }
+                    return false;
                 }
+
+                case MotionEvent.ACTION_UP:
+                case MotionEvent.ACTION_CANCEL: {
+                    if (longPressRunnable[0] != null) {
+                        uiHandler.removeCallbacks(longPressRunnable[0]);
+                        longPressRunnable[0] = null;
+                    }
+                    if (dragState.active) {
+                        if (dragState.ghostView != null) {
+                            ((ViewGroup) getWindow().getDecorView()).removeView(dragState.ghostView);
+                        }
+                        dragState.reset();
+                        draggingQueueIndex = -1;
+                        queueAdapter.notifyDataSetChanged();
+                        persistQueue();
+                        if (!playbackStopped && !stopFadeInProgress) {
+                            syncServicePendingQueue();
+                        }
+                        return true;
+                    }
+                    if (!swipeState.handled) v.performClick();
+                    swipeState.resetView();
+                    boolean handled = swipeState.handled;
+                    swipeState.startPosition = -1;
+                    swipeState.handled = false;
+                    return handled;
+                }
+
+                default:
+                    return false;
             }
-        );
+        });
     }
 
     private void installSwipeListener(ListView list, SwipeAction onRightSwipe, SwipeAction onLeftSwipe) {
@@ -2758,6 +2946,7 @@ public class FileBrowserQueueActivity extends Activity {
             QueueEntry entry = queueEntries.get(position);
             // reset translation in case this view was recycled mid-swipe
             convertView.setTranslationX(0);
+            convertView.setAlpha(draggingQueueIndex >= 0 && position == draggingQueueIndex ? 0f : 1.0f);
 
             boolean isCurrentTrack = position == currentPlayingQueueIndex
                     && (!playbackStopped || stopFadeInProgress);

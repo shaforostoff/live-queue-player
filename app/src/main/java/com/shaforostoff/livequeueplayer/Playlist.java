@@ -7,7 +7,8 @@ import java.util.ArrayList;
 
 final class Playlist extends ArrayList<Playlist.Entry> {
 
-    private final PlaylistGenerator generator;
+    private static final long serialVersionUID = 1L;
+    private transient final PlaylistGenerator generator;
 
     Playlist(Context context) {
         generator = new PlaylistGenerator(context, this);

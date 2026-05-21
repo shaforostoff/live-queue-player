@@ -4,12 +4,12 @@ plugins {
 
 android {
   namespace 'com.shaforostoff.livequeueplayer'
-  compileSdk 34
+  compileSdk 35
 
   defaultConfig {
     applicationId 'com.shaforostoff.livequeueplayer'
     minSdk 23
-    targetSdk 34
+    targetSdk 35
   }
 
   /* just delete the signing configs if it doesn't work */

@@ -28,6 +28,7 @@ public class Service extends android.app.Service implements MediaPlayerStateList
     static final String EXTRA_PLAYBACK_DURATION_MS = "playback_duration_ms";
     static final String EXTRA_HAS_PENDING_TRACKS = "has_pending_tracks";
     static final String EXTRA_FADE_OUT_IN_PROGRESS = "fade_out_in_progress";
+    static final String EXTRA_BROWSE_MODE = "browse_mode";
     private static final long PLAYBACK_PROGRESS_BROADCAST_INTERVAL_MS = 1_000L;
 
     // Readable by the activity to re-sync state after missed broadcasts (e.g. screen off)
@@ -38,6 +39,7 @@ public class Service extends android.app.Service implements MediaPlayerStateList
     static volatile int sPlaybackDurationMs = 0;
     static volatile boolean sHasPendingTracks = false;
     static volatile boolean sFadeOutInProgress = false;
+    static volatile boolean sBrowseMode = false;
 
     private HWListener hwListener;
     private Notifications notifications;
@@ -142,6 +144,7 @@ public class Service extends android.app.Service implements MediaPlayerStateList
                 case Launcher.KILL -> stopSelf();
             }
         } else {
+            sBrowseMode = intent.getBooleanExtra(EXTRA_BROWSE_MODE, false);
             int sizeBefore = playlist.size();
             switch (intent.getAction()) {
                 case Intent.ACTION_VIEW -> playlist.generate(intent.getData());
@@ -187,7 +190,8 @@ public class Service extends android.app.Service implements MediaPlayerStateList
             audioPlayer.start();
 
             /* create notification for playback control */
-            notifications.getNotification(entry.title);
+            notifications.getNotification(entry.title,
+                    sBrowseMode ? hwListener.getSessionToken() : null);
 
             /* start service as foreground */
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)

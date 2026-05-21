@@ -4,24 +4,20 @@ import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.content.Context;
+import android.media.session.MediaSession;
 import android.os.Build;
 
 class Notifications implements MediaPlayerStateListener {
 
-  /**
-   * notification channel id
-   */
   public static final String NOTIFICATION_CHANNEL = "nc";
-  /**
-   * notification id
-   */
   public static final int NOTIFICATION_ID = 1;
   private final Service service;
-  /**
-   * notification for playback control
-   */
+
   Notification notification;
   Notification.Builder builder;
+
+  /** Non-null only in Browse mode; drives MediaStyle. */
+  private MediaSession.Token sessionToken;
 
   public Notifications(Service service) {
     this.service = service;
@@ -29,7 +25,6 @@ class Notifications implements MediaPlayerStateListener {
 
   public void create() {
     if (Build.VERSION.SDK_INT >= 26) {
-      /* create a notification channel */
       var name = "Playback Control";
       var description = "Notification audio controls";
       var importance = NotificationManager.IMPORTANCE_LOW;
@@ -48,12 +43,18 @@ class Notifications implements MediaPlayerStateListener {
       builder = new Notification.Builder(service);
     }
 
-    builder.setCategory(Notification.CATEGORY_SERVICE);
     builder.setSmallIcon(R.drawable.ic_notif);
     builder.setContentTitle(title);
     builder.setSound(null);
     builder.setVibrate(null);
     builder.setContentText("buffering");
+
+    if (sessionToken != null) {
+      builder.setCategory(Notification.CATEGORY_TRANSPORT);
+      builder.setStyle(new Notification.MediaStyle().setMediaSession(sessionToken));
+    } else {
+      builder.setCategory(Notification.CATEGORY_SERVICE);
+    }
   }
 
   @Override
@@ -67,22 +68,19 @@ class Notifications implements MediaPlayerStateListener {
     notification = builder.build();
   }
 
-  void getNotification(final String title) {
+  void getNotification(final String title, MediaSession.Token sessionToken) {
+    this.sessionToken = sessionToken;
     setupNotificationBuilder(title);
     buildNotification();
     update();
   }
 
-  /**
-   * update notification content and place on stack
-   */
   private void update() {
     ((NotificationManager) service.getSystemService(Context.NOTIFICATION_SERVICE)).notify(NOTIFICATION_ID, notification);
   }
 
   @Override
   public void onMediaPlayerReset() {
-    /* remove notification from stack */
     ((NotificationManager) service.getSystemService(Context.NOTIFICATION_SERVICE)).cancel(NOTIFICATION_ID);
   }
 
@@ -90,4 +88,3 @@ class Notifications implements MediaPlayerStateListener {
   public void onMediaPlayerDestroy() {
   }
 }
-

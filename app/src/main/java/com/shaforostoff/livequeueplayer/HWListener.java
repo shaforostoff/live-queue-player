@@ -35,6 +35,13 @@ public class HWListener extends BroadcastReceiver implements MediaPlayerStateLis
         onReceive(service, mediaButtonIntent);
         return super.onMediaButtonEvent(mediaButtonIntent);
       }
+      @Override public void onPlay()           { send(Launcher.PLAY); }
+      @Override public void onPause()          { send(Launcher.PAUSE); }
+      private void send(byte action) {
+        Intent i = new Intent(service, Service.class);
+        i.putExtra(Launcher.TYPE, action);
+        service.startService(i);
+      }
     });
 
     playbackStateBuilder = new PlaybackState.Builder();
@@ -51,6 +58,10 @@ public class HWListener extends BroadcastReceiver implements MediaPlayerStateLis
     else
       playbackStateBuilder.setState(PlaybackState.STATE_PAUSED, PlaybackState.PLAYBACK_POSITION_UNKNOWN, 1);
     mediaSession.setPlaybackState(playbackStateBuilder.build());
+  }
+
+  MediaSession.Token getSessionToken() {
+    return mediaSession != null ? mediaSession.getSessionToken() : null;
   }
 
   @Override

@@ -2132,6 +2132,7 @@ public class FileBrowserQueueActivity extends Activity {
         intent.setAction(ACTION_SEND_MULTIPLE_COMPAT);
         intent.setType("audio/*");
         intent.putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris);
+        intent.putExtra(Service.EXTRA_BROWSE_MODE, true);
 
         browseTransitionActive = true;
         sendStopNowCommand();

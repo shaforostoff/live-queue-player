@@ -70,6 +70,8 @@ public class FileBrowserQueueActivity extends Activity {
         REMOTE_RECEIVE // DJ + BT: receives track requests from remote client
     }
 
+    enum TagState { UNKNOWN, LOADING, RESOLVED }
+
     private static final int PERMISSION_REQUEST_CODE = 2001;
     private static final int TREE_REQUEST_CODE = 2002;
     private static final String ACTION_SEND_MULTIPLE_COMPAT = "android.intent.action.SEND_MULTIPLE";
@@ -1210,7 +1212,7 @@ public class FileBrowserQueueActivity extends Activity {
 
     private void applyFilenameYearsInPlace() {
         for (FileEntry entry : fileEntries) {
-            if (entry.isDirectory || entry.sortDateResolved) {
+            if (entry.isDirectory || entry.sortDateState == TagState.RESOLVED) {
                 continue;
             }
             String filenameYear = MetadataExtractor.extractYearFromFileName(entry.name);
@@ -1218,7 +1220,7 @@ public class FileBrowserQueueActivity extends Activity {
                 continue;
             }
             entry.sortDate = filenameYear;
-            entry.sortDateResolved = true;
+            entry.sortDateState = TagState.RESOLVED;
         }
     }
 
@@ -1332,15 +1334,17 @@ public class FileBrowserQueueActivity extends Activity {
         boolean cacheApplied = false;
         for (FileEntry entry : fileEntries) {
             if (entry.isDirectory ||
-                    ((entry.sortDateResolved && entry.sortGenreResolved && entry.sortArtistResolved && entry.sortBpmResolved)
-                            || entry.sortDateLoading || entry.sortGenreLoading || entry.sortArtistLoading || entry.sortBpmLoading)) {
+                    (entry.sortDateState == TagState.RESOLVED && entry.sortGenreState == TagState.RESOLVED
+                            && entry.sortArtistState == TagState.RESOLVED && entry.sortBpmState == TagState.RESOLVED)
+                    || entry.sortDateState == TagState.LOADING || entry.sortGenreState == TagState.LOADING
+                    || entry.sortArtistState == TagState.LOADING || entry.sortBpmState == TagState.LOADING) {
                 continue;
             }
 
             String filenameYear = MetadataExtractor.extractYearFromFileName(entry.name);
             if (filenameYear.length() > 0) {
                 entry.sortDate = filenameYear;
-                entry.sortDateResolved = true;
+                entry.sortDateState = TagState.RESOLVED;
                 cacheApplied = true;
             }
 
@@ -1350,17 +1354,17 @@ public class FileBrowserQueueActivity extends Activity {
                 entry.sortGenre = tags.genre;
                 entry.sortArtist = tags.artist;
                 entry.sortBpm = tags.bpm;
-                entry.sortDateResolved = true;
-                entry.sortGenreResolved = true;
-                entry.sortArtistResolved = true;
-                entry.sortBpmResolved = true;
+                entry.sortDateState   = TagState.RESOLVED;
+                entry.sortGenreState  = TagState.RESOLVED;
+                entry.sortArtistState = TagState.RESOLVED;
+                entry.sortBpmState    = TagState.RESOLVED;
                 cacheApplied = true;
                 continue;
             }
-            entry.sortDateLoading = true;
-            entry.sortGenreLoading = true;
-            entry.sortArtistLoading = true;
-            entry.sortBpmLoading = true;
+            entry.sortDateState   = TagState.LOADING;
+            entry.sortGenreState  = TagState.LOADING;
+            entry.sortArtistState = TagState.LOADING;
+            entry.sortBpmState    = TagState.LOADING;
             pendingEntries.add(entry);
         }
 
@@ -1404,10 +1408,10 @@ public class FileBrowserQueueActivity extends Activity {
 
                         if (versionAtStart != fileEntriesVersion) {
                             for (SortTagResult result : results) {
-                                result.entry.sortDateLoading = false;
-                                result.entry.sortGenreLoading = false;
-                                result.entry.sortArtistLoading = false;
-                                result.entry.sortBpmLoading = false;
+                                result.entry.sortDateState   = TagState.UNKNOWN;
+                                result.entry.sortGenreState  = TagState.UNKNOWN;
+                                result.entry.sortArtistState = TagState.UNKNOWN;
+                                result.entry.sortBpmState    = TagState.UNKNOWN;
                             }
                             return;
                         }
@@ -1418,14 +1422,10 @@ public class FileBrowserQueueActivity extends Activity {
                             result.entry.sortGenre = result.genre;
                             result.entry.sortArtist = result.artist;
                             result.entry.sortBpm = result.bpm;
-                            result.entry.sortDateResolved = true;
-                            result.entry.sortGenreResolved = true;
-                            result.entry.sortArtistResolved = true;
-                            result.entry.sortBpmResolved = true;
-                            result.entry.sortDateLoading = false;
-                            result.entry.sortGenreLoading = false;
-                            result.entry.sortArtistLoading = false;
-                            result.entry.sortBpmLoading = false;
+                            result.entry.sortDateState   = TagState.RESOLVED;
+                            result.entry.sortGenreState  = TagState.RESOLVED;
+                            result.entry.sortArtistState = TagState.RESOLVED;
+                            result.entry.sortBpmState    = TagState.RESOLVED;
                             changed = true;
                         }
 
@@ -2703,14 +2703,10 @@ public class FileBrowserQueueActivity extends Activity {
         String sortGenre;
         String sortArtist;
         int sortBpm;
-        boolean sortDateResolved;
-        boolean sortGenreResolved;
-        boolean sortArtistResolved;
-        boolean sortBpmResolved;
-        boolean sortDateLoading;
-        boolean sortGenreLoading;
-        boolean sortArtistLoading;
-        boolean sortBpmLoading;
+        TagState sortDateState   = TagState.UNKNOWN;
+        TagState sortGenreState  = TagState.UNKNOWN;
+        TagState sortArtistState = TagState.UNKNOWN;
+        TagState sortBpmState    = TagState.UNKNOWN;
 
         FileEntry(File file, String name, boolean isDirectory) {
             this.file        = file;
@@ -2721,14 +2717,6 @@ public class FileBrowserQueueActivity extends Activity {
             this.sortGenre   = "";
             this.sortArtist  = "";
             this.sortBpm     = 0;
-            this.sortDateResolved = false;
-            this.sortGenreResolved = false;
-            this.sortArtistResolved = false;
-            this.sortBpmResolved = false;
-            this.sortDateLoading = false;
-            this.sortGenreLoading = false;
-            this.sortArtistLoading = false;
-            this.sortBpmLoading = false;
         }
 
         FileEntry(Uri uri, String name, boolean isDirectory) {
@@ -2740,14 +2728,6 @@ public class FileBrowserQueueActivity extends Activity {
             this.sortGenre   = "";
             this.sortArtist  = "";
             this.sortBpm     = 0;
-            this.sortDateResolved = false;
-            this.sortGenreResolved = false;
-            this.sortArtistResolved = false;
-            this.sortBpmResolved = false;
-            this.sortDateLoading = false;
-            this.sortGenreLoading = false;
-            this.sortArtistLoading = false;
-            this.sortBpmLoading = false;
         }
     }
 

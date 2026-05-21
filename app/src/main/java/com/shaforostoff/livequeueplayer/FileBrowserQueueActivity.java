@@ -80,18 +80,22 @@ public class FileBrowserQueueActivity extends Activity {
 
     @FunctionalInterface
     private interface SwipeAction { void onSwipe(int position); }
+    @FunctionalInterface
+    private interface SwipePredicate { boolean test(int position); }
 
     private static final class SwipeState {
         float downX, downY;
         int startPosition = -1;
         boolean handled;
         View swipingView;
+        View contentView;
 
         void resetView() {
-            if (swipingView != null) {
-                swipingView.setTranslationX(0);
-                swipingView = null;
+            if (contentView != null) {
+                contentView.setTranslationX(0);
+                contentView = null;
             }
+            swipingView = null;
         }
     }
 
@@ -1801,6 +1805,7 @@ public class FileBrowserQueueActivity extends Activity {
                     swipeState.startPosition = list.pointToPosition((int) event.getX(), (int) event.getY());
                     swipeState.handled = false;
                     swipeState.swipingView = null;
+                    swipeState.contentView = null;
                     dragState.reset();
                     if (longPressRunnable[0] != null) {
                         uiHandler.removeCallbacks(longPressRunnable[0]);
@@ -1809,8 +1814,15 @@ public class FileBrowserQueueActivity extends Activity {
                     if (swipeState.startPosition >= 0) {
                         int firstVisible = list.getFirstVisiblePosition();
                         int childIndex = swipeState.startPosition - firstVisible;
-                        if (childIndex >= 0 && childIndex < list.getChildCount()) {
+                        if (childIndex >= 0 && childIndex < list.getChildCount()
+                                && swipeState.startPosition != currentPlayingQueueIndex) {
                             swipeState.swipingView = list.getChildAt(childIndex);
+                            swipeState.contentView = swipeState.swipingView.findViewById(R.id.swipe_content);
+                            if (swipeState.contentView == null) swipeState.contentView = swipeState.swipingView;
+                            TextView qHintStart = swipeState.swipingView.findViewById(R.id.swipe_hint_start);
+                            if (qHintStart != null) qHintStart.setText("Remove →");
+                            TextView qHintEnd = swipeState.swipingView.findViewById(R.id.swipe_hint_end);
+                            if (qHintEnd != null) qHintEnd.setText(mode == Mode.REMOTE_SEND ? "← Send" : "");
                             int[] itemScreenPos = new int[2];
                             swipeState.swipingView.getLocationOnScreen(itemScreenPos);
                             dragState.touchOffsetX = event.getRawX() - itemScreenPos[0];
@@ -1892,21 +1904,19 @@ public class FileBrowserQueueActivity extends Activity {
                         return false;
                     }
                     if (dx > 0 && swipeState.swipingView != null) {
-                        swipeState.swipingView.setTranslationX(Math.min(dx, swipeState.swipingView.getWidth()));
+                        swipeState.contentView.setTranslationX(Math.min(dx, swipeState.contentView.getWidth()));
                         list.getParent().requestDisallowInterceptTouchEvent(true);
-                        if (swipeState.swipingView.getWidth() > 0 && dx >= swipeState.swipingView.getWidth() / 2f) {
+                        if (swipeState.contentView.getWidth() > 0 && dx >= swipeState.contentView.getWidth() / 2f) {
                             swipeState.handled = true;
                             swipeState.resetView();
-                            if (!removeQueueAt(swipeState.startPosition)) {
-                                Toast.makeText(this, "Cannot remove currently playing track", Toast.LENGTH_SHORT).show();
-                            }
+                            removeQueueAt(swipeState.startPosition);
                         }
                         return true;
                     }
-                    if (dx < 0 && swipeState.swipingView != null) {
-                        swipeState.swipingView.setTranslationX(Math.max(dx, -swipeState.swipingView.getWidth()));
+                    if (dx < 0 && swipeState.swipingView != null && mode == Mode.REMOTE_SEND) {
+                        swipeState.contentView.setTranslationX(Math.max(dx, -swipeState.contentView.getWidth()));
                         list.getParent().requestDisallowInterceptTouchEvent(true);
-                        if (swipeState.swipingView.getWidth() > 0 && Math.abs(dx) >= swipeState.swipingView.getWidth() / 2f) {
+                        if (swipeState.contentView.getWidth() > 0 && Math.abs(dx) >= swipeState.contentView.getWidth() / 2f) {
                             swipeState.handled = true;
                             swipeState.resetView();
                             int pos = swipeState.startPosition;
@@ -1957,7 +1967,9 @@ public class FileBrowserQueueActivity extends Activity {
         });
     }
 
-    private void installSwipeListener(ListView list, SwipeAction onRightSwipe, SwipeAction onLeftSwipe) {
+    private void installSwipeListener(ListView list, SwipePredicate canSwipe,
+                                      String rightHint, String leftHint,
+                                      SwipeAction onRightSwipe, SwipeAction onLeftSwipe) {
         SwipeState state = new SwipeState();
         float verticalSlop = 40f * getResources().getDisplayMetrics().density;
         list.setOnTouchListener((v, event) -> {
@@ -1968,11 +1980,23 @@ public class FileBrowserQueueActivity extends Activity {
                     state.startPosition = list.pointToPosition((int) event.getX(), (int) event.getY());
                     state.handled = false;
                     state.swipingView = null;
+                    state.contentView = null;
                     if (state.startPosition >= 0) {
                         int firstVisible = list.getFirstVisiblePosition();
                         int childIndex = state.startPosition - firstVisible;
-                        if (childIndex >= 0 && childIndex < list.getChildCount()) {
+                        if (childIndex >= 0 && childIndex < list.getChildCount()
+                                && (canSwipe == null || canSwipe.test(state.startPosition))) {
                             state.swipingView = list.getChildAt(childIndex);
+                            state.contentView = state.swipingView.findViewById(R.id.swipe_content);
+                            if (state.contentView == null) state.contentView = state.swipingView;
+                            if (rightHint != null) {
+                                TextView tv = state.swipingView.findViewById(R.id.swipe_hint_start);
+                                if (tv != null) tv.setText(rightHint);
+                            }
+                            if (leftHint != null) {
+                                TextView tv = state.swipingView.findViewById(R.id.swipe_hint_end);
+                                if (tv != null) tv.setText(leftHint);
+                            }
                         }
                     }
                     return false;
@@ -1987,9 +2011,9 @@ public class FileBrowserQueueActivity extends Activity {
                         return false;
                     }
                     if (dx > 0 && state.swipingView != null) {
-                        state.swipingView.setTranslationX(Math.min(dx, state.swipingView.getWidth()));
+                        state.contentView.setTranslationX(Math.min(dx, state.contentView.getWidth()));
                         list.getParent().requestDisallowInterceptTouchEvent(true);
-                        if (state.swipingView.getWidth() > 0 && dx >= state.swipingView.getWidth() / 2f) {
+                        if (state.contentView.getWidth() > 0 && dx >= state.contentView.getWidth() / 2f) {
                             state.handled = true;
                             state.resetView();
                             onRightSwipe.onSwipe(state.startPosition);
@@ -1997,9 +2021,9 @@ public class FileBrowserQueueActivity extends Activity {
                         return true;
                     }
                     if (dx < 0 && onLeftSwipe != null && state.swipingView != null) {
-                        state.swipingView.setTranslationX(Math.max(dx, -state.swipingView.getWidth()));
+                        state.contentView.setTranslationX(Math.max(dx, -state.contentView.getWidth()));
                         list.getParent().requestDisallowInterceptTouchEvent(true);
-                        if (state.swipingView.getWidth() > 0 && Math.abs(dx) >= state.swipingView.getWidth() / 2f) {
+                        if (state.contentView.getWidth() > 0 && Math.abs(dx) >= state.contentView.getWidth() / 2f) {
                             state.handled = true;
                             state.resetView();
                             onLeftSwipe.onSwipe(state.startPosition);
@@ -2025,6 +2049,8 @@ public class FileBrowserQueueActivity extends Activity {
 
     private void installFileBrowserSwipeAdd(ListView fileBrowserList) {
         installSwipeListener(fileBrowserList,
+            pos -> pos < filteredFileEntries.size() && !filteredFileEntries.get(pos).isDirectory,
+            "Queue →", null,
             position -> {
                 if (position >= filteredFileEntries.size()) return;
                 FileEntry entry = filteredFileEntries.get(position);
@@ -2792,10 +2818,12 @@ public class FileBrowserQueueActivity extends Activity {
     // -- adapters ------------------------------------------------------------
 
     private static final class ViewHolder {
+        final View content;
         final TextView icon;
         final TextView name;
         final TextView meta;
         ViewHolder(View v) {
+            content = v.findViewById(R.id.swipe_content);
             icon = v.findViewById(R.id.file_icon);
             name = v.findViewById(R.id.file_name);
             meta = v.findViewById(R.id.file_meta);
@@ -2895,7 +2923,7 @@ public class FileBrowserQueueActivity extends Activity {
                     progress = Math.min(1f, Math.max(0f,
                             currentTrackPositionMs / (float) currentTrackDurationMs));
                 }
-                applyProgressBackground(convertView, progress, colorPreviewBase, colorPreviewFill);
+                applyProgressBackground(vh.content, progress, colorPreviewBase, colorPreviewFill);
             } else if (isPreviewEntry) {
                 float progress = 0f;
                 if (hasProgress) {
@@ -2905,9 +2933,9 @@ public class FileBrowserQueueActivity extends Activity {
                                 SilenceStreamer.previewPositionMs / (float) dur));
                     }
                 }
-                applyProgressBackground(convertView, progress, colorPreviewBase, colorPreviewFill);
+                applyProgressBackground(vh.content, progress, colorPreviewBase, colorPreviewFill);
             } else {
-                convertView.setBackgroundColor(colorBackground);
+                vh.content.setBackgroundColor(colorBackground);
             }
 
             return convertView;
@@ -2944,8 +2972,7 @@ public class FileBrowserQueueActivity extends Activity {
             }
 
             QueueEntry entry = queueEntries.get(position);
-            // reset translation in case this view was recycled mid-swipe
-            convertView.setTranslationX(0);
+            vh.content.setTranslationX(0);
             convertView.setAlpha(draggingQueueIndex >= 0 && position == draggingQueueIndex ? 0f : 1.0f);
 
             boolean isCurrentTrack = position == currentPlayingQueueIndex
@@ -2956,9 +2983,9 @@ public class FileBrowserQueueActivity extends Activity {
                     progress = Math.min(1f,
                             Math.max(0f, currentTrackPositionMs / (float) currentTrackDurationMs));
                 }
-                applyProgressBackground(convertView, progress, colorQueueBase, colorQueueFill);
+                applyProgressBackground(vh.content, progress, colorQueueBase, colorQueueFill);
             } else {
-                convertView.setBackgroundColor(colorBackground);
+                vh.content.setBackgroundColor(colorBackground);
             }
             vh.icon.setText("\uD83C\uDFB5");
             vh.name.setText(entry.name);

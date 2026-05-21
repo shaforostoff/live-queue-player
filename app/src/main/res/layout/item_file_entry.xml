@@ -1,43 +1,80 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:a="http://schemas.android.com/apk/res/android"
+<FrameLayout xmlns:a="http://schemas.android.com/apk/res/android"
   a:layout_width="match_parent"
-  a:layout_height="wrap_content"
-  a:orientation="horizontal"
-  a:padding="8dp">
-
-  <TextView
-    a:id="@+id/file_icon"
-    a:layout_width="wrap_content"
-    a:layout_height="wrap_content"
-    a:layout_gravity="center_vertical"
-    a:layout_marginEnd="8dp"
-    a:layout_marginRight="8dp"
-    a:textSize="20sp" />
+  a:layout_height="wrap_content">
 
   <LinearLayout
-    a:layout_width="0dp"
-    a:layout_height="wrap_content"
-    a:layout_gravity="center_vertical"
-    a:layout_weight="1"
-    a:orientation="vertical">
+    a:layout_width="match_parent"
+    a:layout_height="match_parent"
+    a:orientation="horizontal"
+    a:paddingStart="16dp"
+    a:paddingEnd="16dp">
 
     <TextView
-      a:id="@+id/file_name"
-      a:layout_width="match_parent"
+      a:id="@+id/swipe_hint_start"
+      a:layout_width="wrap_content"
       a:layout_height="wrap_content"
-      a:ellipsize="end"
-      a:singleLine="true"
-      a:textSize="15sp" />
+      a:layout_gravity="center_vertical"
+      a:textSize="13sp"
+      a:textColor="?android:attr/textColorPrimary" />
+
+    <View
+      a:layout_width="0dp"
+      a:layout_height="0dp"
+      a:layout_weight="1" />
 
     <TextView
-      a:id="@+id/file_meta"
-      a:layout_width="match_parent"
+      a:id="@+id/swipe_hint_end"
+      a:layout_width="wrap_content"
       a:layout_height="wrap_content"
-      a:ellipsize="end"
-      a:singleLine="true"
-      a:textSize="11sp"
-      a:visibility="gone" />
+      a:layout_gravity="center_vertical"
+      a:textSize="13sp"
+      a:textColor="?android:attr/textColorPrimary" />
+
   </LinearLayout>
 
-</LinearLayout>
+  <LinearLayout
+    a:id="@+id/swipe_content"
+    a:layout_width="match_parent"
+    a:layout_height="wrap_content"
+    a:orientation="horizontal"
+    a:padding="8dp"
+    a:background="?android:attr/colorBackground">
 
+    <TextView
+      a:id="@+id/file_icon"
+      a:layout_width="wrap_content"
+      a:layout_height="wrap_content"
+      a:layout_gravity="center_vertical"
+      a:layout_marginEnd="8dp"
+      a:layout_marginRight="8dp"
+      a:textSize="20sp" />
+
+    <LinearLayout
+      a:layout_width="0dp"
+      a:layout_height="wrap_content"
+      a:layout_gravity="center_vertical"
+      a:layout_weight="1"
+      a:orientation="vertical">
+
+      <TextView
+        a:id="@+id/file_name"
+        a:layout_width="match_parent"
+        a:layout_height="wrap_content"
+        a:ellipsize="end"
+        a:singleLine="true"
+        a:textSize="15sp" />
+
+      <TextView
+        a:id="@+id/file_meta"
+        a:layout_width="match_parent"
+        a:layout_height="wrap_content"
+        a:ellipsize="end"
+        a:singleLine="true"
+        a:textSize="11sp"
+        a:visibility="gone" />
+    </LinearLayout>
+
+  </LinearLayout>
+
+</FrameLayout>

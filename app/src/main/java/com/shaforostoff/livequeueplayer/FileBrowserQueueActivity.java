@@ -1232,101 +1232,44 @@ public class FileBrowserQueueActivity extends Activity {
         if (left.isDirectory) {
             return left.name.compareToIgnoreCase(right.name);
         }
+        int c;
         if (fileSortMode == SORT_YEAR) {
-            String leftDate = left.sortDate == null ? "" : left.sortDate;
-            String rightDate = right.sortDate == null ? "" : right.sortDate;
-            boolean leftHasDate = leftDate.length() > 0;
-            boolean rightHasDate = rightDate.length() > 0;
-            if (leftHasDate != rightHasDate) {
-                return leftHasDate ? -1 : 1;
-            }
-            int dateCompare = leftDate.compareTo(rightDate);
-            if (dateCompare != 0) {
-                return dateCompare;
-            }
+            c = compareNullableStr(left.sortDate, right.sortDate, false);
+            if (c != 0) return c;
         } else if (fileSortMode == SORT_GENRE) {
-            String leftGenre = left.sortGenre == null ? "" : left.sortGenre;
-            String rightGenre = right.sortGenre == null ? "" : right.sortGenre;
-            boolean leftHasGenre = leftGenre.length() > 0;
-            boolean rightHasGenre = rightGenre.length() > 0;
-            if (leftHasGenre != rightHasGenre) {
-                return leftHasGenre ? -1 : 1;
-            }
-            int genreCompare = leftGenre.compareToIgnoreCase(rightGenre);
-            if (genreCompare != 0) {
-                return genreCompare;
-            }
-            String leftDate = left.sortDate == null ? "" : left.sortDate;
-            String rightDate = right.sortDate == null ? "" : right.sortDate;
-            boolean leftHasDate = leftDate.length() > 0;
-            boolean rightHasDate = rightDate.length() > 0;
-            if (leftHasDate != rightHasDate) {
-                return leftHasDate ? -1 : 1;
-            }
-            int dateCompare = leftDate.compareTo(rightDate);
-            if (dateCompare != 0) {
-                return dateCompare;
-            }
+            c = compareNullableStr(left.sortGenre, right.sortGenre, true);
+            if (c != 0) return c;
+            c = compareNullableStr(left.sortDate, right.sortDate, false);
+            if (c != 0) return c;
         } else if (fileSortMode == SORT_BPM) {
-            int leftBpm = left.sortBpm;
-            int rightBpm = right.sortBpm;
-            boolean leftHasBpm = leftBpm > 0;
-            boolean rightHasBpm = rightBpm > 0;
-            if (leftHasBpm != rightHasBpm) {
-                return leftHasBpm ? -1 : 1;
-            }
-            int bpmCompare = Integer.compare(leftBpm, rightBpm);
-            if (bpmCompare != 0) {
-                return bpmCompare;
-            }
-
-            String leftDate = left.sortDate == null ? "" : left.sortDate;
-            String rightDate = right.sortDate == null ? "" : right.sortDate;
-            boolean leftHasDate = leftDate.length() > 0;
-            boolean rightHasDate = rightDate.length() > 0;
-            if (leftHasDate != rightHasDate) {
-                return leftHasDate ? -1 : 1;
-            }
-            int dateCompare = leftDate.compareTo(rightDate);
-            if (dateCompare != 0) {
-                return dateCompare;
-            }
+            c = comparePositiveInt(left.sortBpm, right.sortBpm);
+            if (c != 0) return c;
+            c = compareNullableStr(left.sortDate, right.sortDate, false);
+            if (c != 0) return c;
         } else if (fileSortMode == SORT_ARTIST) {
-            String leftArtist = left.sortArtist == null ? "" : left.sortArtist;
-            String rightArtist = right.sortArtist == null ? "" : right.sortArtist;
-            boolean leftHasArtist = leftArtist.length() > 0;
-            boolean rightHasArtist = rightArtist.length() > 0;
-            if (leftHasArtist != rightHasArtist) {
-                return leftHasArtist ? -1 : 1;
-            }
-            int artistCompare = leftArtist.compareToIgnoreCase(rightArtist);
-            if (artistCompare != 0) {
-                return artistCompare;
-            }
-            String leftGenre = left.sortGenre == null ? "" : left.sortGenre;
-            String rightGenre = right.sortGenre == null ? "" : right.sortGenre;
-            boolean leftHasGenre = leftGenre.length() > 0;
-            boolean rightHasGenre = rightGenre.length() > 0;
-            if (leftHasGenre != rightHasGenre) {
-                return leftHasGenre ? -1 : 1;
-            }
-            int genreCompare = leftGenre.compareToIgnoreCase(rightGenre);
-            if (genreCompare != 0) {
-                return genreCompare;
-            }
-            String leftDate = left.sortDate == null ? "" : left.sortDate;
-            String rightDate = right.sortDate == null ? "" : right.sortDate;
-            boolean leftHasDate = leftDate.length() > 0;
-            boolean rightHasDate = rightDate.length() > 0;
-            if (leftHasDate != rightHasDate) {
-                return leftHasDate ? -1 : 1;
-            }
-            int dateCompare = leftDate.compareTo(rightDate);
-            if (dateCompare != 0) {
-                return dateCompare;
-            }
+            c = compareNullableStr(left.sortArtist, right.sortArtist, true);
+            if (c != 0) return c;
+            c = compareNullableStr(left.sortGenre, right.sortGenre, true);
+            if (c != 0) return c;
+            c = compareNullableStr(left.sortDate, right.sortDate, false);
+            if (c != 0) return c;
         }
         return left.name.compareToIgnoreCase(right.name);
+    }
+
+    private static int compareNullableStr(String a, String b, boolean ignoreCase) {
+        boolean aHas = a != null && a.length() > 0;
+        boolean bHas = b != null && b.length() > 0;
+        if (aHas != bHas) return aHas ? -1 : 1;
+        if (!aHas) return 0;
+        return ignoreCase ? a.compareToIgnoreCase(b) : a.compareTo(b);
+    }
+
+    private static int comparePositiveInt(int a, int b) {
+        boolean aHas = a > 0;
+        boolean bHas = b > 0;
+        if (aHas != bHas) return aHas ? -1 : 1;
+        return Integer.compare(a, b);
     }
 
     private void resolveTagMetadataForVisibleFolderAsync() {

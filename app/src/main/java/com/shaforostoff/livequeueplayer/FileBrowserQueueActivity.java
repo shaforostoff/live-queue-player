@@ -411,7 +411,7 @@ public class FileBrowserQueueActivity extends Activity {
         applySortButtonLoadingState();
 
         stopButton.setOnClickListener(v -> {
-            if (mode == Mode.REMOTE_SEND || browseFilePlaying) {
+            if (hasBrowseBehavior() || browseFilePlaying) {
                 stopPlaybackImmediately();
             } else {
                 stopPlaybackWithFadeout();

@@ -27,6 +27,7 @@ final class SilenceStreamer {
     private Thread thread;
     private volatile boolean running;
     private volatile boolean fadingOut;
+    private volatile boolean pendingFlush;
     private final AtomicReference<PcmDecoder> previewDecoder = new AtomicReference<>();
 
     void start() {
@@ -102,9 +103,13 @@ final class SilenceStreamer {
                         n = dec.read(decBuf, 0, decBuf.length);
                     }
                     if (n < 0) {
-                        previewDecoder.compareAndSet(dec, null);
-                        dec.close();
-                        restorePlaybackRate();
+                        if (previewDecoder.compareAndSet(dec, null)) {
+                            // Natural EOS: we own the cleanup.
+                            dec.close();
+                            restorePlaybackRate();
+                        }
+                        // External stop: doStopPreview already closed and restored the rate;
+                        // doStartPreview may have already set the new decoder's rate — don't clobber it.
                     } else if (n > 0) {
                         previewPositionMs = dec.positionUs / 1000;
                         if (trackRef.write(decBuf, 0, n) < 0) break;
@@ -112,6 +117,14 @@ final class SilenceStreamer {
                     } else {
                         continue; // codec pipeline momentarily dry; don't inject silence
                     }
+                }
+                if (pendingFlush) {
+                    pendingFlush = false;
+                    try {
+                        trackRef.pause();
+                        trackRef.flush();
+                        trackRef.play();
+                    } catch (Exception ignored) {}
                 }
                 if (trackRef.write(silence, 0, silence.length) < 0) break;
             }
@@ -211,6 +224,7 @@ final class SilenceStreamer {
         if (old != null) {
             old.close();
             restorePlaybackRate();
+            pendingFlush = true;
         }
         previewPositionMs = 0;
         previewDurationMs = 0;

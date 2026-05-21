@@ -309,13 +309,9 @@ public class Service extends android.app.Service implements MediaPlayerStateList
     @Override
     public void onDestroy() {
         stopProgressTicks();
-        // Leave SilenceStreamer running — the Activity owns its lifetime and will
-        // release it in onStop() when no service is playing. Just stop the decoder.
-        if (silenceStreamer != null) {
-            PreviewManager.isPreviewActive = false;
-            SilenceStreamer.stopPreview();
-            silenceStreamer = null;
-        }
+        // Leave SilenceStreamer running (including any active preview) —
+        // the Activity owns its lifetime and releases it in onStop().
+        silenceStreamer = null;
         sFadeOutInProgress = false;
         notifyPlaybackState(false, -1, null);
         onMediaPlayerReset();

@@ -37,6 +37,7 @@ class BluetoothController {
     private BroadcastReceiver bondingReceiver;
     private AlertDialog devicePickerDialog;
     private int pendingMode = -1; // -1 = show dialog, 1 = server, 0 = client
+    private List<BluetoothQueueBridge.TrackRequest> pendingRequests;
 
     BluetoothController(Activity activity, Callback callback) {
         this.activity = activity;
@@ -74,8 +75,18 @@ class BluetoothController {
                 @Override
                 public void onConnectionStateChanged(boolean connected, String message) {
                     activity.runOnUiThread(() -> {
-                        if (!activity.isDestroyed())
-                            Toast.makeText(activity, message, Toast.LENGTH_SHORT).show();
+                        if (activity.isDestroyed()) return;
+                        Toast.makeText(activity, message, Toast.LENGTH_SHORT).show();
+                        if (connected && pendingRequests != null) {
+                            List<BluetoothQueueBridge.TrackRequest> toSend = pendingRequests;
+                            pendingRequests = null;
+                            if (bridge.sendQueueRequests(toSend)) {
+                                String msg = toSend.size() == 1
+                                        ? "Track request sent"
+                                        : "Sent " + toSend.size() + " track(s)";
+                                Toast.makeText(activity, msg, Toast.LENGTH_SHORT).show();
+                            }
+                        }
                     });
                 }
             });
@@ -89,6 +100,7 @@ class BluetoothController {
 
     boolean sendQueueRequests(List<BluetoothQueueBridge.TrackRequest> requests) {
         if (bridge == null || !bridge.isConnected()) {
+            pendingRequests = new ArrayList<>(requests);
             startRemoteSetup();
             return false;
         }

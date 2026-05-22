@@ -1690,6 +1690,26 @@ public class FileBrowserQueueActivity extends Activity {
         addToQueue(entries);
     }
 
+    private void ensureQueueTagsCachedAsync() {
+        List<Uri> uncached = new ArrayList<>();
+        for (QueueEntry entry : queueEntries) {
+            if (entry.uri != null && !metadataExtractor.isAllTagsCached(entry.uri))
+                uncached.add(entry.uri);
+        }
+        if (uncached.isEmpty()) return;
+        int threadCount = Math.min(4, uncached.size());
+        AtomicInteger pending = new AtomicInteger(uncached.size());
+        ExecutorService pool = Executors.newFixedThreadPool(threadCount);
+        for (Uri uri : uncached) {
+            pool.submit(() -> {
+                metadataExtractor.readSortTags(uri);
+                if (pending.decrementAndGet() == 0)
+                    runOnUiThread(() -> queueAdapter.notifyDataSetChanged());
+            });
+        }
+        pool.shutdown();
+    }
+
     private void addToQueue(List<QueueEntry> entries) {
         if (entries.isEmpty()) {
             return;
@@ -1699,6 +1719,7 @@ public class FileBrowserQueueActivity extends Activity {
         queueList.smoothScrollToPosition(queueEntries.size() - 1);
         updateQueueHint();
         persistQueue();
+        ensureQueueTagsCachedAsync();
 
         // Keep the running service queue aligned with the visible queue.
         if (!playbackStopped && !stopFadeInProgress) {
@@ -1783,6 +1804,7 @@ public class FileBrowserQueueActivity extends Activity {
         }
         queueAdapter.notifyDataSetChanged();
         updateQueueHint();
+        ensureQueueTagsCachedAsync();
     }
 
     private void persistQueue() {

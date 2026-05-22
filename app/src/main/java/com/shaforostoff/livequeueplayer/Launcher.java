@@ -214,8 +214,12 @@ public class Launcher extends Activity {
 
     private void showLicenseDialog() {
         String text;
-        try (InputStream is = getResources().openRawResource(R.raw.license)) {
-            text = new String(is.readAllBytes(), StandardCharsets.UTF_8);
+        try (InputStream is = getResources().openRawResource(R.raw.license);
+             java.io.ByteArrayOutputStream baos = new java.io.ByteArrayOutputStream()) {
+            byte[] buf = new byte[4096];
+            int n;
+            while ((n = is.read(buf)) != -1) baos.write(buf, 0, n);
+            text = baos.toString(StandardCharsets.UTF_8.name());
         } catch (IOException e) {
             text = "License text unavailable.";
         }

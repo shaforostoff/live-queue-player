@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+  <string name="app_name" translatable="false">Pocket Tandas</string>
   <string name="all_audio_files">All audio files</string>
   <string name="browse_storage_button">Browse</string>
   <string name="navigate_back_button">Back</string>
@@ -32,6 +33,46 @@
   <string name="save_queue_failed">Failed to save playlist</string>
   <string name="lyrics_not_found">No embedded lyrics found for this track.</string>
   <string name="lyrics_dialog_title">Lyrics: %1$s</string>
+  <string name="preferred_audio_output">Preferred audio output:</string>
+  <string name="output_default">Default</string>
+  <string name="output_bluetooth">Bluetooth</string>
+  <string name="output_wired">3.5mm cable</string>
+  <string name="output_usb">USB audio</string>
+  <string name="bluetooth_track_names">Track names via Bluetooth</string>
+  <string name="dj_mode_button">DJ</string>
+  <string name="remote_send_button">+ Send</string>
+  <string name="remote_receive_button">+ Receive</string>
+  <string name="stop_after_current_button">Stop after current track</string>
+  <string name="clear_queue_button">Clear queue</string>
+  <string name="fade_out_label">Fade out duration: %d s</string>
+  <string name="license_button">License (GPLv3)</string>
+  <string name="no_track_playing">No track is playing</string>
+  <string name="stop_after_current_toast">Playback will stop after current track</string>
+  <string name="queue_cleared_toast">Queue cleared</string>
+  <string name="upcoming_cleared_toast">Cleared upcoming tracks</string>
+  <string name="license_dialog_title">GNU General Public License v3</string>
+  <string name="license_dialog_close">Close</string>
+  <string name="stop_playback_first">Stop playback first</string>
+  <string name="load_audio_failed">Failed to load audio files.</string>
+  <string name="added_files_from_playlist">Added %1$d files from %2$s</string>
+  <string name="no_playable_files_in_playlist">No playable files found in %s</string>
+  <string name="track_request_sent">Track request sent</string>
+  <string name="added_tracks_from_remote">Added %d track(s) from remote</string>
+  <string name="requested_file_not_found">Requested file not found: %s</string>
+  <string name="sent_tracks">Sent %d track(s)</string>
+  <string name="bt_not_connected">Not connected to Bluetooth server</string>
+  <string name="bt_not_available">Bluetooth is not available on this device</string>
+  <string name="bt_mode_dialog_title">Remote queue Bluetooth mode</string>
+  <string name="bt_receive_requests">Receive requests</string>
+  <string name="bt_send_requests">Send requests</string>
+  <string name="bt_no_paired_devices">No paired Bluetooth devices found</string>
+  <string name="bt_select_server_device">Select server device</string>
+  <string name="bt_connect_remembered">Connect remembered</string>
+  <string name="bt_device_paired">New device paired: %s</string>
+  <string name="bt_device_unpaired">Device unpaired: %s</string>
+  <string name="unknown_device">Unknown</string>
+  <string name="swipe_hint_remove">Remove →</string>
+  <string name="swipe_hint_send">← Send</string>
 </resources>
 
 

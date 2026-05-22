@@ -16,14 +16,14 @@
     <TextView
       a:layout_width="match_parent"
       a:layout_height="wrap_content"
-      a:text="Pocket Tandas"
+      a:text="@string/app_name"
       a:textSize="40sp" />
 
     <TextView
       a:layout_width="match_parent"
       a:layout_height="wrap_content"
       a:layout_marginTop="10dp"
-      a:text="Preferred audio output:"/>
+      a:text="@string/preferred_audio_output"/>
 
     <RadioGroup
       a:id="@+id/output_group"
@@ -35,25 +35,25 @@
         a:id="@+id/output_default"
         a:layout_width="match_parent"
         a:layout_height="wrap_content"
-        a:text="Default"/>
+        a:text="@string/output_default"/>
 
       <RadioButton
         a:id="@+id/output_bluetooth"
         a:layout_width="match_parent"
         a:layout_height="wrap_content"
-        a:text="Bluetooth"/>
+        a:text="@string/output_bluetooth"/>
 
       <RadioButton
         a:id="@+id/output_wired"
         a:layout_width="match_parent"
         a:layout_height="wrap_content"
-        a:text="3.5mm cable"/>
+        a:text="@string/output_wired"/>
 
       <RadioButton
         a:id="@+id/output_usb"
         a:layout_width="match_parent"
         a:layout_height="wrap_content"
-        a:text="USB audio"/>
+        a:text="@string/output_usb"/>
     </RadioGroup>
 
     <TableLayout
@@ -72,7 +72,7 @@
           a:layout_height="wrap_content"
           a:layout_weight="1"
           a:gravity="center"
-          a:text="Track names via Bluetooth"/>
+          a:text="@string/bluetooth_track_names"/>
       </TableRow>
 
       <TableRow>
@@ -82,14 +82,14 @@
           a:layout_height="wrap_content"
           a:layout_weight="1"
           a:layout_margin="10dp"
-          a:text="Browse"/>
+          a:text="@string/browse_storage_button"/>
         <Button
           a:id="@+id/remote_send_opener"
           a:layout_width="0dp"
           a:layout_height="wrap_content"
           a:layout_weight="1"
           a:layout_margin="10dp"
-          a:text="+ Send"/>
+          a:text="@string/remote_send_button"/>
       </TableRow>
 
       <TableRow>
@@ -99,14 +99,14 @@
           a:layout_height="wrap_content"
           a:layout_weight="1"
           a:layout_margin="10dp"
-          a:text="DJ"/>
+          a:text="@string/dj_mode_button"/>
         <Button
           a:id="@+id/remote_receive_opener"
           a:layout_width="0dp"
           a:layout_height="wrap_content"
           a:layout_weight="1"
           a:layout_margin="10dp"
-          a:text="+ Receive"/>
+          a:text="@string/remote_receive_button"/>
       </TableRow>
 
     </TableLayout>
@@ -116,21 +116,21 @@
        a:layout_width="match_parent"
        a:layout_height="wrap_content"
        a:layout_margin="10dp"
-       a:text="Stop after current track"/>
+       a:text="@string/stop_after_current_button"/>
 
      <Button
        a:id="@+id/clear_queue"
        a:layout_width="match_parent"
        a:layout_height="wrap_content"
        a:layout_margin="10dp"
-       a:text="Clear queue"/>
+       a:text="@string/clear_queue_button"/>
 
     <TextView
       a:id="@+id/fade_out_label"
       a:layout_width="match_parent"
       a:layout_height="wrap_content"
       a:layout_marginTop="10dp"
-      a:text="Fade out duration: 5 s"/>
+      a:text="@string/fade_out_label"/>
 
     <SeekBar
       a:id="@+id/fade_out_slider"
@@ -147,7 +147,7 @@
        a:layout_height="wrap_content"
        a:layout_margin="10dp"
        style="?android:attr/borderlessButtonStyle"
-       a:text="License (GPLv3)"/>
+       a:text="@string/license_button"/>
 
   </LinearLayout>
 </ScrollView>

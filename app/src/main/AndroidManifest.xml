@@ -17,7 +17,7 @@
 
   <application
     a:icon="@drawable/ic_launcher"
-    a:label="Pocket Tandas"
+    a:label="@string/app_name"
     a:resizeableActivity="true"
     a:restoreAnyVersion="true"
     a:theme="@style/app_theme"

@@ -339,9 +339,9 @@ public class FileBrowserQueueActivity extends Activity {
                     if (isPlaylistFile(entry.name)) {
                         int addedCount = addPlaylistToQueue(entry);
                         if (addedCount > 0)
-                            Toast.makeText(this, "Added " + addedCount + " files from " + entry.name, Toast.LENGTH_SHORT).show();
+                            Toast.makeText(this, getString(R.string.added_files_from_playlist, addedCount, entry.name), Toast.LENGTH_SHORT).show();
                         else
-                            Toast.makeText(this, "No playable files found in " + entry.name, Toast.LENGTH_SHORT).show();
+                            Toast.makeText(this, getString(R.string.no_playable_files_in_playlist, entry.name), Toast.LENGTH_SHORT).show();
                     } else {
                         addToQueue(entry.name, entry.uri);
                     }
@@ -367,7 +367,7 @@ public class FileBrowserQueueActivity extends Activity {
             } else if (playbackStopped) {
                 playQueueFrom(position);
             } else {
-                Toast.makeText(this, "Stop playback first", Toast.LENGTH_SHORT).show();
+                Toast.makeText(this, R.string.stop_playback_first, Toast.LENGTH_SHORT).show();
                 //Toast.makeText(this, "Swipe right: remove. Stop playback to play this track", Toast.LENGTH_SHORT).show();
             }
         });
@@ -1224,7 +1224,7 @@ public class FileBrowserQueueActivity extends Activity {
                 }
             }
         } catch (Exception e) {
-            Toast.makeText(this, "Failed to load audio files.", Toast.LENGTH_LONG).show();
+            Toast.makeText(this, R.string.load_audio_failed, Toast.LENGTH_LONG).show();
         }
         sortFileEntriesInPlace();
         applyFileFilter();
@@ -1820,9 +1820,9 @@ public class FileBrowserQueueActivity extends Activity {
                             swipeState.contentView = swipeState.swipingView.findViewById(R.id.swipe_content);
                             if (swipeState.contentView == null) swipeState.contentView = swipeState.swipingView;
                             TextView qHintStart = swipeState.swipingView.findViewById(R.id.swipe_hint_start);
-                            if (qHintStart != null) qHintStart.setText("Remove →");
+                            if (qHintStart != null) qHintStart.setText(R.string.swipe_hint_remove);
                             TextView qHintEnd = swipeState.swipingView.findViewById(R.id.swipe_hint_end);
-                            if (qHintEnd != null) qHintEnd.setText(mode == Mode.REMOTE_SEND ? "← Send" : "");
+                            if (qHintEnd != null) qHintEnd.setText(mode == Mode.REMOTE_SEND ? getString(R.string.swipe_hint_send) : "");
                             int[] itemScreenPos = new int[2];
                             swipeState.swipingView.getLocationOnScreen(itemScreenPos);
                             dragState.touchOffsetX = event.getRawX() - itemScreenPos[0];
@@ -1925,7 +1925,7 @@ public class FileBrowserQueueActivity extends Activity {
                                 QueueEntry entry = queueEntries.get(pos);
                                 if (mode == Mode.REMOTE_SEND
                                         && btController.sendQueueRequest(entry.name, getParentFolderName(entry.uri))) {
-                                    Toast.makeText(this, "Track request sent", Toast.LENGTH_SHORT).show();
+                                    Toast.makeText(this, R.string.track_request_sent, Toast.LENGTH_SHORT).show();
                                 }
                             }
                         }
@@ -2058,9 +2058,9 @@ public class FileBrowserQueueActivity extends Activity {
                 if (isPlaylistFile(entry.name)) {
                     int addedCount = addPlaylistToQueue(entry);
                     if (addedCount > 0)
-                        Toast.makeText(this, "Added " + addedCount + " files from " + entry.name, Toast.LENGTH_SHORT).show();
+                        Toast.makeText(this, getString(R.string.added_files_from_playlist, addedCount, entry.name), Toast.LENGTH_SHORT).show();
                     else
-                        Toast.makeText(this, "No playable files found in " + entry.name, Toast.LENGTH_SHORT).show();
+                        Toast.makeText(this, getString(R.string.no_playable_files_in_playlist, entry.name), Toast.LENGTH_SHORT).show();
                 } else {
                     addToQueue(entry.name, entry.uri);
                 }
@@ -2114,7 +2114,7 @@ public class FileBrowserQueueActivity extends Activity {
 
     private void playQueueFrom(int position, boolean forceImmediateRestart) {
         if (queueEntries.isEmpty()) {
-            Toast.makeText(this, "Queue is empty", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, R.string.save_queue_empty, Toast.LENGTH_SHORT).show();
             return;
         }
         if (position < 0 || position >= queueEntries.size()) {
@@ -2310,10 +2310,10 @@ public class FileBrowserQueueActivity extends Activity {
             runOnUiThread(() -> {
                 if (!toAdd.isEmpty()) {
                     addToQueue(toAdd);
-                    Toast.makeText(this, "Added " + toAdd.size() + " track(s) from remote", Toast.LENGTH_SHORT).show();
+                    Toast.makeText(this, getString(R.string.added_tracks_from_remote, toAdd.size()), Toast.LENGTH_SHORT).show();
                 }
                 for (String name : notFound) {
-                    Toast.makeText(this, "Requested file not found: " + name, Toast.LENGTH_SHORT).show();
+                    Toast.makeText(this, getString(R.string.requested_file_not_found, name), Toast.LENGTH_SHORT).show();
                 }
             });
         }).start();
@@ -2512,7 +2512,7 @@ public class FileBrowserQueueActivity extends Activity {
             requests.add(new BluetoothQueueBridge.TrackRequest(entry.name, getParentFolderName(entry.uri)));
         }
         if (btController.sendQueueRequests(requests)) {
-            Toast.makeText(this, "Sent " + requests.size() + " track(s)", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, getString(R.string.sent_tracks, requests.size()), Toast.LENGTH_SHORT).show();
         }
     }
 

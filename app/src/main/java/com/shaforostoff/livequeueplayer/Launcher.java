@@ -80,12 +80,12 @@ public class Launcher extends Activity {
             var fadeOutSlider = (SeekBar) findViewById(R.id.fade_out_slider);
             int savedFadeOut = AudioOutputRouter.getFadeOutSeconds(this);
             fadeOutSlider.setProgress(savedFadeOut - 1); // 0-9 maps to 1-10 s
-            fadeOutLabel.setText("Fade out duration: " + savedFadeOut + " s");
+            fadeOutLabel.setText(getString(R.string.fade_out_label, savedFadeOut));
             fadeOutSlider.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
                 @Override
                 public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
                     int seconds = progress + 1;
-                    fadeOutLabel.setText("Fade out duration: " + seconds + " s");
+                    fadeOutLabel.setText(getString(R.string.fade_out_label, seconds));
                     AudioOutputRouter.setFadeOutSeconds(Launcher.this, seconds);
                 }
                 @Override public void onStartTrackingTouch(SeekBar seekBar) {}
@@ -120,13 +120,13 @@ public class Launcher extends Activity {
              stopAfterCurrentButton = findViewById(R.id.stop_after_current);
              stopAfterCurrentButton.setOnClickListener(v -> {
                   if (!Service.sIsPlaying) {
-                      Toast.makeText(this, "No track is playing", Toast.LENGTH_SHORT).show();
+                      Toast.makeText(this, R.string.no_track_playing, Toast.LENGTH_SHORT).show();
                       return;
                   }
                   final Intent clearIntent = new Intent(this, Service.class);
                   clearIntent.putExtra(Launcher.TYPE, Launcher.CLEAR_QUEUE);
                   startService(clearIntent);
-                  Toast.makeText(this, "Playback will stop after current track", Toast.LENGTH_SHORT).show();
+                  Toast.makeText(this, R.string.stop_after_current_toast, Toast.LENGTH_SHORT).show();
               });
 
              /* clear queued upcoming tracks in the running service */
@@ -137,7 +137,7 @@ public class Launcher extends Activity {
                  
                  if (!Service.sIsPlaying) {
                      QueueStore.clear(this);
-                     Toast.makeText(this, "Queue cleared", Toast.LENGTH_SHORT).show();
+                     Toast.makeText(this, R.string.queue_cleared_toast, Toast.LENGTH_SHORT).show();
                  } else {
                      // Trim the persistent queue so FileBrowserQueueActivity sees the same
                      // state as the service: only entries up to and including the current track.
@@ -147,7 +147,7 @@ public class Launcher extends Activity {
                      if (keepUpTo < entries.size()) {
                          QueueStore.save(this, entries.subList(0, keepUpTo));
                      }
-                     Toast.makeText(this, "Cleared upcoming tracks", Toast.LENGTH_SHORT).show();
+                     Toast.makeText(this, R.string.upcoming_cleared_toast, Toast.LENGTH_SHORT).show();
                  }
              });
 
@@ -235,9 +235,9 @@ public class Launcher extends Activity {
         sv.addView(tv);
 
         new AlertDialog.Builder(this)
-                .setTitle("GNU General Public License v3")
+                .setTitle(R.string.license_dialog_title)
                 .setView(sv)
-                .setPositiveButton("Close", null)
+                .setPositiveButton(R.string.license_dialog_close, null)
                 .show();
     }
 

@@ -106,7 +106,7 @@ class BluetoothController {
         }
         boolean sent = bridge.sendQueueRequests(requests);
         if (!sent) {
-            Toast.makeText(activity, "Not connected to Bluetooth server", Toast.LENGTH_SHORT).show();
+            Toast.makeText(activity, R.string.bt_not_connected, Toast.LENGTH_SHORT).show();
         }
         return sent;
     }
@@ -152,7 +152,7 @@ class BluetoothController {
             return;
         }
         if (bluetoothAdapter == null) {
-            Toast.makeText(activity, "Bluetooth is not available on this device", Toast.LENGTH_LONG).show();
+            Toast.makeText(activity, R.string.bt_not_available, Toast.LENGTH_LONG).show();
             return;
         }
         if (!bluetoothAdapter.isEnabled()) {
@@ -167,9 +167,9 @@ class BluetoothController {
             applyClientMode();
             return;
         }
-        String[] options = {"Receive requests", "Send requests"};
+        String[] options = {activity.getString(R.string.bt_receive_requests), activity.getString(R.string.bt_send_requests)};
         new AlertDialog.Builder(activity)
-                .setTitle("Remote queue Bluetooth mode")
+                .setTitle(R.string.bt_mode_dialog_title)
                 .setItems(options, (dialog, which) -> {
                     if (which == 0) {
                         applyServerMode();
@@ -200,7 +200,7 @@ class BluetoothController {
 
         Set<BluetoothDevice> bondedDevices = bluetoothAdapter.getBondedDevices();
         if (bondedDevices == null || bondedDevices.isEmpty()) {
-            Toast.makeText(activity, "No paired Bluetooth devices found", Toast.LENGTH_LONG).show();
+            Toast.makeText(activity, R.string.bt_no_paired_devices, Toast.LENGTH_LONG).show();
             return;
         }
 
@@ -209,7 +209,7 @@ class BluetoothController {
         int selectedIndex = -1;
         for (int i = 0; i < devices.size(); i++) {
             BluetoothDevice device = devices.get(i);
-            items.add((device.getName() != null ? device.getName() : "Unknown") + "\n" + device.getAddress());
+            items.add((device.getName() != null ? device.getName() : activity.getString(R.string.unknown_device)) + "\n" + device.getAddress());
             if (device.getAddress() != null && device.getAddress().equals(targetDeviceAddress)) {
                 selectedIndex = i;
             }
@@ -218,13 +218,13 @@ class BluetoothController {
         android.widget.ArrayAdapter<String> adapter = new android.widget.ArrayAdapter<>(
                 activity, android.R.layout.simple_list_item_1, items);
         AlertDialog.Builder builder = new AlertDialog.Builder(activity)
-                .setTitle("Select server device")
+                .setTitle(R.string.bt_select_server_device)
                 .setAdapter(adapter, (dialog, which) -> connectToServer(devices.get(which)))
                 .setNegativeButton(android.R.string.cancel, (dialog, which) -> unregisterBondingReceiver());
 
         if (selectedIndex >= 0) {
             int remembered = selectedIndex;
-            builder.setNeutralButton("Connect remembered",
+            builder.setNeutralButton(R.string.bt_connect_remembered,
                     (dialog, which) -> connectToServer(devices.get(remembered)));
         }
 
@@ -253,7 +253,7 @@ class BluetoothController {
                 if (!BluetoothDevice.ACTION_BOND_STATE_CHANGED.equals(intent.getAction())) return;
                 BluetoothDevice device = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE);
                 int bondState = intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, BluetoothDevice.BOND_NONE);
-                String deviceName = device != null && device.getName() != null ? device.getName() : "Unknown";
+                String deviceName = device != null && device.getName() != null ? device.getName() : activity.getString(R.string.unknown_device);
                 if (device != null && bondState == BluetoothDevice.BOND_BONDED) {
                     boolean exists = false;
                     for (BluetoothDevice d : devices) {
@@ -263,7 +263,7 @@ class BluetoothController {
                         devices.add(device);
                         items.add(deviceName + "\n" + device.getAddress());
                         adapter.notifyDataSetChanged();
-                        Toast.makeText(activity, "New device paired: " + deviceName, Toast.LENGTH_SHORT).show();
+                        Toast.makeText(activity, activity.getString(R.string.bt_device_paired, deviceName), Toast.LENGTH_SHORT).show();
                     }
                 } else if (device != null && bondState == BluetoothDevice.BOND_NONE) {
                     for (int i = 0; i < devices.size(); i++) {
@@ -271,7 +271,7 @@ class BluetoothController {
                             devices.remove(i);
                             items.remove(i);
                             adapter.notifyDataSetChanged();
-                            Toast.makeText(activity, "Device unpaired: " + deviceName, Toast.LENGTH_SHORT).show();
+                            Toast.makeText(activity, activity.getString(R.string.bt_device_unpaired, deviceName), Toast.LENGTH_SHORT).show();
                             break;
                         }
                     }

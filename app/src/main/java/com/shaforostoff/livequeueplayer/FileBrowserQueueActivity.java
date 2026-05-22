@@ -216,9 +216,8 @@ public class FileBrowserQueueActivity extends Activity {
                     onFadeOutFinished();
                     return;
                 }
-                servicePlaybackOffset = 0;
+                setPlaybackOffset(0);
                 resetCurrentTrackProgress();
-                QueueStore.savePlaybackOffset(FileBrowserQueueActivity.this, 0);
             } else if (serviceBrowseMode) {
                 browseTransitionActive = false;
                 currentPlayingQueueIndex = -1;
@@ -1754,8 +1753,7 @@ public class FileBrowserQueueActivity extends Activity {
                 currentPlayingQueueIndex--;
             }
             if (servicePlaybackOffset > 0) {
-                servicePlaybackOffset--;
-                QueueStore.savePlaybackOffset(this, servicePlaybackOffset);
+                setPlaybackOffset(servicePlaybackOffset - 1);
             }
         } else if (currentPlayingQueueIndex == position) {
             currentPlayingQueueIndex = -1;
@@ -2175,8 +2173,7 @@ public class FileBrowserQueueActivity extends Activity {
         resetStopButtonState();
         startActivity(intent);
         playbackStopped = false;
-        servicePlaybackOffset = position;
-        QueueStore.savePlaybackOffset(this, servicePlaybackOffset);
+        setPlaybackOffset(position);
         currentPlayingQueueIndex = position;
         currentTrackPositionMs = 0;
         currentTrackDurationMs = 0;
@@ -2227,8 +2224,7 @@ public class FileBrowserQueueActivity extends Activity {
         stopFadeInProgress = false;
         clearBrowseState();
         currentPlayingQueueIndex = -1;
-        servicePlaybackOffset = 0;
-        QueueStore.savePlaybackOffset(this, 0);
+        setPlaybackOffset(0);
         resetCurrentTrackProgress();
         applyStopButtonState();
         queueAdapter.notifyDataSetChanged();
@@ -2657,9 +2653,8 @@ public class FileBrowserQueueActivity extends Activity {
             }
             playbackStopped = true;
             currentPlayingQueueIndex = -1;
-            servicePlaybackOffset = 0;
+            setPlaybackOffset(0);
             resetCurrentTrackProgress();
-            QueueStore.savePlaybackOffset(this, 0);
         } else {
             playbackStopped = false;
             if (serviceBrowseMode) {
@@ -2681,6 +2676,11 @@ public class FileBrowserQueueActivity extends Activity {
         if (queueAdapter != null) queueAdapter.notifyDataSetChanged();
         if (fileAdapter != null && (fileBrowserPreviewingUri != null || Service.sBrowseMode)) fileAdapter.notifyDataSetChanged();
         maybeQueueNextBrowseTrack();
+    }
+
+    private void setPlaybackOffset(int offset) {
+        servicePlaybackOffset = offset;
+        QueueStore.savePlaybackOffset(this, offset);
     }
 
     private void resetCurrentTrackProgress() {

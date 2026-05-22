@@ -2219,6 +2219,10 @@ public class FileBrowserQueueActivity extends Activity {
 
     private void stopPlaybackImmediately() {
         sendStopNowCommand();
+        applyStoppedState();
+    }
+
+    private void applyStoppedState() {
         playbackStopped = true;
         stopFadeInProgress = false;
         clearBrowseState();
@@ -2606,16 +2610,7 @@ public class FileBrowserQueueActivity extends Activity {
 
     private void onFadeOutFinished() {
         resetFileBrowserPreview();
-        stopFadeInProgress = false;
-        clearBrowseState();
-        playbackStopped = true;
-        servicePlaybackOffset = 0;
-        QueueStore.savePlaybackOffset(this, 0);
-        currentPlayingQueueIndex = -1;
-        resetCurrentTrackProgress();
-        applyStopButtonState();
-        queueAdapter.notifyDataSetChanged();
-        fileAdapter.notifyDataSetChanged();
+        applyStoppedState();
     }
 
     @Override

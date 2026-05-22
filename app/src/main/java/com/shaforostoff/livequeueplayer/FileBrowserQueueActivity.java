@@ -228,7 +228,11 @@ public class FileBrowserQueueActivity extends Activity {
                     if (fileAdapter != null) fileAdapter.notifyDataSetChanged();
                 }
             } else {
+                int prevIndex = currentPlayingQueueIndex;
                 currentPlayingQueueIndex = resolvePlayingQueueIndex(serviceIndex, currentUri);
+                if (currentPlayingQueueIndex >= 0 && currentPlayingQueueIndex != prevIndex) {
+                    queueList.smoothScrollToPosition(currentPlayingQueueIndex);
+                }
             }
 
             if (queueAdapter != null) {
@@ -450,6 +454,8 @@ public class FileBrowserQueueActivity extends Activity {
 
         rememberLastTreeUri(treeUri);
 
+        
+
 
         if (!openDocumentTree(treeUri)) {
             Toast.makeText(this, R.string.storage_picker_failed, Toast.LENGTH_LONG).show();
@@ -598,6 +604,7 @@ public class FileBrowserQueueActivity extends Activity {
         File[] files = dir.listFiles();
         if (files == null || files.length == 0) {
             applyFileFilter();
+            scrollToHighlightedFileEntry();
             return;
         }
 
@@ -618,6 +625,7 @@ public class FileBrowserQueueActivity extends Activity {
         }
         sortFileEntriesInPlace();
         applyFileFilter();
+        scrollToHighlightedFileEntry();
     }
 
     private void openStoragePicker() {
@@ -772,6 +780,7 @@ public class FileBrowserQueueActivity extends Activity {
 
             sortFileEntriesInPlace();
             applyFileFilter();
+            scrollToHighlightedFileEntry();
             return true;
         } catch (Exception ignored) {
             fileEntries.clear();
@@ -854,7 +863,8 @@ public class FileBrowserQueueActivity extends Activity {
                         getSharedPreferences(BROWSER_PREFS, MODE_PRIVATE).edit().putInt(PREF_SORT_MODE, fileSortMode).apply();
                         sortFileEntriesInPlace();
                         applyFileFilter();
-                        scrollToHighlightedFileEntry();
+                        if (!scrollToHighlightedFileEntry())
+                            fileBrowserList.setSelection(0);
                     }
                     dialog.dismiss();
                 })
@@ -1515,21 +1525,28 @@ public class FileBrowserQueueActivity extends Activity {
         updateStorageButtonState();
     }
 
-    private void scrollToHighlightedFileEntry() {
-        if (fileBrowserList == null) return;
+    private boolean scrollToHighlightedFileEntry() {
+        if (fileBrowserList == null) return false;
         Uri highlightedUri = null;
         if (Service.sBrowseMode && browseFileUri != null) {
             highlightedUri = browseFileUri;
         } else if (fileBrowserPreviewingEntryUri != null) {
             highlightedUri = fileBrowserPreviewingEntryUri;
         }
-        if (highlightedUri == null) return;
+        if (highlightedUri == null) return false;
         for (int i = 0; i < filteredFileEntries.size(); i++) {
             if (highlightedUri.equals(filteredFileEntries.get(i).uri)) {
-                fileBrowserList.setSelection(i);
-                return;
+                int first = fileBrowserList.getFirstVisiblePosition();
+                int last = fileBrowserList.getLastVisiblePosition();
+                if (Math.abs(i - first) > 16 && Math.abs(i - last) > 16) {
+                    fileBrowserList.setSelection(i);
+                } else {
+                    fileBrowserList.smoothScrollToPosition(i);
+                }
+                return true;
             }
         }
+        return false;
     }
 
     private static boolean isAudioFile(String name) {
@@ -2583,6 +2600,9 @@ public class FileBrowserQueueActivity extends Activity {
     protected void onResume() {
         super.onResume();
         applyStopButtonState();
+        scrollToHighlightedFileEntry();
+        if (queueList != null && currentPlayingQueueIndex >= 0)
+            queueList.smoothScrollToPosition(currentPlayingQueueIndex);
     }
 
     private void syncWithServiceState() {

@@ -123,6 +123,7 @@ public class FileBrowserQueueActivity extends Activity {
     private static final String PREF_LAST_TREE_URI = "last_tree_uri";
     private static final String PREF_BROWSE_FILE_PLAYING = "browse_file_playing";
     private static final String PREF_BROWSE_FILE_URI = "browse_file_uri";
+    private static final String PREF_SORT_MODE = "sort_mode";
     private static final long PLAYBACK_SYNC_INTERVAL_MS = 1_000L;
     private static final int PROGRESS_LEVEL_MAX = 10_000;
     private static final int SORT_FILENAME = 0;
@@ -407,6 +408,7 @@ public class FileBrowserQueueActivity extends Activity {
 
         openStorageButton.setOnClickListener(v -> handleStorageButtonPressed());
         sortButton.setOnClickListener(v -> showSortDialog());
+        fileSortMode = getSharedPreferences(BROWSER_PREFS, MODE_PRIVATE).getInt(PREF_SORT_MODE, SORT_FILENAME);
         applySaveButtonModeState();
         applySortButtonLoadingState();
 
@@ -862,6 +864,7 @@ public class FileBrowserQueueActivity extends Activity {
                 .setSingleChoiceItems(options, fileSortMode, (dialog, which) -> {
                     if (which != fileSortMode) {
                         fileSortMode = which;
+                        getSharedPreferences(BROWSER_PREFS, MODE_PRIVATE).edit().putInt(PREF_SORT_MODE, fileSortMode).apply();
                         sortFileEntriesInPlace();
                         applyFileFilter();
                         scrollToHighlightedFileEntry();

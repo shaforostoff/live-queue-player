@@ -357,10 +357,10 @@ public class FileBrowserQueueActivity extends Activity {
             if (mode == Mode.REMOTE_SEND || Service.sBrowseMode) {
                 clearBrowseState();
                 fileAdapter.notifyDataSetChanged();
-                playQueueFrom(position, !playbackStopped || stopFadeInProgress);
+                playQueueFrom(position, isPlaybackActiveOrFading());
                 return;
             }
-            if (position == currentPlayingQueueIndex && (!playbackStopped || stopFadeInProgress)) {
+            if (position == currentPlayingQueueIndex && isPlaybackActiveOrFading()) {
                 showLyricsOverlayForQueueEntry(queueEntries.get(position));
                 return;
             }
@@ -1742,11 +1742,11 @@ public class FileBrowserQueueActivity extends Activity {
 
     private boolean removeQueueAt(int position) {
         if (position < 0 || position >= queueEntries.size()) return false;
-        if (position == currentPlayingQueueIndex && (!playbackStopped || stopFadeInProgress)) {
+        if (position == currentPlayingQueueIndex && isPlaybackActiveOrFading()) {
             return false;
         }
         queueEntries.remove(position);
-        boolean playbackActive = !playbackStopped || stopFadeInProgress;
+        boolean playbackActive = isPlaybackActiveOrFading();
         if (playbackActive && currentPlayingQueueIndex >= 0 && position <= currentPlayingQueueIndex) {
             if (currentPlayingQueueIndex == position) {
                 currentPlayingQueueIndex = -1;
@@ -2511,6 +2511,10 @@ public class FileBrowserQueueActivity extends Activity {
         return mergeMatchResults(hintMatches, nameMatches);
     }
 
+    private boolean isPlaybackActiveOrFading() {
+        return !playbackStopped || stopFadeInProgress;
+    }
+
     private boolean hasBrowseBehavior() {
         return mode == Mode.BROWSE || mode == Mode.REMOTE_SEND;
     }
@@ -3005,7 +3009,7 @@ public class FileBrowserQueueActivity extends Activity {
             convertView.setAlpha(draggingQueueIndex >= 0 && position == draggingQueueIndex ? 0f : 1.0f);
 
             boolean isCurrentTrack = position == currentPlayingQueueIndex
-                    && (!playbackStopped || stopFadeInProgress);
+                    && isPlaybackActiveOrFading();
             if (isCurrentTrack) {
                 float progress = 0f;
                 if (currentTrackDurationMs > 0) {

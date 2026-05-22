@@ -680,11 +680,9 @@ public class FileBrowserQueueActivity extends Activity {
         try {
             Uri rootDocumentUri = DocumentsContract.buildDocumentUriUsingTree(
                     treeUri, DocumentsContract.getTreeDocumentId(treeUri));
+            clearDocumentBrowsingState();
             currentTreeUri = treeUri;
             browsingDocumentTree = true;
-            currentFileDirectory = null;
-            currentFileRootDirectory = null;
-            documentUriStack.clear();
             documentUriStack.add(rootDocumentUri);
             return browseCurrentDocumentDirectory();
         } catch (Exception ignored) {

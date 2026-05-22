@@ -122,8 +122,6 @@ public class FileBrowserQueueActivity extends Activity {
     private static final String MUSIC_DIRECTORY_NAME = "Music";
     private static final String BROWSER_PREFS = "browser_prefs";
     private static final String PREF_LAST_TREE_URI = "last_tree_uri";
-    private static final String PREF_BROWSE_FILE_PLAYING = "browse_file_playing";
-    private static final String PREF_BROWSE_FILE_URI = "browse_file_uri";
     private static final String PREF_SORT_MODE = "sort_mode";
     private static final long PLAYBACK_SYNC_INTERVAL_MS = 1_000L;
     private static final int PROGRESS_LEVEL_MAX = 10_000;
@@ -168,7 +166,7 @@ public class FileBrowserQueueActivity extends Activity {
     private Button sortButton;
     private Button openStorageButton;
     private Mode mode = Mode.DJ;
-    private boolean browseFilePlaying;
+
     private Uri browseFileUri;
     private boolean browseNextQueued;
     private Uri browseNextUri;
@@ -191,6 +189,7 @@ public class FileBrowserQueueActivity extends Activity {
             boolean isPlaying = intent.getBooleanExtra(Service.EXTRA_IS_PLAYING, false);
             int serviceIndex = intent.getIntExtra(Service.EXTRA_CURRENT_INDEX, -1);
             Uri currentUri = intent.getParcelableExtra(Service.EXTRA_CURRENT_URI);
+            boolean serviceBrowseMode = intent.getBooleanExtra(Service.EXTRA_BROWSE_MODE, false);
             currentTrackPositionMs = intent.getIntExtra(
                     Service.EXTRA_PLAYBACK_POSITION_MS,
                     Service.sPlaybackPositionMs);
@@ -220,14 +219,13 @@ public class FileBrowserQueueActivity extends Activity {
                 servicePlaybackOffset = 0;
                 resetCurrentTrackProgress();
                 QueueStore.savePlaybackOffset(FileBrowserQueueActivity.this, 0);
-            } else if (browseFilePlaying) {
+            } else if (serviceBrowseMode) {
                 browseTransitionActive = false;
                 currentPlayingQueueIndex = -1;
                 if (browseNextUri != null && browseNextUri.equals(currentUri)) {
                     browseFileUri = browseNextUri;
                     browseNextQueued = false;
                     browseNextUri = null;
-                    saveBrowseState();
                     if (fileAdapter != null) fileAdapter.notifyDataSetChanged();
                 }
             } else {
@@ -336,7 +334,7 @@ public class FileBrowserQueueActivity extends Activity {
                     startAudioPreview(previewUri);
                 }
             } else {
-                boolean queueTrackPlaying = !playbackStopped && !browseFilePlaying && currentPlayingQueueIndex >= 0;
+                boolean queueTrackPlaying = !playbackStopped && !Service.sBrowseMode && currentPlayingQueueIndex >= 0;
                 if (hasBrowseBehavior() && !stopFadeInProgress && !(mode == Mode.BROWSE && queueTrackPlaying)) {
                     playBrowseFile(entry);
                 } else {
@@ -356,7 +354,7 @@ public class FileBrowserQueueActivity extends Activity {
 
         // -- queue: tap item to play when stopped ----------------------------
         queueList.setOnItemClickListener((parent, view, position, id) -> {
-            if (mode == Mode.REMOTE_SEND || browseFilePlaying) {
+            if (mode == Mode.REMOTE_SEND || Service.sBrowseMode) {
                 clearBrowseState();
                 fileAdapter.notifyDataSetChanged();
                 playQueueFrom(position, !playbackStopped || stopFadeInProgress);
@@ -416,7 +414,7 @@ public class FileBrowserQueueActivity extends Activity {
         applySortButtonLoadingState();
 
         stopButton.setOnClickListener(v -> {
-            if (hasBrowseBehavior() || browseFilePlaying) {
+            if (hasBrowseBehavior() || Service.sBrowseMode) {
                 stopPlaybackImmediately();
             } else {
                 stopPlaybackWithFadeout();
@@ -657,21 +655,9 @@ public class FileBrowserQueueActivity extends Activity {
 
     private void clearBrowseState() {
         browseTransitionActive = false;
-        browseFilePlaying = false;
         browseFileUri = null;
         browseNextQueued = false;
         browseNextUri = null;
-        saveBrowseState();
-    }
-
-    private void saveBrowseState() {
-        SharedPreferences.Editor ed = getSharedPreferences(BROWSER_PREFS, MODE_PRIVATE).edit();
-        ed.putBoolean(PREF_BROWSE_FILE_PLAYING, browseFilePlaying);
-        if (browseFilePlaying && browseFileUri != null)
-            ed.putString(PREF_BROWSE_FILE_URI, browseFileUri.toString());
-        else
-            ed.remove(PREF_BROWSE_FILE_URI);
-        ed.apply();
     }
 
     private Uri getRememberedTreeUri() {
@@ -1535,7 +1521,7 @@ public class FileBrowserQueueActivity extends Activity {
     private void scrollToHighlightedFileEntry() {
         if (fileBrowserList == null) return;
         Uri highlightedUri = null;
-        if (browseFilePlaying && browseFileUri != null) {
+        if (Service.sBrowseMode && browseFileUri != null) {
             highlightedUri = browseFileUri;
         } else if (fileBrowserPreviewingEntryUri != null) {
             highlightedUri = fileBrowserPreviewingEntryUri;
@@ -2203,7 +2189,7 @@ public class FileBrowserQueueActivity extends Activity {
         }
 
         // Do not show fading UI when nothing is currently playing.
-        if (playbackStopped || (currentPlayingQueueIndex < 0 && !browseFilePlaying)) {
+        if (playbackStopped || (currentPlayingQueueIndex < 0 && !Service.sBrowseMode)) {
             resetStopButtonState();
             return;
         }
@@ -2246,7 +2232,7 @@ public class FileBrowserQueueActivity extends Activity {
     }
 
     private void clearQueueAndStopPlayback() {
-        if (!browseFilePlaying) {
+        if (!Service.sBrowseMode) {
             stopPlaybackImmediately();
         }
         queueEntries.clear();
@@ -2273,11 +2259,9 @@ public class FileBrowserQueueActivity extends Activity {
         resetStopButtonState();
         startActivity(intent);
 
-        browseFilePlaying = true;
         browseFileUri = uri;
         browseNextQueued = false;
         browseNextUri = null;
-        saveBrowseState();
         playbackStopped = false;
         currentPlayingQueueIndex = -1;
         queueAdapter.notifyDataSetChanged();
@@ -2285,7 +2269,7 @@ public class FileBrowserQueueActivity extends Activity {
     }
 
     private void maybeQueueNextBrowseTrack() {
-        if (!browseFilePlaying || browseNextQueued || browseFileUri == null) return;
+        if (!Service.sBrowseMode || browseNextQueued || browseFileUri == null) return;
         if (currentTrackDurationMs <= 0 || currentTrackDurationMs - currentTrackPositionMs > 5_000) return;
         int currentPos = -1;
         for (int i = 0; i < filteredFileEntries.size(); i++) {
@@ -2635,11 +2619,8 @@ public class FileBrowserQueueActivity extends Activity {
         super.onStart();
         restorePersistedQueue();
         servicePlaybackOffset = QueueStore.loadPlaybackOffset(this);
-        SharedPreferences browsePrefs = getSharedPreferences(BROWSER_PREFS, MODE_PRIVATE);
-        if (browsePrefs.getBoolean(PREF_BROWSE_FILE_PLAYING, false)) {
-            browseFilePlaying = true;
-            String uriStr = browsePrefs.getString(PREF_BROWSE_FILE_URI, null);
-            browseFileUri = uriStr != null ? Uri.parse(uriStr) : null;
+        if (Service.sBrowseMode && Service.sCurrentUri != null) {
+            browseFileUri = Service.sCurrentUri;
         }
         registerPlaybackStateReceiver();
         syncWithServiceState();
@@ -2658,6 +2639,7 @@ public class FileBrowserQueueActivity extends Activity {
     private void syncWithServiceState() {
         int serviceIndex = Service.sCurrentIndex;
         Uri serviceUri = Service.sCurrentUri;
+        boolean serviceBrowseMode = Service.sBrowseMode;
         currentTrackPositionMs = Service.sPlaybackPositionMs;
         currentTrackDurationMs = Service.sPlaybackDurationMs;
         if (Service.sFadeOutInProgress && !stopFadeInProgress) {
@@ -2666,9 +2648,8 @@ public class FileBrowserQueueActivity extends Activity {
         }
         if (serviceIndex < 0) {
             SilenceStreamer.reinitIfOutputChanged(this);
-            if (browseFilePlaying) {
+            if (browseTransitionActive && !stopFadeInProgress) {
                 // Transient stop between sendStopNowCommand() and the browse track starting.
-                // The broadcast receiver is authoritative for actual browse-track completion.
                 return;
             }
             if (stopFadeInProgress) {
@@ -2682,26 +2663,24 @@ public class FileBrowserQueueActivity extends Activity {
             QueueStore.savePlaybackOffset(this, 0);
         } else {
             playbackStopped = false;
-            if (browseFilePlaying) {
+            if (serviceBrowseMode) {
                 currentPlayingQueueIndex = -1;
                 if (browseNextUri != null && browseNextUri.equals(serviceUri)) {
                     browseFileUri = browseNextUri;
                     browseNextQueued = false;
                     browseNextUri = null;
-                    saveBrowseState();
                 } else if (serviceUri != null && browseFileUri != null && !serviceUri.equals(browseFileUri)) {
-                    // Activity was recreated mid-transition; accept what the service is playing
+                    // Service is playing a different URI than expected (e.g. activity recreated mid-transition)
                     browseFileUri = serviceUri;
                     browseNextQueued = false;
                     browseNextUri = null;
-                    saveBrowseState();
                 }
             } else {
                 currentPlayingQueueIndex = resolvePlayingQueueIndex(serviceIndex, serviceUri);
             }
         }
         if (queueAdapter != null) queueAdapter.notifyDataSetChanged();
-        if (fileAdapter != null && (fileBrowserPreviewingUri != null || browseFilePlaying)) fileAdapter.notifyDataSetChanged();
+        if (fileAdapter != null && (fileBrowserPreviewingUri != null || Service.sBrowseMode)) fileAdapter.notifyDataSetChanged();
         maybeQueueNextBrowseTrack();
     }
 
@@ -2957,7 +2936,7 @@ public class FileBrowserQueueActivity extends Activity {
             vh.metaRow.setVisibility(hasSubtext ? View.VISIBLE : View.GONE);
             vh.name.setGravity(hasSubtext ? Gravity.START : Gravity.CENTER);
 
-            boolean isBrowseEntry = browseFilePlaying
+            boolean isBrowseEntry = Service.sBrowseMode
                     && !entry.isDirectory
                     && browseFileUri != null
                     && browseFileUri.equals(entry.uri);

@@ -390,6 +390,7 @@ public class Service extends android.app.Service implements MediaPlayerStateList
         intent.putExtra(EXTRA_PLAYBACK_DURATION_MS, sPlaybackDurationMs);
         intent.putExtra(EXTRA_HAS_PENDING_TRACKS, sHasPendingTracks);
         intent.putExtra(EXTRA_FADE_OUT_IN_PROGRESS, sFadeOutInProgress);
+        intent.putExtra(EXTRA_BROWSE_MODE, sBrowseMode);
         sendBroadcast(intent);
     }
 

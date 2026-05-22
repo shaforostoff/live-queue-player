@@ -158,6 +158,7 @@ public class FileBrowserQueueActivity extends Activity {
     private TextView queueEmptyHint;
     private boolean playbackStopped = true;
     private boolean stopFadeInProgress;
+    private boolean queueTransitionActive;
     private boolean browsingDocumentTree;
     private int currentPlayingQueueIndex = -1;
     private int draggingQueueIndex = -1;
@@ -210,6 +211,9 @@ public class FileBrowserQueueActivity extends Activity {
                     // Keep browse state intact; the next broadcast will update us.
                     return;
                 }
+                if (queueTransitionActive && !stopFadeInProgress) {
+                    return;
+                }
                 clearBrowseState();
                 currentPlayingQueueIndex = -1;
                 if (stopFadeInProgress) {
@@ -228,6 +232,7 @@ public class FileBrowserQueueActivity extends Activity {
                     if (fileAdapter != null) fileAdapter.notifyDataSetChanged();
                 }
             } else {
+                queueTransitionActive = false;
                 int prevIndex = currentPlayingQueueIndex;
                 currentPlayingQueueIndex = resolvePlayingQueueIndex(serviceIndex, currentUri);
                 if (currentPlayingQueueIndex >= 0 && currentPlayingQueueIndex != prevIndex) {
@@ -2181,6 +2186,7 @@ public class FileBrowserQueueActivity extends Activity {
         intent.setType("audio/*");
         intent.putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris);
         if (forceImmediateRestart) {
+            queueTransitionActive = true;
             sendStopNowCommand();
         }
         resetStopButtonState();
@@ -2235,6 +2241,7 @@ public class FileBrowserQueueActivity extends Activity {
     private void applyStoppedState() {
         playbackStopped = true;
         stopFadeInProgress = false;
+        queueTransitionActive = false;
         clearBrowseState();
         currentPlayingQueueIndex = -1;
         setPlaybackOffset(0);
@@ -2621,6 +2628,9 @@ public class FileBrowserQueueActivity extends Activity {
                 // Transient stop between sendStopNowCommand() and the browse track starting.
                 return;
             }
+            if (queueTransitionActive && !stopFadeInProgress) {
+                return;
+            }
             if (stopFadeInProgress) {
                 onFadeOutFinished();
                 return;
@@ -2644,6 +2654,7 @@ public class FileBrowserQueueActivity extends Activity {
                     browseNextUri = null;
                 }
             } else {
+                queueTransitionActive = false;
                 currentPlayingQueueIndex = resolvePlayingQueueIndex(serviceIndex, serviceUri);
             }
         }

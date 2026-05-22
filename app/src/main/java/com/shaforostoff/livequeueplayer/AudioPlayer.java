@@ -148,6 +148,13 @@ class AudioPlayer extends Thread implements MediaPlayer.OnCompletionListener, Me
     return fadeOutInProgress;
   }
 
+  void seekTo(int positionMs) {
+    if (!released) {
+      try { mediaPlayer.seekTo(positionMs); }
+      catch (IllegalStateException ignored) {}
+    }
+  }
+
   /**
    * notifies playback completion
    */

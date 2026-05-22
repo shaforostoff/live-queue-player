@@ -5,8 +5,10 @@ import static android.content.Intent.EXTRA_KEY_EVENT;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
+import android.media.MediaMetadata;
 import android.media.session.MediaSession;
 import android.media.session.PlaybackState;
+import android.os.Build;
 import android.view.KeyEvent;
 
 /**
@@ -37,6 +39,13 @@ public class HWListener extends BroadcastReceiver implements MediaPlayerStateLis
       }
       @Override public void onPlay()           { send(Launcher.PLAY); }
       @Override public void onPause()          { send(Launcher.PAUSE); }
+      @Override public void onSeekTo(long pos) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return;
+        Intent i = new Intent(service, Service.class);
+        i.putExtra(Launcher.TYPE, Launcher.SEEK);
+        i.putExtra(Service.EXTRA_SEEK_TO_MS, (int) pos);
+        service.startService(i);
+      }
       private void send(byte action) {
         Intent i = new Intent(service, Service.class);
         i.putExtra(Launcher.TYPE, action);
@@ -45,7 +54,11 @@ public class HWListener extends BroadcastReceiver implements MediaPlayerStateLis
     });
 
     playbackStateBuilder = new PlaybackState.Builder();
-    playbackStateBuilder.setActions(PlaybackState.ACTION_PLAY | PlaybackState.ACTION_PAUSE | PlaybackState.ACTION_PLAY_PAUSE);
+    long actions = PlaybackState.ACTION_PLAY | PlaybackState.ACTION_PAUSE | PlaybackState.ACTION_PLAY_PAUSE;
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+      actions |= PlaybackState.ACTION_SEEK_TO;
+    }
+    playbackStateBuilder.setActions(actions);
     mediaSession.setPlaybackState(playbackStateBuilder.build());
 
     mediaSession.setActive(true);
@@ -53,10 +66,26 @@ public class HWListener extends BroadcastReceiver implements MediaPlayerStateLis
 
   @Override
   public void setState(boolean playing) {
-    if (playing)
-      playbackStateBuilder.setState(PlaybackState.STATE_PLAYING, PlaybackState.PLAYBACK_POSITION_UNKNOWN, 1);
-    else
-      playbackStateBuilder.setState(PlaybackState.STATE_PAUSED, PlaybackState.PLAYBACK_POSITION_UNKNOWN, 1);
+    long position = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+        ? Service.sPlaybackPositionMs
+        : PlaybackState.PLAYBACK_POSITION_UNKNOWN;
+    int state = playing ? PlaybackState.STATE_PLAYING : PlaybackState.STATE_PAUSED;
+    playbackStateBuilder.setState(state, position, 1.0f);
+    mediaSession.setPlaybackState(playbackStateBuilder.build());
+  }
+
+  void setTrackMetadata(String title, long durationMs) {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU || mediaSession == null) return;
+    mediaSession.setMetadata(new MediaMetadata.Builder()
+        .putString(MediaMetadata.METADATA_KEY_TITLE, title)
+        .putLong(MediaMetadata.METADATA_KEY_DURATION, durationMs)
+        .build());
+  }
+
+  void updatePlaybackPosition(int positionMs) {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU || mediaSession == null) return;
+    int state = Service.sIsPlaying ? PlaybackState.STATE_PLAYING : PlaybackState.STATE_PAUSED;
+    playbackStateBuilder.setState(state, positionMs, 1.0f);
     mediaSession.setPlaybackState(playbackStateBuilder.build());
   }
 
@@ -66,12 +95,16 @@ public class HWListener extends BroadcastReceiver implements MediaPlayerStateLis
 
   @Override
   public void onMediaPlayerReset() {
-    mediaSession.setActive(false);
-    mediaSession.release();
+    // Keep the session alive so the next track in Browse mode can reuse it.
   }
 
   @Override
   public void onMediaPlayerDestroy() {
+    if (mediaSession != null) {
+      mediaSession.setActive(false);
+      mediaSession.release();
+      mediaSession = null;
+    }
   }
 
   /**

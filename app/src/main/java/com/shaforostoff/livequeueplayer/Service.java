@@ -31,6 +31,7 @@ public class Service extends android.app.Service implements MediaPlayerStateList
     static final String EXTRA_BROWSE_MODE = "browse_mode";
     static final String EXTRA_ENTRY_IDS = "entry_ids";
     static final String EXTRA_CURRENT_ENTRY_ID = "current_entry_id";
+    static final String EXTRA_SEEK_TO_MS = "seek_to_ms";
     private static final long PLAYBACK_PROGRESS_BROADCAST_INTERVAL_MS = 1_000L;
 
     // Readable by the activity to re-sync state after missed broadcasts (e.g. screen off)
@@ -60,6 +61,7 @@ public class Service extends android.app.Service implements MediaPlayerStateList
         public void run() {
             if (!sIsPlaying) return;
             refreshProgressSnapshot();
+            hwListener.updatePlaybackPosition(sPlaybackPositionMs);
             sendPlaybackStateBroadcast();
             progressHandler.postDelayed(this, PLAYBACK_PROGRESS_BROADCAST_INTERVAL_MS);
         }
@@ -143,6 +145,10 @@ public class Service extends android.app.Service implements MediaPlayerStateList
                 }
                 case Launcher.APPEND_QUEUE -> appendQueueFromIntent(intent);
                 case Launcher.CLEAR_QUEUE -> clearPendingQueue();
+                case Launcher.SEEK -> {
+                    int seekToMs = intent.getIntExtra(EXTRA_SEEK_TO_MS, -1);
+                    if (seekToMs >= 0 && audioPlayer != null) seekTo(seekToMs);
+                }
                 /* cancel audio playback and kill service */
                 case Launcher.KILL -> stopSelf();
             }
@@ -199,8 +205,7 @@ public class Service extends android.app.Service implements MediaPlayerStateList
             audioPlayer.start();
 
             /* create notification for playback control */
-            notifications.getNotification(entry.title,
-                    sBrowseMode ? hwListener.getSessionToken() : null);
+            notifications.getNotification(entry.title, hwListener.getSessionToken());
 
             /* start service as foreground */
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
@@ -210,6 +215,7 @@ public class Service extends android.app.Service implements MediaPlayerStateList
 
             initializeProgressForTrack(entry.location);
             sCurrentEntryId = entry.queueEntryId;
+            hwListener.setTrackMetadata(entry.title, sPlaybackDurationMs);
             notifyPlaybackState(true, currentIndex, entry.location);
 
         } catch (IllegalArgumentException e) {
@@ -307,6 +313,20 @@ public class Service extends android.app.Service implements MediaPlayerStateList
         sendPlaybackStateBroadcast();
         // Notify that pending queue was cleared
         sendBroadcast(new Intent(ACTION_PENDING_QUEUE_CLEARED));
+    }
+
+    private void seekTo(int positionMs) {
+        if (sPlaybackDurationMs > 0 && positionMs >= sPlaybackDurationMs) {
+            //onMediaPlayerComplete();
+            //return;
+            positionMs = Math.max(0, sPlaybackDurationMs - 1000);
+        }
+        audioPlayer.seekTo(positionMs);
+        progressAnchorPositionMs = positionMs;
+        progressAnchorElapsedMs = sIsPlaying ? SystemClock.elapsedRealtime() : 0L;
+        sPlaybackPositionMs = positionMs;
+        hwListener.updatePlaybackPosition(positionMs);
+        sendPlaybackStateBroadcast();
     }
 
     /**

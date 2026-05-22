@@ -7,6 +7,10 @@ import android.content.Context;
 import android.media.session.MediaSession;
 import android.os.Build;
 
+import java.util.Locale;
+
+
+
 class Notifications implements MediaPlayerStateListener {
 
   public static final String NOTIFICATION_CHANNEL = "nc";
@@ -59,9 +63,18 @@ class Notifications implements MediaPlayerStateListener {
 
   @Override
   public void setState(boolean playing) {
-    builder.setContentText((playing ? "Playing" : "Stopped"));
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && sessionToken != null) {
+      builder.setContentText(playing ? "" : formatPosition(Service.sPlaybackPositionMs, Service.sPlaybackDurationMs));
+    } else {
+      builder.setContentText(playing ? "Playing" : "Stopped");
+    }
     buildNotification();
     update();
+  }
+
+  private static String formatPosition(int posMs, int durMs) {
+    int p = posMs / 1000, d = durMs / 1000;
+    return String.format(Locale.US, "%d:%02d / %d:%02d", p / 60, p % 60, d / 60, d % 60);
   }
 
   void buildNotification() {

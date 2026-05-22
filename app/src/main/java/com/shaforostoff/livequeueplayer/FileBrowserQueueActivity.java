@@ -1692,20 +1692,33 @@ public class FileBrowserQueueActivity extends Activity {
     }
 
     private void ensureQueueTagsCachedAsync() {
-        List<Uri> uncached = new ArrayList<>();
+        List<QueueEntry> uncached = new ArrayList<>();
         for (QueueEntry entry : queueEntries) {
-            if (entry.uri != null && !metadataExtractor.isAllTagsCached(entry.uri))
-                uncached.add(entry.uri);
+            if (!entry.tagsCached && entry.uri != null)
+                uncached.add(entry);
         }
         if (uncached.isEmpty()) return;
         int threadCount = Math.min(4, uncached.size());
         AtomicInteger pending = new AtomicInteger(uncached.size());
+        List<Pair<QueueEntry, MetadataExtractor.TagEntry>> results =
+                Collections.synchronizedList(new ArrayList<>(uncached.size()));
         ExecutorService pool = Executors.newFixedThreadPool(threadCount);
-        for (Uri uri : uncached) {
+        for (QueueEntry entry : uncached) {
             pool.submit(() -> {
-                metadataExtractor.readSortTags(uri);
-                if (pending.decrementAndGet() == 0)
-                    runOnUiThread(() -> queueAdapter.notifyDataSetChanged());
+                results.add(Pair.create(entry, metadataExtractor.readSortTags(entry.uri)));
+                if (pending.decrementAndGet() == 0) {
+                    runOnUiThread(() -> {
+                        for (Pair<QueueEntry, MetadataExtractor.TagEntry> r : results) {
+                            r.first.title  = r.second.title;
+                            r.first.artist = r.second.artist;
+                            r.first.date   = r.second.date;
+                            r.first.genre  = r.second.genre;
+                            r.first.bpm    = r.second.bpm;
+                            r.first.tagsCached = true;
+                        }
+                        queueAdapter.notifyDataSetChanged();
+                    });
+                }
             });
         }
         pool.shutdown();
@@ -2835,6 +2848,12 @@ public class FileBrowserQueueActivity extends Activity {
     static final class QueueEntry {
         final String name;
         final Uri    uri;
+        boolean tagsCached;
+        String  title;
+        String  artist;
+        String  date;
+        String  genre;
+        int     bpm;
 
         QueueEntry(String name, Uri uri) {
             this.name = name;
@@ -3006,15 +3025,11 @@ public class FileBrowserQueueActivity extends Activity {
                 vh.content.setBackgroundColor(colorBackground);
             }
             vh.icon.setText("\uD83C\uDFB5");
-            String displayName = entry.name;
-            String artistText = "";
-            String metaText = "";
-            if (metadataExtractor.isAllTagsCached(entry.uri)) {
-                MetadataExtractor.TagEntry tags = metadataExtractor.readSortTags(entry.uri);
-                if (tags.title != null && !tags.title.isEmpty()) displayName = tags.title;
-                if (tags.artist != null) artistText = tags.artist;
-                metaText = buildMetaText(tags.date, tags.genre, tags.bpm);
-            }
+            String displayName = entry.tagsCached && entry.title != null && !entry.title.isEmpty()
+                    ? entry.title : entry.name;
+            String artistText = entry.tagsCached && entry.artist != null ? entry.artist : "";
+            String metaText   = entry.tagsCached
+                    ? buildMetaText(entry.date, entry.genre, entry.bpm) : "";
             boolean hasSubtext = !artistText.isEmpty() || !metaText.isEmpty();
             vh.name.setText(displayName);
             vh.name.setGravity(hasSubtext ? Gravity.START : Gravity.CENTER);

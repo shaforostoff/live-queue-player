@@ -40,12 +40,7 @@ Explicit selection of Bluetooth as preferred output is only possible on Android 
 
 ### Audio preview and queueing from a second smartphone
 
-I have tried implementing audio preview directly in the app
-(when playback queue is routed to 3.5mm output, and preview is routed to bluetooth headphones),
-but failed: when preview sound starts, the main output is interrupted for a second,
-and it seems to be Android limitation, at least as of 2026, using Android 15 on Sony smartphone.
-
-So the workaround is to use a second smartphone for prelistening, and adding tracks to the main phone queue via bluetooth.
+You can use a second smartphone for prelistening, and adding tracks to the main phone queue via bluetooth.
 For this to work, add your tango music and cortinas to both smartphones.
 Filenames of audio files should match, and ideally folder structure as well (but not necessarily).
 Pair both your smartphones together.

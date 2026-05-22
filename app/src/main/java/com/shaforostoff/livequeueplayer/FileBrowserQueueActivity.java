@@ -2366,15 +2366,16 @@ public class FileBrowserQueueActivity extends Activity {
     }
 
     /**
-     * Finds all requested files in the file-based directory tree with a single DFS pass per phase.
-     * Hint-matched results (parent folder name matches) take priority over plain name matches.
+     * Finds all requested files in the file-based directory tree with a single DFS pass.
+     * Hint-matched results (parent folder name matches) take priority over plain name matches,
+     * which take priority over extension-stripped matches.
      */
     private List<Uri> findAllInFileDirectory(File root, List<BluetoothQueueBridge.TrackRequest> requests) {
         int n = requests.size();
         Uri[] hintMatches = new Uri[n];
         Uri[] nameMatches = new Uri[n];
+        Uri[] extMatches  = new Uri[n];
 
-        // Phase 1+2: single DFS — one query per directory for all requests simultaneously.
         ArrayList<File> stack = new ArrayList<>();
         stack.add(root);
         while (!stack.isEmpty()) {
@@ -2386,47 +2387,35 @@ public class FileBrowserQueueActivity extends Activity {
                 if (child == null) continue;
                 if (child.isDirectory()) { stack.add(child); continue; }
                 String childName = child.getName();
+                Uri childUri = Uri.fromFile(child);
                 for (int i = 0; i < n; i++) {
                     if (hintMatches[i] != null) continue;
-                    if (!childName.equalsIgnoreCase(requests.get(i).file)) continue;
-                    String hint = requests.get(i).parent;
-                    if (hint.length() > 0 && dirName.equalsIgnoreCase(hint)) {
-                        hintMatches[i] = Uri.fromFile(child);
-                    } else if (nameMatches[i] == null) {
-                        nameMatches[i] = Uri.fromFile(child);
+                    if (childName.equalsIgnoreCase(requests.get(i).file)) {
+                        String hint = requests.get(i).parent;
+                        if (hint.length() > 0 && dirName.equalsIgnoreCase(hint)) {
+                            hintMatches[i] = childUri;
+                        } else if (nameMatches[i] == null) {
+                            nameMatches[i] = childUri;
+                        }
                     }
                 }
+                applyExtFallbackMatch(stripExtension(childName), childUri, requests, hintMatches, nameMatches, extMatches);
             }
         }
 
-        // Phase 3: extension-stripped fallback for still-unresolved requests.
-        if (anyUnresolved(hintMatches, nameMatches)) {
-            ArrayList<File> extStack = new ArrayList<>();
-            extStack.add(root);
-            while (!extStack.isEmpty()) {
-                File dir = extStack.remove(extStack.size() - 1);
-                File[] children = dir.listFiles();
-                if (children == null) continue;
-                for (File child : children) {
-                    if (child == null) continue;
-                    if (child.isDirectory()) { extStack.add(child); continue; }
-                    applyExtFallbackMatch(stripExtension(child.getName()), Uri.fromFile(child),
-                            requests, hintMatches, nameMatches);
-                }
-            }
-        }
-
-        return mergeMatchResults(hintMatches, nameMatches);
+        return mergeMatchResults(hintMatches, nameMatches, extMatches);
     }
 
     /**
-     * Finds all requested files in the SAF document tree with a single DFS pass per phase.
-     * Each directory is queried exactly once. Hint-matched results take priority.
+     * Finds all requested files in the SAF document tree with a single DFS pass.
+     * Each directory is queried exactly once. Hint-matched results take priority over plain
+     * name matches, which take priority over extension-stripped matches.
      */
     private List<Uri> findAllInDocumentTree(Uri rootDocumentUri, List<BluetoothQueueBridge.TrackRequest> requests) {
         int n = requests.size();
         Uri[] hintMatches = new Uri[n];
         Uri[] nameMatches = new Uri[n];
+        Uri[] extMatches  = new Uri[n];
 
         String rootDocId;
         try {
@@ -2443,8 +2432,7 @@ public class FileBrowserQueueActivity extends Activity {
                 DocumentsContract.Document.COLUMN_MIME_TYPE
         };
 
-        // Phase 1+2: single DFS — stack holds [docId, displayName] pairs.
-        // displayName of the current dir is used to check parentHint.
+        // Stack holds [docId, displayName] pairs; displayName used to check parentHint.
         ArrayList<String[]> stack = new ArrayList<>();
         stack.add(new String[]{rootDocId, ""});
         while (!stack.isEmpty()) {
@@ -2463,50 +2451,24 @@ public class FileBrowserQueueActivity extends Activity {
                         stack.add(new String[]{childDocId, childName});
                         continue;
                     }
+                    Uri childUri = DocumentsContract.buildDocumentUriUsingTree(currentTreeUri, childDocId);
                     for (int i = 0; i < n; i++) {
                         if (hintMatches[i] != null) continue;
                         if (!childName.equalsIgnoreCase(requests.get(i).file)) continue;
                         String hint = requests.get(i).parent;
                         if (hint.length() > 0 && dirName.equalsIgnoreCase(hint)) {
-                            hintMatches[i] = DocumentsContract.buildDocumentUriUsingTree(currentTreeUri, childDocId);
+                            hintMatches[i] = childUri;
                         } else if (nameMatches[i] == null) {
-                            nameMatches[i] = DocumentsContract.buildDocumentUriUsingTree(currentTreeUri, childDocId);
+                            nameMatches[i] = childUri;
                         }
                     }
+                    applyExtFallbackMatch(stripExtension(childName), childUri, requests, hintMatches, nameMatches, extMatches);
                 }
             } catch (Exception ignored) {
             }
         }
 
-        // Phase 3: extension-stripped fallback for still-unresolved requests.
-        if (anyUnresolved(hintMatches, nameMatches)) {
-            ArrayList<String[]> extStack = new ArrayList<>();
-            extStack.add(new String[]{rootDocId, ""});
-            while (!extStack.isEmpty()) {
-                String[] current = extStack.remove(extStack.size() - 1);
-                String dirDocId = current[0];
-                Uri childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(currentTreeUri, dirDocId);
-                try (Cursor cursor = getContentResolver().query(childrenUri, projection, null, null, null)) {
-                    if (cursor == null) continue;
-                    while (cursor.moveToNext()) {
-                        String childDocId = cursor.getString(0);
-                        String childName = cursor.getString(1);
-                        String mimeType = cursor.getString(2);
-                        if (childDocId == null || childName == null) continue;
-                        if (DocumentsContract.Document.MIME_TYPE_DIR.equals(mimeType)) {
-                            extStack.add(new String[]{childDocId, childName});
-                            continue;
-                        }
-                        applyExtFallbackMatch(stripExtension(childName),
-                                DocumentsContract.buildDocumentUriUsingTree(currentTreeUri, childDocId),
-                                requests, hintMatches, nameMatches);
-                    }
-                } catch (Exception ignored) {
-                }
-            }
-        }
-
-        return mergeMatchResults(hintMatches, nameMatches);
+        return mergeMatchResults(hintMatches, nameMatches, extMatches);
     }
 
     private boolean isPlaybackActiveOrFading() {
@@ -2559,27 +2521,23 @@ public class FileBrowserQueueActivity extends Activity {
         return dot > 0 ? name.substring(0, dot) : name;
     }
 
-    private static boolean anyUnresolved(Uri[] hintMatches, Uri[] nameMatches) {
-        for (int i = 0; i < hintMatches.length; i++) {
-            if (hintMatches[i] == null && nameMatches[i] == null) return true;
-        }
-        return false;
-    }
-
     private static void applyExtFallbackMatch(String childNoExt, Uri childUri,
-            List<BluetoothQueueBridge.TrackRequest> requests, Uri[] hintMatches, Uri[] nameMatches) {
+            List<BluetoothQueueBridge.TrackRequest> requests, Uri[] hintMatches, Uri[] nameMatches, Uri[] extMatches) {
         for (int i = 0; i < requests.size(); i++) {
-            if (hintMatches[i] != null || nameMatches[i] != null) continue;
+            if (hintMatches[i] != null || nameMatches[i] != null || extMatches[i] != null) continue;
             if (childNoExt.equalsIgnoreCase(stripExtension(requests.get(i).file))) {
-                nameMatches[i] = childUri;
+                extMatches[i] = childUri;
             }
         }
     }
 
-    private static List<Uri> mergeMatchResults(Uri[] hintMatches, Uri[] nameMatches) {
+    private static List<Uri> mergeMatchResults(Uri[] hintMatches, Uri[] nameMatches, Uri[] extMatches) {
         List<Uri> results = new ArrayList<>(hintMatches.length);
         for (int i = 0; i < hintMatches.length; i++) {
-            results.add(hintMatches[i] != null ? hintMatches[i] : nameMatches[i]);
+            Uri r = hintMatches[i];
+            if (r == null) r = nameMatches[i];
+            if (r == null) r = extMatches[i];
+            results.add(r);
         }
         return results;
     }

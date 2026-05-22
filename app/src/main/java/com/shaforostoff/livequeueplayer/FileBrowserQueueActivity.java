@@ -1954,11 +1954,9 @@ public class FileBrowserQueueActivity extends Activity {
                             swipeState.handled = true;
                             swipeState.resetView();
                             int pos = swipeState.startPosition;
-                            if ((mode == Mode.REMOTE_SEND || mode == Mode.REMOTE_RECEIVE)
-                                    && pos >= 0 && pos < queueEntries.size()) {
+                            if (pos >= 0 && pos < queueEntries.size()) {
                                 QueueEntry entry = queueEntries.get(pos);
-                                if (mode == Mode.REMOTE_SEND
-                                        && btController.sendQueueRequest(entry.name, getParentFolderName(entry.uri))) {
+                                if (btController.sendQueueRequest(entry.name, getParentFolderName(entry.uri))) {
                                     Toast.makeText(this, R.string.track_request_sent, Toast.LENGTH_SHORT).show();
                                 }
                             }

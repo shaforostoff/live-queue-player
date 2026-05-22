@@ -28,6 +28,7 @@ class MetadataExtractor {
         String date;
         String genre;
         String artist;
+        String title;
         int bpm = -1;
     }
 
@@ -50,7 +51,7 @@ class MetadataExtractor {
     boolean isAllTagsCached(Uri uri) {
         if (uri == null) return false;
         TagEntry e = tagCache.get(uri.toString());
-        return e != null && e.date != null && e.genre != null && e.artist != null && e.bpm >= 0;
+        return e != null && e.date != null && e.genre != null && e.artist != null && e.title != null && e.bpm >= 0;
     }
 
     static String extractYearFromFileName(String fileName) {
@@ -67,7 +68,7 @@ class MetadataExtractor {
         }
         String key = uri.toString();
         TagEntry e = tagCache.get(key);
-        if (e != null && e.date != null && e.genre != null && e.bpm >= 0) return e;
+        if (e != null && e.date != null && e.genre != null && e.title != null && e.bpm >= 0) return e;
         e = getOrCreate(key);
         String ext = getExtension(uri);
         switch (ext) {
@@ -98,6 +99,7 @@ class MetadataExtractor {
         if (e.date == null) e.date = "";
         if (e.genre == null) e.genre = "";
         if (e.artist == null) e.artist = "";
+        if (e.title == null) e.title = "";
         if (e.bpm < 0) e.bpm = 0;
         return e;
     }
@@ -185,6 +187,10 @@ class MetadataExtractor {
                 String artist = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ARTIST);
                 if (artist != null && !artist.isEmpty()) e.artist = artist;
             }
+            if (e.title == null) {
+                String title = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_TITLE);
+                if (title != null && !title.isEmpty()) e.title = title;
+            }
         } catch (Exception ignored) {
         } finally {
             try { retriever.release(); } catch (Exception ignored) { }
@@ -226,6 +232,7 @@ class MetadataExtractor {
         boolean needDate = e.date == null;
         boolean needGenre = e.genre == null;
         boolean needArtist = e.artist == null;
+        boolean needTitle = e.title == null;
         boolean needBpm = e.bpm < 0;
         String tdrc = null, tyer = null;
 
@@ -250,12 +257,15 @@ class MetadataExtractor {
             } else if (needArtist && "TPE1".equals(frameId)) {
                 String v = decodeId3Text(tagData, offset + 10, frameSize);
                 if (v.length() > 0) { e.artist = v; needArtist = false; }
+            } else if (needTitle && "TIT2".equals(frameId)) {
+                String v = decodeId3Text(tagData, offset + 10, frameSize);
+                if (v.length() > 0) { e.title = v; needTitle = false; }
             } else if (needBpm && "TBPM".equals(frameId)) {
                 String v = decodeId3Text(tagData, offset + 10, frameSize);
                 if (v.length() > 0) { e.bpm = parseBpmValue(v); needBpm = false; }
             }
 
-            if (!needDate && !needGenre && !needArtist && !needBpm) break;
+            if (!needDate && !needGenre && !needArtist && !needTitle && !needBpm) break;
             offset += 10 + frameSize;
         }
 
@@ -406,6 +416,10 @@ class MetadataExtractor {
                     String v = readVorbisCommentValue(commentData, "ARTIST");
                     if (v.length() > 0) e.artist = v;
                 }
+                if (e.title == null) {
+                    String v = readVorbisCommentValue(commentData, "TITLE");
+                    if (v.length() > 0) e.title = v;
+                }
                 if (e.bpm < 0) {
                     String v = readVorbisCommentValue(commentData, "BPM");
                     if (v.length() == 0) v = readVorbisCommentValue(commentData, "TEMPO");
@@ -505,7 +519,7 @@ class MetadataExtractor {
 
 
     private void fillSortTagsFromMp4(Uri uri, TagEntry e) {
-        if (uri == null || (e.date != null && e.genre != null && e.bpm >= 0)) return;
+        if (uri == null || (e.date != null && e.genre != null && e.title != null && e.bpm >= 0)) return;
         String[] bpmCandidates = new String[]{"", ""};
         try (InputStream stream = contentResolver.openInputStream(uri)) {
             if (stream == null) return;
@@ -706,6 +720,9 @@ class MetadataExtractor {
             } else if (inIlst && atomType == 0xA9415254 && e.artist == null) {
                 String artist = readMp4IlstDataAtom(stream, payloadSize, atomType);
                 if (artist.length() > 0) e.artist = artist;
+            } else if (inIlst && atomType == 0xA96E616D && e.title == null) {
+                String title = readMp4IlstDataAtom(stream, payloadSize, atomType);
+                if (title.length() > 0) e.title = title;
             } else if (inIlst && atomType == 0x746D706F && bpmCandidates[0].length() == 0) {
                 String bpm = readMp4IlstDataAtom(stream, payloadSize, atomType);
                 if (bpm.length() > 0) bpmCandidates[0] = bpm;
@@ -731,6 +748,7 @@ class MetadataExtractor {
             if (e.date != null
                     && e.genre != null
                     && e.artist != null
+                    && e.title != null
                     && (e.bpm >= 0 || bpmCandidates[0].length() > 0 || bpmCandidates[1].length() > 0)) {
                 long remaining = maxBytes - consumed;
                 if (remaining > 0) skipFully(stream, remaining);

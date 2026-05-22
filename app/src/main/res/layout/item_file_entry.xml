@@ -65,14 +65,32 @@
         a:singleLine="true"
         a:textSize="15sp" />
 
-      <TextView
-        a:id="@+id/file_meta"
+      <LinearLayout
+        a:id="@+id/file_meta_row"
         a:layout_width="match_parent"
         a:layout_height="wrap_content"
-        a:ellipsize="end"
-        a:singleLine="true"
-        a:textSize="11sp"
-        a:visibility="gone" />
+        a:orientation="horizontal"
+        a:visibility="gone">
+
+        <TextView
+          a:id="@+id/file_artist"
+          a:layout_width="0dp"
+          a:layout_height="wrap_content"
+          a:layout_weight="1"
+          a:ellipsize="end"
+          a:singleLine="true"
+          a:textSize="11sp"
+          a:gravity="start" />
+
+        <TextView
+          a:id="@+id/file_meta"
+          a:layout_width="wrap_content"
+          a:layout_height="wrap_content"
+          a:singleLine="true"
+          a:textSize="11sp"
+          a:gravity="end" />
+
+      </LinearLayout>
     </LinearLayout>
 
   </LinearLayout>

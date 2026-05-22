@@ -450,6 +450,7 @@ public class FileBrowserQueueActivity extends Activity {
 
         rememberLastTreeUri(treeUri);
 
+
         if (!openDocumentTree(treeUri)) {
             Toast.makeText(this, R.string.storage_picker_failed, Toast.LENGTH_LONG).show();
         }
@@ -1238,9 +1239,7 @@ public class FileBrowserQueueActivity extends Activity {
             applyFilenameYearsInPlace();
         }
         Collections.sort(fileEntries, this::compareFileEntries);
-        if (isTagSortMode(fileSortMode)) {
-            resolveTagMetadataForVisibleFolderAsync();
-        }
+        resolveTagMetadataForVisibleFolderAsync();
     }
 
     private boolean isTagSortMode(int mode) {
@@ -1333,6 +1332,7 @@ public class FileBrowserQueueActivity extends Activity {
                 entry.sortDate = tags.date;
                 entry.sortGenre = tags.genre;
                 entry.sortArtist = tags.artist;
+                entry.sortTitle = tags.title;
                 entry.sortBpm = tags.bpm;
                 entry.sortDateState   = TagState.RESOLVED;
                 entry.sortGenreState  = TagState.RESOLVED;
@@ -1400,6 +1400,7 @@ public class FileBrowserQueueActivity extends Activity {
                             result.first.sortDate = result.second.date;
                             result.first.sortGenre = result.second.genre;
                             result.first.sortArtist = result.second.artist;
+                            result.first.sortTitle = result.second.title;
                             result.first.sortBpm = result.second.bpm;
                             result.first.sortDateState   = TagState.RESOLVED;
                             result.first.sortGenreState  = TagState.RESOLVED;
@@ -2809,6 +2810,7 @@ public class FileBrowserQueueActivity extends Activity {
         String sortDate;
         String sortGenre;
         String sortArtist;
+        String sortTitle;
         int sortBpm;
         TagState sortDateState   = TagState.UNKNOWN;
         TagState sortGenreState  = TagState.UNKNOWN;
@@ -2842,15 +2844,41 @@ public class FileBrowserQueueActivity extends Activity {
 
     // -- adapters ------------------------------------------------------------
 
+    private String buildMetaText(String date, String genre, int bpm) {
+        StringBuilder sb = new StringBuilder();
+        if (fileSortMode == SORT_YEAR) {
+            if (bpm > 0) sb.append(bpm).append(" BPM");
+            if (genre != null && !genre.isEmpty()) { if (sb.length() > 0) sb.append("  "); sb.append(genre); }
+            if (date  != null && !date.isEmpty())  { if (sb.length() > 0) sb.append("  "); sb.append(date); }
+        } else if (fileSortMode == SORT_GENRE) {
+            if (date  != null && !date.isEmpty()) sb.append(date);
+            if (bpm > 0) { if (sb.length() > 0) sb.append("  "); sb.append(bpm).append(" BPM"); }
+            if (genre != null && !genre.isEmpty()) { if (sb.length() > 0) sb.append("  "); sb.append(genre); }
+        } else if (fileSortMode == SORT_BPM) {
+            if (date  != null && !date.isEmpty()) sb.append(date);
+            if (genre != null && !genre.isEmpty()) { if (sb.length() > 0) sb.append("  "); sb.append(genre); }
+            if (bpm > 0) { if (sb.length() > 0) sb.append("  "); sb.append(bpm).append(" BPM"); }
+        } else if (fileSortMode == SORT_ARTIST || fileSortMode == SORT_FILENAME) {
+            if (bpm > 0) sb.append(bpm).append(" BPM");
+            if (genre != null && !genre.isEmpty()) { if (sb.length() > 0) sb.append("  "); sb.append(genre); }
+            if (date  != null && !date.isEmpty())  { if (sb.length() > 0) sb.append("  "); sb.append(date); }
+        }
+        return sb.toString();
+    }
+
     private static final class ViewHolder {
         final View content;
         final TextView icon;
         final TextView name;
+        final View metaRow;
+        final TextView artist;
         final TextView meta;
         ViewHolder(View v) {
             content = v.findViewById(R.id.swipe_content);
             icon = v.findViewById(R.id.file_icon);
             name = v.findViewById(R.id.file_name);
+            metaRow = v.findViewById(R.id.file_meta_row);
+            artist = v.findViewById(R.id.file_artist);
             meta = v.findViewById(R.id.file_meta);
         }
     }
@@ -2886,51 +2914,16 @@ public class FileBrowserQueueActivity extends Activity {
 
             FileEntry entry = filteredFileEntries.get(position);
             vh.icon.setText(entry.isDirectory ? "\uD83D\uDCC1" : "\uD83C\uDFB5");
-            vh.name.setText(entry.name);
-            String metaText = "";
-            if (!entry.isDirectory && fileSortMode == SORT_YEAR
-                    && entry.sortDate != null && entry.sortDate.length() > 0) {
-                metaText = entry.sortDate;
-                if (entry.sortGenre != null && entry.sortGenre.length() > 0) {
-                    metaText = metaText + "  " + entry.sortGenre;
-                }
-                if (entry.sortBpm > 0) {
-                    metaText = metaText + "  " + entry.sortBpm + " BPM";
-                }
-            } else if (!entry.isDirectory && fileSortMode == SORT_GENRE
-                    && entry.sortGenre != null && entry.sortGenre.length() > 0) {
-                metaText = entry.sortGenre;
-                if (entry.sortBpm > 0) {
-                    metaText = metaText + "  " + entry.sortBpm + " BPM";
-                }
-                if (entry.sortDate != null && entry.sortDate.length() > 0) {
-                    metaText = metaText + "  " + entry.sortDate;
-                }
-            } else if (!entry.isDirectory && fileSortMode == SORT_BPM && entry.sortBpm > 0) {
-                metaText = entry.sortBpm + " BPM";
-                if (entry.sortGenre != null && entry.sortGenre.length() > 0) {
-                    metaText = metaText + "  " + entry.sortGenre;
-                }
-                if (entry.sortDate != null && entry.sortDate.length() > 0) {
-                    metaText = metaText + "  " + entry.sortDate;
-                }
-            } else if (!entry.isDirectory && fileSortMode == SORT_ARTIST
-                    && entry.sortArtist != null && entry.sortArtist.length() > 0) {
-                metaText = entry.sortArtist;
-                if (entry.sortBpm > 0) {
-                    metaText = metaText + "  " + entry.sortBpm + " BPM";
-                }
-                else if (entry.sortGenre != null && entry.sortGenre.length() > 0) {
-                    metaText = metaText + "  " + entry.sortGenre;
-                }
-            }
-            if (metaText.length() > 0) {
-                vh.meta.setText(metaText);
-                vh.meta.setVisibility(View.VISIBLE);
-            } else {
-                vh.meta.setText("");
-                vh.meta.setVisibility(View.GONE);
-            }
+            vh.name.setText(fileSortMode != SORT_FILENAME && entry.sortTitle != null && !entry.sortTitle.isEmpty() ? entry.sortTitle : entry.name);
+            String metaText = entry.isDirectory ? "" :
+                    buildMetaText(entry.sortDate, entry.sortGenre, entry.sortBpm);
+            String artistText = entry.isDirectory ? "" :
+                    (entry.sortArtist != null ? entry.sortArtist : "");
+            vh.artist.setText(artistText);
+            vh.meta.setText(metaText);
+            boolean hasSubtext = artistText.length() > 0 || metaText.length() > 0;
+            vh.metaRow.setVisibility(hasSubtext ? View.VISIBLE : View.GONE);
+            vh.name.setGravity(hasSubtext ? Gravity.START : Gravity.CENTER);
 
             boolean isBrowseEntry = browseFilePlaying
                     && !entry.isDirectory
@@ -3013,9 +3006,21 @@ public class FileBrowserQueueActivity extends Activity {
                 vh.content.setBackgroundColor(colorBackground);
             }
             vh.icon.setText("\uD83C\uDFB5");
-            vh.name.setText(entry.name);
-            vh.meta.setText("");
-            vh.meta.setVisibility(View.GONE);
+            String displayName = entry.name;
+            String artistText = "";
+            String metaText = "";
+            if (metadataExtractor.isAllTagsCached(entry.uri)) {
+                MetadataExtractor.TagEntry tags = metadataExtractor.readSortTags(entry.uri);
+                if (tags.title != null && !tags.title.isEmpty()) displayName = tags.title;
+                if (tags.artist != null) artistText = tags.artist;
+                metaText = buildMetaText(tags.date, tags.genre, tags.bpm);
+            }
+            boolean hasSubtext = !artistText.isEmpty() || !metaText.isEmpty();
+            vh.name.setText(displayName);
+            vh.name.setGravity(hasSubtext ? Gravity.START : Gravity.CENTER);
+            vh.artist.setText(artistText);
+            vh.meta.setText(metaText);
+            vh.metaRow.setVisibility(hasSubtext ? View.VISIBLE : View.GONE);
             return convertView;
         }
     }

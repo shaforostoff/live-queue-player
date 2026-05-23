@@ -2,7 +2,7 @@
 <manifest xmlns:a="http://schemas.android.com/apk/res/android"
           xmlns:tools="http://schemas.android.com/tools"
           package="com.shaforostoff.livequeueplayer"
-          a:versionCode="8"
+          a:versionCode="9"
           a:versionName="1.2.2">
 
   <uses-permission a:name="android.permission.POST_NOTIFICATIONS"/>

@@ -16,6 +16,8 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
 import android.os.Handler;
+import android.os.storage.StorageManager;
+import android.os.storage.StorageVolume;
 import android.text.Editable;
 import android.text.TextWatcher;
 import android.provider.DocumentsContract;
@@ -642,8 +644,36 @@ public class FileBrowserQueueActivity extends Activity {
         Uri initialTreeUri = getRememberedTreeUri();
         if (initialTreeUri != null && hasReadPermissionForUri(initialTreeUri)) {
             intent.putExtra(DocumentsContract.EXTRA_INITIAL_URI, initialTreeUri);
+        } else {
+            // First use: point picker at SD card so the user can find it easily.
+            Uri sdCardUri = findSdCardDocumentUri();
+            if (sdCardUri != null) {
+                intent.putExtra(DocumentsContract.EXTRA_INITIAL_URI, sdCardUri);
+            }
         }
         startActivityForResult(intent, TREE_REQUEST_CODE);
+    }
+
+    private Uri findSdCardDocumentUri() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return null;
+        StorageManager sm = getSystemService(StorageManager.class);
+        if (sm == null) return null;
+        for (StorageVolume vol : sm.getStorageVolumes()) {
+            if (!vol.isRemovable()) continue;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                try {
+                    Intent volIntent = vol.createOpenDocumentTreeIntent();
+                    return volIntent.getParcelableExtra(DocumentsContract.EXTRA_INITIAL_URI);
+                } catch (Exception ignored) {}
+            } else {
+                String uuid = vol.getUuid();
+                if (uuid != null) {
+                    return Uri.parse("content://com.android.externalstorage.documents/tree/"
+                            + Uri.encode(uuid + ":"));
+                }
+            }
+        }
+        return null;
     }
 
     private boolean hasReadPermissionForUri(Uri treeUri) {

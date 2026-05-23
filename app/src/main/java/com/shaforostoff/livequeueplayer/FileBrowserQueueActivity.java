@@ -58,6 +58,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -148,7 +149,9 @@ public class FileBrowserQueueActivity extends Activity {
     private MetadataExtractor metadataExtractor;
     private int activeTagReadJobs;
     private int tagReadProgressTotal;
-    private int tagReadProgressDone;
+    private final AtomicInteger tagReadProgressDone = new AtomicInteger(0);
+    private final AtomicBoolean progressRedrawPending = new AtomicBoolean(false);
+    private ClipDrawable progressClipDrawable;
 
     // -- queue state --------------------------------------------------------
     private final List<QueueEntry> queueEntries = new ArrayList<>();
@@ -1359,7 +1362,7 @@ public class FileBrowserQueueActivity extends Activity {
 
         if (activeTagReadJobs == 0) {
             tagReadProgressTotal = 0;
-            tagReadProgressDone = 0;
+            tagReadProgressDone.set(0);
         }
         activeTagReadJobs++;
         tagReadProgressTotal += pendingEntries.size();
@@ -1372,16 +1375,19 @@ public class FileBrowserQueueActivity extends Activity {
         for (FileEntry entry : pendingEntries) {
             pool.submit(() -> {
                 results.add(Pair.create(entry, metadataExtractor.readSortTags(entry.uri)));
-                runOnUiThread(() -> {
-                    tagReadProgressDone = Math.min(tagReadProgressTotal, tagReadProgressDone + 1);
-                    applySortButtonLoadingState();
-                });
+                tagReadProgressDone.incrementAndGet();
+                if (progressRedrawPending.compareAndSet(false, true)) {
+                    runOnUiThread(() -> {
+                        progressRedrawPending.set(false);
+                        applySortButtonLoadingState();
+                    });
+                }
                 if (pending.decrementAndGet() == 0) {
                     runOnUiThread(() -> {
                         activeTagReadJobs = Math.max(0, activeTagReadJobs - 1);
                         if (activeTagReadJobs == 0) {
                             tagReadProgressTotal = 0;
-                            tagReadProgressDone = 0;
+                            tagReadProgressDone.set(0);
                         }
                         applySortButtonLoadingState();
 
@@ -1427,7 +1433,7 @@ public class FileBrowserQueueActivity extends Activity {
         if (activeTagReadJobs > 0) {
             float progress = 0f;
             if (tagReadProgressTotal > 0) {
-                progress = Math.min(1f, tagReadProgressDone / (float) tagReadProgressTotal);
+                progress = Math.min(1f, tagReadProgressDone.get() / (float) tagReadProgressTotal);
             }
             applyProgressBackground(
                     sortButton,
@@ -1436,22 +1442,22 @@ public class FileBrowserQueueActivity extends Activity {
                     getColor(R.color.stopButtonActive));
             sortButton.setTextColor(getColor(R.color.stopButtonActiveText));
         } else {
+            progressClipDrawable = null;
             sortButton.setBackgroundColor(getColor(R.color.buttonBackground));
             sortButton.setTextColor(getColor(R.color.foreground));
         }
     }
 
     private void applyProgressBackground(View target, float progress, int baseColor, int fillColor) {
-        GradientDrawable base = new GradientDrawable();
-        base.setColor(baseColor);
-
-        GradientDrawable progressFill = new GradientDrawable();
-        progressFill.setColor(fillColor);
-        ClipDrawable clippedProgress = new ClipDrawable(progressFill, Gravity.START, ClipDrawable.HORIZONTAL);
-        clippedProgress.setLevel((int) (Math.max(0f, Math.min(1f, progress)) * PROGRESS_LEVEL_MAX));
-
-        LayerDrawable layer = new LayerDrawable(new Drawable[]{base, clippedProgress});
-        target.setBackground(layer);
+        if (progressClipDrawable == null) {
+            GradientDrawable base = new GradientDrawable();
+            base.setColor(baseColor);
+            GradientDrawable fill = new GradientDrawable();
+            fill.setColor(fillColor);
+            progressClipDrawable = new ClipDrawable(fill, Gravity.START, ClipDrawable.HORIZONTAL);
+            target.setBackground(new LayerDrawable(new Drawable[]{base, progressClipDrawable}));
+        }
+        progressClipDrawable.setLevel((int) (Math.max(0f, Math.min(1f, progress)) * PROGRESS_LEVEL_MAX));
     }
 
     private void showLyricsOverlayForQueueEntry(QueueEntry entry) {

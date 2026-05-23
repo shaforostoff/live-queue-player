@@ -32,6 +32,11 @@ class MetadataExtractor {
         int bpm = -1;
     }
 
+    private static final class BpmCandidates {
+        String main = "";
+        String fallback = "";
+    }
+
     private final ContentResolver contentResolver;
     private final Map<String, TagEntry> tagCache = Collections.synchronizedMap(new HashMap<>());
 
@@ -237,30 +242,29 @@ class MetadataExtractor {
         String tdrc = null, tyer = null;
 
         for (int offset = startOffset; offset + 10 <= tagData.length; ) {
-            String frameId = new String(tagData, offset, 4, "ISO-8859-1");
-            if (isZeroFrameId(frameId)) break;
+            if (isZeroFrameId(tagData, offset)) break;
 
             int frameSize = majorVersion == 4
                     ? decodeSyncSafeInt(tagData, offset + 4)
                     : decodeInt(tagData, offset + 4);
             if (frameSize <= 0 || offset + 10 + frameSize > tagData.length) break;
 
-            if (needDate && "TDRC".equals(frameId)) {
+            if (needDate && frameIdIs(tagData, offset, "TDRC")) {
                 String v = decodeId3Text(tagData, offset + 10, frameSize);
                 if (v.length() > 0) tdrc = normalizeDateValue(v);
-            } else if (needDate && "TYER".equals(frameId)) {
+            } else if (needDate && frameIdIs(tagData, offset, "TYER")) {
                 String v = decodeId3Text(tagData, offset + 10, frameSize);
                 if (v.length() > 0) tyer = normalizeDateValue(v);
-            } else if (needGenre && "TCON".equals(frameId)) {
+            } else if (needGenre && frameIdIs(tagData, offset, "TCON")) {
                 String v = decodeId3Text(tagData, offset + 10, frameSize);
                 if (v.length() > 0) { e.genre = v; needGenre = false; }
-            } else if (needArtist && "TPE1".equals(frameId)) {
+            } else if (needArtist && frameIdIs(tagData, offset, "TPE1")) {
                 String v = decodeId3Text(tagData, offset + 10, frameSize);
                 if (v.length() > 0) { e.artist = v; needArtist = false; }
-            } else if (needTitle && "TIT2".equals(frameId)) {
+            } else if (needTitle && frameIdIs(tagData, offset, "TIT2")) {
                 String v = decodeId3Text(tagData, offset + 10, frameSize);
                 if (v.length() > 0) { e.title = v; needTitle = false; }
-            } else if (needBpm && "TBPM".equals(frameId)) {
+            } else if (needBpm && frameIdIs(tagData, offset, "TBPM")) {
                 String v = decodeId3Text(tagData, offset + 10, frameSize);
                 if (v.length() > 0) { e.bpm = parseBpmValue(v); needBpm = false; }
             }
@@ -277,13 +281,12 @@ class MetadataExtractor {
         // If date is absent or a bare year, scan the already-loaded tag bytes for a COMM frame
         if (e.date == null || (e.date.length() > 0 && e.date.length() < 5)) {
             for (int offset = startOffset; offset + 10 <= tagData.length; ) {
-                String frameId = new String(tagData, offset, 4, "ISO-8859-1");
-                if (isZeroFrameId(frameId)) break;
+                if (isZeroFrameId(tagData, offset)) break;
                 int frameSize = majorVersion == 4
                         ? decodeSyncSafeInt(tagData, offset + 4)
                         : decodeInt(tagData, offset + 4);
                 if (frameSize <= 0 || offset + 10 + frameSize > tagData.length) break;
-                if ("COMM".equals(frameId)) {
+                if (frameIdIs(tagData, offset, "COMM")) {
                     String comm = decodeUsltText(tagData, offset + 10, frameSize);
                     if (!comm.isEmpty()) {
                         Matcher m = DATE_IN_COMMENT_PATTERN.matcher(comm);
@@ -310,12 +313,11 @@ class MetadataExtractor {
 
             byte[] chunkHeader = new byte[8];
             while (readFully(stream, chunkHeader, 8)) {
-                String chunkId = new String(chunkHeader, 0, 4, "ISO-8859-1");
                 int chunkSize = ((chunkHeader[4] & 0xFF) << 24) | ((chunkHeader[5] & 0xFF) << 16)
                         | ((chunkHeader[6] & 0xFF) << 8) | (chunkHeader[7] & 0xFF);
                 if (chunkSize < 0) return;
 
-                if ("ID3 ".equals(chunkId) && chunkSize >= 10 && chunkSize <= (4 * 1024 * 1024)) {
+                if (frameIdIs(chunkHeader, 0, "ID3 ") && chunkSize >= 10 && chunkSize <= (4 * 1024 * 1024)) {
                     byte[] id3Bytes = new byte[chunkSize];
                     if (!readFully(stream, id3Bytes, chunkSize)) return;
                     fillFromId3Stream(new java.io.ByteArrayInputStream(id3Bytes), e);
@@ -356,15 +358,14 @@ class MetadataExtractor {
             }
 
             for (int offset = startOffset; offset + 10 <= tagData.length; ) {
-                String frameId = new String(tagData, offset, 4, "ISO-8859-1");
-                if (isZeroFrameId(frameId)) break;
+                if (isZeroFrameId(tagData, offset)) break;
 
                 int frameSize = majorVersion == 4
                         ? decodeSyncSafeInt(tagData, offset + 4)
                         : decodeInt(tagData, offset + 4);
                 if (frameSize <= 0 || offset + 10 + frameSize > tagData.length) break;
 
-                if ("USLT".equals(frameId)) {
+                if (frameIdIs(tagData, offset, "USLT")) {
                     String lyrics = decodeUsltText(tagData, offset + 10, frameSize);
                     if (lyrics.length() > 0) return lyrics;
                 }
@@ -520,14 +521,14 @@ class MetadataExtractor {
 
     private void fillSortTagsFromMp4(Uri uri, TagEntry e) {
         if (uri == null || (e.date != null && e.genre != null && e.title != null && e.bpm >= 0)) return;
-        String[] bpmCandidates = new String[]{"", ""};
+        BpmCandidates bpmCandidates = new BpmCandidates();
         try (InputStream stream = contentResolver.openInputStream(uri)) {
             if (stream == null) return;
             readMp4SortTagValuesFromAtoms(stream, Long.MAX_VALUE, false, e, bpmCandidates);
         } catch (Exception ignored) {
         }
         if (e.bpm < 0) {
-            String bpm = bpmCandidates[0].length() > 0 ? bpmCandidates[0] : bpmCandidates[1];
+            String bpm = bpmCandidates.main.length() > 0 ? bpmCandidates.main : bpmCandidates.fallback;
             if (bpm.length() > 0) e.bpm = parseBpmValue(bpm);
         }
         if (e.date == null || (e.date.length() > 0 && e.date.length() < 5)) {
@@ -573,15 +574,14 @@ class MetadataExtractor {
             }
 
             for (int offset = startOffset; offset + 10 <= tagData.length; ) {
-                String frameId = new String(tagData, offset, 4, "ISO-8859-1");
-                if (isZeroFrameId(frameId)) break;
+                if (isZeroFrameId(tagData, offset)) break;
 
                 int frameSize = majorVersion == 4
                         ? decodeSyncSafeInt(tagData, offset + 4)
                         : decodeInt(tagData, offset + 4);
                 if (frameSize <= 0 || offset + 10 + frameSize > tagData.length) break;
 
-                if ("TXXX".equals(frameId)) {
+                if (frameIdIs(tagData, offset, "TXXX")) {
                     String gain = decodeId3UserText(tagData, offset + 10, frameSize, "REPLAYGAIN_TRACK_GAIN");
                     if (gain.length() == 0) {
                         gain = decodeId3UserText(tagData, offset + 10, frameSize, "replaygain_track_gain");
@@ -688,7 +688,7 @@ class MetadataExtractor {
                                                long maxBytes,
                                                boolean inIlst,
                                                TagEntry e,
-                                               String[] bpmCandidates) throws java.io.IOException {
+                                               BpmCandidates bpmCandidates) throws java.io.IOException {
         long consumed = 0;
         while (consumed + 8 <= maxBytes) {
             byte[] header = new byte[8];
@@ -723,12 +723,12 @@ class MetadataExtractor {
             } else if (inIlst && atomType == 0xA96E616D && e.title == null) {
                 String title = readMp4IlstDataAtom(stream, payloadSize, atomType);
                 if (title.length() > 0) e.title = title;
-            } else if (inIlst && atomType == 0x746D706F && bpmCandidates[0].length() == 0) {
+            } else if (inIlst && atomType == 0x746D706F && bpmCandidates.main.length() == 0) {
                 String bpm = readMp4IlstDataAtom(stream, payloadSize, atomType);
-                if (bpm.length() > 0) bpmCandidates[0] = bpm;
-            } else if (inIlst && atomType == 0x2D2D2D2D && bpmCandidates[1].length() == 0) {
+                if (bpm.length() > 0) bpmCandidates.main = bpm;
+            } else if (inIlst && atomType == 0x2D2D2D2D && bpmCandidates.fallback.length() == 0) {
                 String bpm = readMp4FreeformIlstItem(stream, payloadSize, "com.apple.iTunes", "BPM");
-                if (bpm.length() > 0) bpmCandidates[1] = bpm;
+                if (bpm.length() > 0) bpmCandidates.fallback = bpm;
             } else if (isMp4ContainerAtom(atomType)) {
                 if (atomType == 0x6D657461) {
                     if (payloadSize < 4) {
@@ -749,7 +749,7 @@ class MetadataExtractor {
                     && e.genre != null
                     && e.artist != null
                     && e.title != null
-                    && (e.bpm >= 0 || bpmCandidates[0].length() > 0 || bpmCandidates[1].length() > 0)) {
+                    && (e.bpm >= 0 || bpmCandidates.main.length() > 0 || bpmCandidates.fallback.length() > 0)) {
                 long remaining = maxBytes - consumed;
                 if (remaining > 0) skipFully(stream, remaining);
                 return;
@@ -1027,11 +1027,16 @@ class MetadataExtractor {
                 | (data[offset + 3] & 0xFF);
     }
 
-    private boolean isZeroFrameId(String frameId) {
-        for (int i = 0; i < frameId.length(); i++) {
-            if (frameId.charAt(i) != 0) return false;
-        }
-        return true;
+    private static boolean isZeroFrameId(byte[] data, int offset) {
+        return data[offset] == 0 && data[offset + 1] == 0
+                && data[offset + 2] == 0 && data[offset + 3] == 0;
+    }
+
+    private static boolean frameIdIs(byte[] data, int offset, String id) {
+        return data[offset]     == (byte) id.charAt(0)
+            && data[offset + 1] == (byte) id.charAt(1)
+            && data[offset + 2] == (byte) id.charAt(2)
+            && data[offset + 3] == (byte) id.charAt(3);
     }
 
     private String decodeId3Text(byte[] data, int offset, int length) {

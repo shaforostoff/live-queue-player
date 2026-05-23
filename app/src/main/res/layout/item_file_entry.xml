@@ -57,13 +57,29 @@
       a:layout_weight="1"
       a:orientation="vertical">
 
-      <TextView
-        a:id="@+id/file_name"
+      <LinearLayout
         a:layout_width="match_parent"
         a:layout_height="wrap_content"
-        a:ellipsize="end"
-        a:singleLine="true"
-        a:textSize="15sp" />
+        a:orientation="horizontal">
+
+        <TextView
+          a:id="@+id/file_name"
+          a:layout_width="0dp"
+          a:layout_weight="1"
+          a:layout_height="wrap_content"
+          a:ellipsize="end"
+          a:singleLine="true"
+          a:textSize="15sp" />
+
+        <TextView
+          a:id="@+id/remaining_time"
+          a:layout_width="wrap_content"
+          a:layout_height="wrap_content"
+          a:layout_gravity="top"
+          a:textSize="11sp"
+          a:visibility="gone" />
+
+      </LinearLayout>
 
       <LinearLayout
         a:id="@+id/file_meta_row"

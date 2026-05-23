@@ -58,6 +58,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -2894,6 +2895,11 @@ public class FileBrowserQueueActivity extends Activity {
 
     // -- adapters ------------------------------------------------------------
 
+    private static String formatRemainingMs(int positionMs, int durationMs) {
+        int totalSecs = Math.max(0, durationMs - positionMs) / 1000;
+        return String.format(Locale.US, "-%d:%02d", totalSecs / 60, totalSecs % 60);
+    }
+
     private String buildMetaText(String date, String genre, int bpm) {
         StringBuilder sb = new StringBuilder();
         if (fileSortMode == SORT_YEAR) {
@@ -2920,6 +2926,7 @@ public class FileBrowserQueueActivity extends Activity {
         final View content;
         final TextView icon;
         final TextView name;
+        final TextView remainingTime;
         final View metaRow;
         final TextView artist;
         final TextView meta;
@@ -2927,6 +2934,7 @@ public class FileBrowserQueueActivity extends Activity {
             content = v.findViewById(R.id.swipe_content);
             icon = v.findViewById(R.id.file_icon);
             name = v.findViewById(R.id.file_name);
+            remainingTime = v.findViewById(R.id.remaining_time);
             metaRow = v.findViewById(R.id.file_meta_row);
             artist = v.findViewById(R.id.file_artist);
             meta = v.findViewById(R.id.file_meta);
@@ -2985,6 +2993,12 @@ public class FileBrowserQueueActivity extends Activity {
             boolean hasProgress = isPreviewEntry
                     && fileBrowserPreviewingUri != null
                     && fileBrowserPreviewingUri.equals(entry.uri);
+            if (isBrowseEntry && currentTrackDurationMs > 0) {
+                vh.remainingTime.setText(formatRemainingMs(currentTrackPositionMs, currentTrackDurationMs));
+                vh.remainingTime.setVisibility(View.VISIBLE);
+            } else {
+                vh.remainingTime.setVisibility(View.GONE);
+            }
             if (isBrowseEntry) {
                 float progress = 0f;
                 if (currentTrackDurationMs > 0) {
@@ -3054,6 +3068,12 @@ public class FileBrowserQueueActivity extends Activity {
                 applyProgressBackground(vh.content, progress, colorQueueBase, colorQueueFill);
             } else {
                 vh.content.setBackgroundColor(colorBackground);
+            }
+            if (isCurrentTrack && currentTrackDurationMs > 0) {
+                vh.remainingTime.setText(formatRemainingMs(currentTrackPositionMs, currentTrackDurationMs));
+                vh.remainingTime.setVisibility(View.VISIBLE);
+            } else {
+                vh.remainingTime.setVisibility(View.GONE);
             }
             vh.icon.setText("\uD83C\uDFB5");
             String displayName = entry.tagsCached && entry.title != null && !entry.title.isEmpty()

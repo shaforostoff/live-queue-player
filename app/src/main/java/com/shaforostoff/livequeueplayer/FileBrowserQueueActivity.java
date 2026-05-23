@@ -1375,8 +1375,8 @@ public class FileBrowserQueueActivity extends Activity {
         for (FileEntry entry : pendingEntries) {
             pool.submit(() -> {
                 results.add(Pair.create(entry, metadataExtractor.readSortTags(entry.uri)));
-                tagReadProgressDone.incrementAndGet();
-                if (progressRedrawPending.compareAndSet(false, true)) {
+                int done = tagReadProgressDone.incrementAndGet();
+                if (done % 8 == 0 && progressRedrawPending.compareAndSet(false, true)) {
                     runOnUiThread(() -> {
                         progressRedrawPending.set(false);
                         applySortButtonLoadingState();
@@ -1415,8 +1415,10 @@ public class FileBrowserQueueActivity extends Activity {
                             changed = true;
                         }
 
-                        if (changed && isTagSortMode(fileSortMode)) {
-                            Collections.sort(fileEntries, FileBrowserQueueActivity.this::compareFileEntries);
+                        if (changed) {
+                            if (isTagSortMode(fileSortMode)) {
+                                Collections.sort(fileEntries, FileBrowserQueueActivity.this::compareFileEntries);
+                            }
                             applyFileFilter();
                         }
                     });
@@ -1435,11 +1437,15 @@ public class FileBrowserQueueActivity extends Activity {
             if (tagReadProgressTotal > 0) {
                 progress = Math.min(1f, tagReadProgressDone.get() / (float) tagReadProgressTotal);
             }
-            applyProgressBackground(
-                    sortButton,
-                    progress,
-                    getColor(R.color.buttonBackground),
-                    getColor(R.color.stopButtonActive));
+            if (progressClipDrawable == null) {
+                GradientDrawable base = new GradientDrawable();
+                base.setColor(getColor(R.color.buttonBackground));
+                GradientDrawable fill = new GradientDrawable();
+                fill.setColor(getColor(R.color.stopButtonActive));
+                progressClipDrawable = new ClipDrawable(fill, Gravity.START, ClipDrawable.HORIZONTAL);
+                sortButton.setBackground(new LayerDrawable(new Drawable[]{base, progressClipDrawable}));
+            }
+            progressClipDrawable.setLevel((int) (Math.max(0f, Math.min(1f, progress)) * PROGRESS_LEVEL_MAX));
             sortButton.setTextColor(getColor(R.color.stopButtonActiveText));
         } else {
             progressClipDrawable = null;
@@ -1449,15 +1455,16 @@ public class FileBrowserQueueActivity extends Activity {
     }
 
     private void applyProgressBackground(View target, float progress, int baseColor, int fillColor) {
-        if (progressClipDrawable == null) {
-            GradientDrawable base = new GradientDrawable();
-            base.setColor(baseColor);
-            GradientDrawable fill = new GradientDrawable();
-            fill.setColor(fillColor);
-            progressClipDrawable = new ClipDrawable(fill, Gravity.START, ClipDrawable.HORIZONTAL);
-            target.setBackground(new LayerDrawable(new Drawable[]{base, progressClipDrawable}));
-        }
-        progressClipDrawable.setLevel((int) (Math.max(0f, Math.min(1f, progress)) * PROGRESS_LEVEL_MAX));
+        GradientDrawable base = new GradientDrawable();
+        base.setColor(baseColor);
+
+        GradientDrawable progressFill = new GradientDrawable();
+        progressFill.setColor(fillColor);
+        ClipDrawable clippedProgress = new ClipDrawable(progressFill, Gravity.START, ClipDrawable.HORIZONTAL);
+        clippedProgress.setLevel((int) (Math.max(0f, Math.min(1f, progress)) * PROGRESS_LEVEL_MAX));
+
+        LayerDrawable layer = new LayerDrawable(new Drawable[]{base, clippedProgress});
+        target.setBackground(layer);
     }
 
     private void showLyricsOverlayForQueueEntry(QueueEntry entry) {

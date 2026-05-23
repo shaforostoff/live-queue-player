@@ -27,6 +27,7 @@ final class Playlist extends ArrayList<Playlist.Entry> {
     static final class Entry {
         String title;
         Uri location;
+        int queueEntryId = -1;
     }
 }
 

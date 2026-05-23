@@ -16,6 +16,7 @@ final class QueueStore {
     private static final String KEY_PLAYBACK_OFFSET = "playback_offset";
     private static final String KEY_NAME = "name";
     private static final String KEY_URI  = "uri";
+    private static final String KEY_ID   = "id";
 
     private QueueStore() {
     }
@@ -23,10 +24,16 @@ final class QueueStore {
     static final class Entry {
         final String name;
         final Uri    uri;
+        final int    id;
 
-        Entry(String name, Uri uri) {
+        Entry(String name, Uri uri, int id) {
             this.name = name;
             this.uri  = uri;
+            this.id   = id;
+        }
+
+        Entry(String name, Uri uri) {
+            this(name, uri, 0);
         }
     }
 
@@ -47,6 +54,7 @@ final class QueueStore {
                 JSONObject object = new JSONObject();
                 object.put(KEY_NAME, entry.name != null ? entry.name : "");
                 object.put(KEY_URI, entry.uri.toString());
+                if (entry.id > 0) object.put(KEY_ID, entry.id);
                 array.put(object);
             } catch (Exception ignored) {
             }
@@ -71,8 +79,9 @@ final class QueueStore {
                 String name      = object.optString(KEY_NAME, "");
                 String uriString = object.optString(KEY_URI, "");
                 if (uriString.length() == 0) continue;
+                int id = object.optInt(KEY_ID, 0);
 
-                result.add(new Entry(name, Uri.parse(uriString)));
+                result.add(new Entry(name, Uri.parse(uriString), id));
             }
         } catch (Exception ignored) {
             // Corrupt persisted queue should not crash the app.

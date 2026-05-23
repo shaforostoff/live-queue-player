@@ -29,6 +29,8 @@ public class Service extends android.app.Service implements MediaPlayerStateList
     static final String EXTRA_HAS_PENDING_TRACKS = "has_pending_tracks";
     static final String EXTRA_FADE_OUT_IN_PROGRESS = "fade_out_in_progress";
     static final String EXTRA_BROWSE_MODE = "browse_mode";
+    static final String EXTRA_ENTRY_IDS = "entry_ids";
+    static final String EXTRA_CURRENT_ENTRY_ID = "current_entry_id";
     private static final long PLAYBACK_PROGRESS_BROADCAST_INTERVAL_MS = 1_000L;
 
     // Readable by the activity to re-sync state after missed broadcasts (e.g. screen off)
@@ -40,6 +42,7 @@ public class Service extends android.app.Service implements MediaPlayerStateList
     static volatile boolean sHasPendingTracks = false;
     static volatile boolean sFadeOutInProgress = false;
     static volatile boolean sBrowseMode = false;
+    static volatile int sCurrentEntryId = -1;
 
     private HWListener hwListener;
     private Notifications notifications;
@@ -160,6 +163,12 @@ public class Service extends android.app.Service implements MediaPlayerStateList
                     }
                 }
             }
+            int[] entryIds = intent.getIntArrayExtra(EXTRA_ENTRY_IDS);
+            if (entryIds != null) {
+                for (int i = 0; i < entryIds.length && (sizeBefore + i) < playlist.size(); i++) {
+                    playlist.get(sizeBefore + i).queueEntryId = entryIds[i];
+                }
+            }
             ArrayList<QueueStore.Entry> newEntries = new ArrayList<>();
             newEntries.ensureCapacity(playlist.size());
             for (int i = sizeBefore; i < playlist.size(); i++) {
@@ -200,6 +209,7 @@ public class Service extends android.app.Service implements MediaPlayerStateList
                 startForeground(Notifications.NOTIFICATION_ID, notifications.notification);
 
             initializeProgressForTrack(entry.location);
+            sCurrentEntryId = entry.queueEntryId;
             notifyPlaybackState(true, currentIndex, entry.location);
 
         } catch (IllegalArgumentException e) {
@@ -348,6 +358,7 @@ public class Service extends android.app.Service implements MediaPlayerStateList
         sIsPlaying = isPlaying;
         sCurrentIndex = currentIndex;
         sCurrentUri = currentUri;
+        if (currentIndex < 0) sCurrentEntryId = -1;
         // Update pending tracks state based on current playlist position
         sHasPendingTracks = playlistPosition < playlist.size();
         sendPlaybackStateBroadcast();
@@ -391,6 +402,7 @@ public class Service extends android.app.Service implements MediaPlayerStateList
         intent.putExtra(EXTRA_HAS_PENDING_TRACKS, sHasPendingTracks);
         intent.putExtra(EXTRA_FADE_OUT_IN_PROGRESS, sFadeOutInProgress);
         intent.putExtra(EXTRA_BROWSE_MODE, sBrowseMode);
+        intent.putExtra(EXTRA_CURRENT_ENTRY_ID, sCurrentEntryId);
         sendBroadcast(intent);
     }
 

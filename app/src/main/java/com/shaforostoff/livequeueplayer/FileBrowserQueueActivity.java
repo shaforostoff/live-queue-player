@@ -189,6 +189,7 @@ public class FileBrowserQueueActivity extends Activity {
 
             boolean isPlaying = intent.getBooleanExtra(Service.EXTRA_IS_PLAYING, false);
             int serviceIndex = intent.getIntExtra(Service.EXTRA_CURRENT_INDEX, -1);
+            int entryId = intent.getIntExtra(Service.EXTRA_CURRENT_ENTRY_ID, -1);
             Uri currentUri = intent.getParcelableExtra(Service.EXTRA_CURRENT_URI);
             boolean serviceBrowseMode = intent.getBooleanExtra(Service.EXTRA_BROWSE_MODE, false);
             currentTrackPositionMs = intent.getIntExtra(
@@ -234,7 +235,7 @@ public class FileBrowserQueueActivity extends Activity {
             } else {
                 queueTransitionActive = false;
                 int prevIndex = currentPlayingQueueIndex;
-                currentPlayingQueueIndex = resolvePlayingQueueIndex(serviceIndex, currentUri);
+                currentPlayingQueueIndex = resolvePlayingQueueIndex(entryId, serviceIndex, currentUri);
                 if (currentPlayingQueueIndex >= 0 && currentPlayingQueueIndex != prevIndex) {
                     queueList.smoothScrollToPosition(currentPlayingQueueIndex);
                 }
@@ -1831,7 +1832,7 @@ public class FileBrowserQueueActivity extends Activity {
         queueEntries.clear();
         ArrayList<QueueStore.Entry> persisted = QueueStore.load(this);
         for (QueueStore.Entry entry : persisted) {
-            queueEntries.add(new QueueEntry(entry.name, entry.uri));
+            queueEntries.add(new QueueEntry(entry.name, entry.uri, entry.id));
         }
         queueAdapter.notifyDataSetChanged();
         updateQueueHint();
@@ -1841,7 +1842,7 @@ public class FileBrowserQueueActivity extends Activity {
     private void persistQueue() {
         ArrayList<QueueStore.Entry> persisted = new ArrayList<>(queueEntries.size());
         for (QueueEntry entry : queueEntries) {
-            persisted.add(new QueueStore.Entry(entry.name, entry.uri));
+            persisted.add(new QueueStore.Entry(entry.name, entry.uri, entry.id));
         }
         QueueStore.save(this, persisted);
     }
@@ -2175,16 +2176,20 @@ public class FileBrowserQueueActivity extends Activity {
             return;
         }
 
-        ArrayList<Uri> uris = new ArrayList<>();
-        uris.ensureCapacity(queueEntries.size());
+        int count = queueEntries.size() - position;
+        ArrayList<Uri> uris = new ArrayList<>(count);
+        int[] ids = new int[count];
         for (int i = position; i < queueEntries.size(); i++) {
-            uris.add(queueEntries.get(i).uri);
+            QueueEntry e = queueEntries.get(i);
+            uris.add(e.uri);
+            ids[i - position] = e.id;
         }
 
         Intent intent = new Intent(this, Launcher.class);
         intent.setAction(ACTION_SEND_MULTIPLE_COMPAT);
         intent.setType("audio/*");
         intent.putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris);
+        intent.putExtra(Service.EXTRA_ENTRY_IDS, ids);
         if (forceImmediateRestart) {
             queueTransitionActive = true;
             sendStopNowCommand();
@@ -2614,6 +2619,7 @@ public class FileBrowserQueueActivity extends Activity {
 
     private void syncWithServiceState() {
         int serviceIndex = Service.sCurrentIndex;
+        int entryId = Service.sCurrentEntryId;
         Uri serviceUri = Service.sCurrentUri;
         boolean serviceBrowseMode = Service.sBrowseMode;
         currentTrackPositionMs = Service.sPlaybackPositionMs;
@@ -2655,7 +2661,7 @@ public class FileBrowserQueueActivity extends Activity {
                 }
             } else {
                 queueTransitionActive = false;
-                currentPlayingQueueIndex = resolvePlayingQueueIndex(serviceIndex, serviceUri);
+                currentPlayingQueueIndex = resolvePlayingQueueIndex(entryId, serviceIndex, serviceUri);
             }
         }
         if (queueAdapter != null) queueAdapter.notifyDataSetChanged();
@@ -2710,9 +2716,15 @@ public class FileBrowserQueueActivity extends Activity {
         stopAudioPreview();
     }
 
-    private int resolvePlayingQueueIndex(int serviceIndex, Uri currentUri) {
+    private int resolvePlayingQueueIndex(int entryId, int serviceIndex, Uri currentUri) {
         if (queueEntries.isEmpty()) {
             return -1;
+        }
+
+        if (entryId > 0) {
+            for (int i = 0; i < queueEntries.size(); i++) {
+                if (queueEntries.get(i).id == entryId) return i;
+            }
         }
 
         int candidate = servicePlaybackOffset + serviceIndex;
@@ -2822,6 +2834,9 @@ public class FileBrowserQueueActivity extends Activity {
     }
 
     static final class QueueEntry {
+        private static int sNextId = 1;
+
+        final int    id;
         final String name;
         final Uri    uri;
         boolean tagsCached;
@@ -2832,6 +2847,16 @@ public class FileBrowserQueueActivity extends Activity {
         int     bpm;
 
         QueueEntry(String name, Uri uri) {
+            this(name, uri, 0);
+        }
+
+        QueueEntry(String name, Uri uri, int storedId) {
+            if (storedId > 0) {
+                this.id = storedId;
+                if (storedId >= sNextId) sNextId = storedId + 1;
+            } else {
+                this.id = sNextId++;
+            }
             this.name = name;
             this.uri  = uri;
         }

@@ -1399,11 +1399,13 @@ public class FileBrowserQueueActivity extends Activity {
 
         int threadCount = Math.min(4, pendingEntries.size());
         AtomicInteger pending = new AtomicInteger(pendingEntries.size());
-        List<Pair<FileEntry, MetadataExtractor.TagEntry>> results = Collections.synchronizedList(new ArrayList<>(pendingEntries.size()));
+        MetadataExtractor.TagEntry[] results = new MetadataExtractor.TagEntry[pendingEntries.size()];
         ExecutorService pool = Executors.newFixedThreadPool(threadCount);
-        for (FileEntry entry : pendingEntries) {
+        for (int i = 0; i < pendingEntries.size(); i++) {
+            FileEntry entry = pendingEntries.get(i);
+            int idx = i;
             pool.submit(() -> {
-                results.add(Pair.create(entry, metadataExtractor.readSortTags(entry.uri)));
+                results[idx] = metadataExtractor.readSortTags(entry.uri);
                 int done = tagReadProgressDone.incrementAndGet();
                 if (done % 8 == 0 && progressRedrawPending.compareAndSet(false, true)) {
                     runOnUiThread(() -> {
@@ -1421,26 +1423,28 @@ public class FileBrowserQueueActivity extends Activity {
                         applySortButtonLoadingState();
 
                         if (versionAtStart != fileEntriesVersion) {
-                            for (Pair<FileEntry, MetadataExtractor.TagEntry> result : results) {
-                                result.first.sortDateState   = TagState.UNKNOWN;
-                                result.first.sortGenreState  = TagState.UNKNOWN;
-                                result.first.sortArtistState = TagState.UNKNOWN;
-                                result.first.sortBpmState    = TagState.UNKNOWN;
+                            for (FileEntry e : pendingEntries) {
+                                e.sortDateState   = TagState.UNKNOWN;
+                                e.sortGenreState  = TagState.UNKNOWN;
+                                e.sortArtistState = TagState.UNKNOWN;
+                                e.sortBpmState    = TagState.UNKNOWN;
                             }
                             return;
                         }
 
                         boolean changed = false;
-                        for (Pair<FileEntry, MetadataExtractor.TagEntry> result : results) {
-                            result.first.sortDate = result.second.date;
-                            result.first.sortGenre = result.second.genre;
-                            result.first.sortArtist = result.second.artist;
-                            result.first.sortTitle = result.second.title;
-                            result.first.sortBpm = result.second.bpm;
-                            result.first.sortDateState   = TagState.RESOLVED;
-                            result.first.sortGenreState  = TagState.RESOLVED;
-                            result.first.sortArtistState = TagState.RESOLVED;
-                            result.first.sortBpmState    = TagState.RESOLVED;
+                        for (int j = 0; j < pendingEntries.size(); j++) {
+                            MetadataExtractor.TagEntry tag = results[j];
+                            FileEntry e = pendingEntries.get(j);
+                            e.sortDate   = tag.date;
+                            e.sortGenre  = tag.genre;
+                            e.sortArtist = tag.artist;
+                            e.sortTitle  = tag.title;
+                            e.sortBpm    = tag.bpm;
+                            e.sortDateState   = TagState.RESOLVED;
+                            e.sortGenreState  = TagState.RESOLVED;
+                            e.sortArtistState = TagState.RESOLVED;
+                            e.sortBpmState    = TagState.RESOLVED;
                             changed = true;
                         }
 

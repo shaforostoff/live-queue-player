@@ -1607,6 +1607,7 @@ public class FileBrowserQueueActivity extends Activity {
 
     private int addPlaylistToQueue(FileEntry playlistEntry) {
         ArrayList<QueueEntry> resolvedEntries = new ArrayList<>();
+        int missingCount = 0;
         try (InputStream stream = getContentResolver().openInputStream(playlistEntry.uri)) {
             if (stream == null) {
                 return 0;
@@ -1621,6 +1622,11 @@ public class FileBrowserQueueActivity extends Activity {
                     }
                     Uri resolvedUri = resolvePlaylistTargetUri(playlistEntry, trimmed);
                     if (resolvedUri == null) {
+                        if (missingCount < 1) {
+                            String name = getDisplayNameForPlaylistItem(trimmed, null);
+                            Toast.makeText(this, getString(R.string.requested_file_not_found, name), Toast.LENGTH_LONG).show();
+                        }
+                        missingCount++;
                         continue;
                     }
                     String displayName = getDisplayNameForPlaylistItem(trimmed, resolvedUri);
@@ -1631,6 +1637,9 @@ public class FileBrowserQueueActivity extends Activity {
             return 0;
         }
 
+        if (missingCount > 1) {
+            Toast.makeText(this, getString(R.string.requested_files_not_found, missingCount), Toast.LENGTH_LONG).show();
+        }
         addToQueue(resolvedEntries);
         return resolvedEntries.size();
     }

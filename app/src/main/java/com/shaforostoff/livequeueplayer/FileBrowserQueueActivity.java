@@ -2377,6 +2377,31 @@ public class FileBrowserQueueActivity extends Activity {
         fileAdapter.notifyDataSetChanged();
     }
 
+    private void queueRemainingBrowseTracks() {
+        if (!Service.sBrowseMode || browseFileUri == null) return;
+        int currentPos = -1;
+        for (int i = 0; i < filteredFileEntries.size(); i++) {
+            FileEntry e = filteredFileEntries.get(i);
+            if (!e.isDirectory && browseFileUri.equals(e.uri)) {
+                currentPos = i;
+                break;
+            }
+        }
+        if (currentPos < 0) return;
+        ArrayList<Uri> uris = new ArrayList<>();
+        for (int i = currentPos + 1; i < filteredFileEntries.size(); i++) {
+            FileEntry e = filteredFileEntries.get(i);
+            if (!e.isDirectory && !isPlaylistFile(e.name)) {
+                uris.add(e.uri);
+            }
+        }
+        if (uris.isEmpty()) return;
+        Intent appendIntent = new Intent(this, Service.class);
+        appendIntent.putExtra(Launcher.TYPE, Launcher.APPEND_QUEUE);
+        appendIntent.putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris);
+        startService(appendIntent);
+    }
+
     private void maybeQueueNextBrowseTrack() {
         if (!Service.sBrowseMode || browseNextQueued || browseFileUri == null) return;
         if (currentTrackDurationMs <= 0 || currentTrackDurationMs - currentTrackPositionMs > 5_000) return;
@@ -2740,6 +2765,13 @@ public class FileBrowserQueueActivity extends Activity {
         if (Service.sBrowseMode && Service.sCurrentUri != null) {
             browseFileUri = Service.sCurrentUri;
         }
+        if (Service.sBrowseMode) {
+            Intent clearIntent = new Intent(this, Service.class);
+            clearIntent.putExtra(Launcher.TYPE, Launcher.CLEAR_QUEUE);
+            startService(clearIntent);
+            browseNextQueued = false;
+            browseNextUri = null;
+        }
         registerPlaybackStateReceiver();
         syncWithServiceState();
         scrollToHighlightedFileEntry();
@@ -2821,6 +2853,7 @@ public class FileBrowserQueueActivity extends Activity {
 
     @Override
     protected void onStop() {
+        if (Service.sBrowseMode) queueRemainingBrowseTracks();
         persistQueue();
         unregisterPlaybackStateReceiver();
         resetFileBrowserPreview();

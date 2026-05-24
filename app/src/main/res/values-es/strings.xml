@@ -22,10 +22,10 @@
   <string name="save_queue_dialog_hint">Nombre del archivo de lista</string>
   <string name="save_queue_dialog_action">Guardar</string>
   <string name="save_queue_empty">La cola está vacía</string>
-  <string name="queue_hint_normal">Toca archivos de audio en el explorador para añadirlos aquí.\nDesliza a la derecha para eliminar de esta lista.</string>
-  <string name="queue_hint_preview">Desliza a la derecha un archivo de audio en el explorador para añadirlo aquí.\nDesliza a la derecha una pista aquí para eliminarla de esta lista.</string>
-  <string name="queue_hint_remote">Toca archivos de audio en el explorador para añadirlos aquí.\nDesliza a la izquierda para enviar el nombre de una pista a otro smartphone con esta app.\nDesliza a la derecha para eliminar de esta lista.</string>
-  <string name="queue_hint_browse">Toca una pista aquí para reproducir la cola desde esa posición.\nDesliza a la derecha para eliminar.\nDesliza a la derecha un archivo en el explorador para añadirlo aquí.</string>
+  <string name="queue_hint_normal">Toca archivos de audio en el explorador para añadirlos aquí.\nDesliza a la izquierda para eliminar de esta lista.</string>
+  <string name="queue_hint_preview">Desliza a la derecha un archivo de audio en el explorador para añadirlo aquí.\nDesliza a la izquierda una pista aquí para eliminarla de esta lista.</string>
+  <string name="queue_hint_remote">Toca archivos de audio en el explorador para añadirlos aquí.\nDesliza a la derecha para enviar el nombre de una pista a otro smartphone con esta app.\nDesliza a la izquierda para eliminar de esta lista.</string>
+  <string name="queue_hint_browse">Toca una pista aquí para reproducir la cola desde esa posición.\nDesliza a la izquierda para eliminar.\nDesliza a la derecha un archivo en el explorador para añadirlo aquí.</string>
   <string name="save_queue_no_folder">Abre primero una carpeta</string>
   <string name="save_queue_invalid_name">Introduce un nombre de archivo válido</string>
   <string name="save_queue_success">Lista de reproducción guardada</string>

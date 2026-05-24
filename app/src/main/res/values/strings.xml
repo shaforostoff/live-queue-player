@@ -23,10 +23,10 @@
   <string name="save_queue_dialog_hint">Playlist filename</string>
   <string name="save_queue_dialog_action">Save</string>
   <string name="save_queue_empty">Queue is empty</string>
-  <string name="queue_hint_normal">Tap audio files in filebrowser to add them here.\nSwipe right to remove from this list.</string>
-  <string name="queue_hint_preview">Swipe right an audio file in filebrowser to add it here.\nSwipe right a track here to remove from this list.</string>
-  <string name="queue_hint_remote">Tap audio files in filebrowser to add them here.\nSwipe left to send the name of a track to another smartphone running this app.\nSwipe right to remove from this list.</string>
-  <string name="queue_hint_browse">Tap a track here to play queue from that position.\nSwipe right here to remove.\nSwipe right a file in the browser to add it here.</string>
+  <string name="queue_hint_normal">Tap audio files in filebrowser to add them here.\nSwipe left to remove from this list.</string>
+  <string name="queue_hint_preview">Swipe right an audio file in filebrowser to add it here.\nSwipe left a track here to remove from this list.</string>
+  <string name="queue_hint_remote">Tap audio files in filebrowser to add them here.\nSwipe right to send the name of a track to another smartphone running this app.\nSwipe left to remove from this list.</string>
+  <string name="queue_hint_browse">Tap a track here to play queue from that position.\nSwipe left here to remove.\nSwipe right a file in the browser to add it here.</string>
   <string name="save_queue_no_folder">Open a folder first</string>
   <string name="save_queue_invalid_name">Enter a valid filename</string>
   <string name="save_queue_success">Playlist saved</string>

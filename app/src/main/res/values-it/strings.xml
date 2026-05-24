@@ -22,10 +22,10 @@
   <string name="save_queue_dialog_hint">Nome del file playlist</string>
   <string name="save_queue_dialog_action">Salva</string>
   <string name="save_queue_empty">La coda è vuota</string>
-  <string name="queue_hint_normal">Tocca i file audio nel browser per aggiungerli qui.\nScorri a destra per rimuovere da questa lista.</string>
-  <string name="queue_hint_preview">Scorri a destra un file audio nel browser per aggiungerlo qui.\nScorri a destra una traccia qui per rimuoverla dalla lista.</string>
-  <string name="queue_hint_remote">Tocca i file audio nel browser per aggiungerli qui.\nScorri a sinistra per inviare il nome di una traccia a un altro smartphone con questa app.\nScorri a destra per rimuovere da questa lista.</string>
-  <string name="queue_hint_browse">Tocca una traccia qui per riprodurre la coda da quella posizione.\nScorri a destra per rimuovere.\nScorri a destra un file nel browser per aggiungerlo qui.</string>
+  <string name="queue_hint_normal">Tocca i file audio nel browser per aggiungerli qui.\nScorri a sinistra per rimuovere da questa lista.</string>
+  <string name="queue_hint_preview">Scorri a destra un file audio nel browser per aggiungerlo qui.\nScorri a sinistra una traccia qui per rimuoverla dalla lista.</string>
+  <string name="queue_hint_remote">Tocca i file audio nel browser per aggiungerli qui.\nScorri a destra per inviare il nome di una traccia a un altro smartphone con questa app.\nScorri a sinistra per rimuovere da questa lista.</string>
+  <string name="queue_hint_browse">Tocca una traccia qui per riprodurre la coda da quella posizione.\nScorri a sinistra per rimuovere.\nScorri a destra un file nel browser per aggiungerlo qui.</string>
   <string name="save_queue_no_folder">Apri prima una cartella</string>
   <string name="save_queue_invalid_name">Inserisci un nome file valido</string>
   <string name="save_queue_success">Playlist salvata</string>

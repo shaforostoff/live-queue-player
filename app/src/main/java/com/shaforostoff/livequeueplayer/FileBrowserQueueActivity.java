@@ -1917,9 +1917,9 @@ public class FileBrowserQueueActivity extends Activity {
                             swipeState.contentView = swipeState.swipingView.findViewById(R.id.swipe_content);
                             if (swipeState.contentView == null) swipeState.contentView = swipeState.swipingView;
                             TextView qHintStart = swipeState.swipingView.findViewById(R.id.swipe_hint_start);
-                            if (qHintStart != null) qHintStart.setText(R.string.swipe_hint_remove);
+                            if (qHintStart != null) qHintStart.setText(mode == Mode.REMOTE_SEND ? getString(R.string.swipe_hint_send) : "");
                             TextView qHintEnd = swipeState.swipingView.findViewById(R.id.swipe_hint_end);
-                            if (qHintEnd != null) qHintEnd.setText(mode == Mode.REMOTE_SEND ? getString(R.string.swipe_hint_send) : "");
+                            if (qHintEnd != null) qHintEnd.setText(R.string.swipe_hint_remove);
                             int[] itemScreenPos = new int[2];
                             swipeState.swipingView.getLocationOnScreen(itemScreenPos);
                             dragState.touchOffsetX = event.getRawX() - itemScreenPos[0];
@@ -2000,20 +2000,10 @@ public class FileBrowserQueueActivity extends Activity {
                         swipeState.startPosition = -1;
                         return false;
                     }
-                    if (dx > 0 && swipeState.swipingView != null) {
+                    if (dx > 0 && swipeState.swipingView != null && mode == Mode.REMOTE_SEND) {
                         swipeState.contentView.setTranslationX(Math.min(dx, swipeState.contentView.getWidth()));
                         list.getParent().requestDisallowInterceptTouchEvent(true);
                         if (swipeState.contentView.getWidth() > 0 && dx >= swipeState.contentView.getWidth() / 2f) {
-                            swipeState.handled = true;
-                            swipeState.resetView();
-                            removeQueueAt(swipeState.startPosition);
-                        }
-                        return true;
-                    }
-                    if (dx < 0 && swipeState.swipingView != null && mode == Mode.REMOTE_SEND) {
-                        swipeState.contentView.setTranslationX(Math.max(dx, -swipeState.contentView.getWidth()));
-                        list.getParent().requestDisallowInterceptTouchEvent(true);
-                        if (swipeState.contentView.getWidth() > 0 && Math.abs(dx) >= swipeState.contentView.getWidth() / 2f) {
                             swipeState.handled = true;
                             swipeState.resetView();
                             int pos = swipeState.startPosition;
@@ -2026,6 +2016,16 @@ public class FileBrowserQueueActivity extends Activity {
                                     Toast.makeText(this, R.string.track_request_sent, Toast.LENGTH_SHORT).show();
                                 }
                             }
+                        }
+                        return true;
+                    }
+                    if (dx < 0 && swipeState.swipingView != null) {
+                        swipeState.contentView.setTranslationX(Math.max(dx, -swipeState.contentView.getWidth()));
+                        list.getParent().requestDisallowInterceptTouchEvent(true);
+                        if (swipeState.contentView.getWidth() > 0 && Math.abs(dx) >= swipeState.contentView.getWidth() / 2f) {
+                            swipeState.handled = true;
+                            swipeState.resetView();
+                            removeQueueAt(swipeState.startPosition);
                         }
                         return true;
                     }

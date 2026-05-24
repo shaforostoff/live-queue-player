@@ -301,6 +301,9 @@ public class FileBrowserQueueActivity extends Activity {
                 if (getIntent().getBooleanExtra(EXTRA_REMOTE_QUEUE_FILL_MODE, false) && mode == Mode.DJ) {
                     mode = btController.isServerMode() ? Mode.REMOTE_RECEIVE : Mode.REMOTE_SEND;
                 }
+                if (mode == Mode.REMOTE_RECEIVE) {
+                    startRecursiveTagScanAsync();
+                }
                 applyPlayButtonModeState();
             }
             @Override
@@ -433,6 +436,9 @@ public class FileBrowserQueueActivity extends Activity {
         // -- kick off storage permission + browse ----------------------------
         if (!restorePersistedDocumentTree()) {
             requestPermissionsAndBrowse();
+        }
+        if (mode == Mode.REMOTE_RECEIVE) {
+            startRecursiveTagScanAsync();
         }
     }
 
@@ -2556,6 +2562,89 @@ public class FileBrowserQueueActivity extends Activity {
         List<Uri> nulls = new ArrayList<>(requests.size());
         for (int i = 0; i < requests.size(); i++) nulls.add(null);
         return nulls;
+    }
+
+    private void startRecursiveTagScanAsync() {
+        final boolean isDocTree = browsingDocumentTree && !documentUriStack.isEmpty() && currentTreeUri != null;
+        final Uri rootDocUri = isDocTree ? documentUriStack.get(0) : null;
+        final Uri treeUri = currentTreeUri;
+        final File fileRoot = currentFileRootDirectory;
+        if (!isDocTree && fileRoot == null) return;
+        new Thread(() -> {
+            List<Uri> allUris = isDocTree
+                    ? collectAllAudioUrisFromDocumentTree(rootDocUri, treeUri)
+                    : collectAllAudioUrisFromFileDirectory(fileRoot);
+            if (allUris.isEmpty()) return;
+            List<Uri> toScan = new ArrayList<>();
+            for (Uri uri : allUris) {
+                if (!metadataExtractor.isAllTagsCached(uri)) toScan.add(uri);
+            }
+            if (toScan.isEmpty()) return;
+            AtomicInteger workQueue = new AtomicInteger(0);
+            int threadCount = Math.min(4, toScan.size());
+            for (int t = 0; t < threadCount; t++) {
+                tagReadExecutor.submit(() -> {
+                    int idx;
+                    while ((idx = workQueue.getAndIncrement()) < toScan.size()) {
+                        metadataExtractor.readSortTags(toScan.get(idx));
+                    }
+                });
+            }
+        }).start();
+    }
+
+    private List<Uri> collectAllAudioUrisFromDocumentTree(Uri rootDocUri, Uri treeUri) {
+        List<Uri> result = new ArrayList<>();
+        String rootDocId;
+        try {
+            rootDocId = DocumentsContract.getDocumentId(rootDocUri);
+        } catch (Exception e) {
+            return result;
+        }
+        String[] projection = {
+                DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+                DocumentsContract.Document.COLUMN_MIME_TYPE
+        };
+        ArrayList<String> stack = new ArrayList<>();
+        stack.add(rootDocId);
+        while (!stack.isEmpty()) {
+            String dirDocId = stack.remove(stack.size() - 1);
+            Uri childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, dirDocId);
+            try (Cursor cursor = getContentResolver().query(childrenUri, projection, null, null, null)) {
+                if (cursor == null) continue;
+                while (cursor.moveToNext()) {
+                    String childDocId = cursor.getString(0);
+                    String childName  = cursor.getString(1);
+                    String mimeType   = cursor.getString(2);
+                    if (childDocId == null || childName == null) continue;
+                    if (DocumentsContract.Document.MIME_TYPE_DIR.equals(mimeType)) {
+                        stack.add(childDocId);
+                    } else if (isAudioDocument(childName, mimeType)) {
+                        result.add(DocumentsContract.buildDocumentUriUsingTree(treeUri, childDocId));
+                    }
+                }
+            } catch (Exception ignored) {
+            }
+        }
+        return result;
+    }
+
+    private List<Uri> collectAllAudioUrisFromFileDirectory(File root) {
+        List<Uri> result = new ArrayList<>();
+        ArrayList<File> stack = new ArrayList<>();
+        stack.add(root);
+        while (!stack.isEmpty()) {
+            File dir = stack.remove(stack.size() - 1);
+            File[] children = dir.listFiles();
+            if (children == null) continue;
+            for (File child : children) {
+                if (child == null) continue;
+                if (child.isDirectory()) stack.add(child);
+                else if (isAudioFile(child.getName())) result.add(Uri.fromFile(child));
+            }
+        }
+        return result;
     }
 
     /**

@@ -14,7 +14,7 @@
   <string name="selected_folder">Carpeta seleccionada</string>
   <string name="storage_picker_failed">No se puede abrir la ubicación de almacenamiento seleccionada.</string>
   <string name="stop_button_text">■ Detener</string>
-  <string name="stop_button_fading_text">■ Desvaneciendo…</string>
+  <string name="stop_button_fading_text">■ Parando…</string>
   <string name="clear_button_text">Limpiar</string>
   <string name="save_queue_button">Guardar</string>
   <string name="send_queue_button">Enviar</string>

@@ -1352,13 +1352,6 @@ public class FileBrowserQueueActivity extends Activity {
                 continue;
             }
 
-            String filenameYear = MetadataExtractor.extractYearFromFileName(entry.name);
-            if (filenameYear.length() > 0) {
-                entry.sortDate = filenameYear;
-                entry.sortDateState = TagState.RESOLVED;
-                cacheApplied = true;
-            }
-
             if (entry.uri != null && metadataExtractor.isAllTagsCached(entry.uri)) {
                 MetadataExtractor.TagEntry tags = metadataExtractor.readSortTags(entry.uri);
                 entry.sortDate = tags.date;
@@ -1372,6 +1365,13 @@ public class FileBrowserQueueActivity extends Activity {
                 entry.sortBpmState    = TagState.RESOLVED;
                 cacheApplied = true;
                 continue;
+            }
+
+            String filenameYear = MetadataExtractor.extractYearFromFileName(entry.name);
+            if (filenameYear.length() > 0) {
+                entry.sortDate = filenameYear;
+                entry.sortDateState = TagState.RESOLVED;
+                cacheApplied = true;
             }
             entry.sortDateState   = TagState.LOADING;
             entry.sortGenreState  = TagState.LOADING;

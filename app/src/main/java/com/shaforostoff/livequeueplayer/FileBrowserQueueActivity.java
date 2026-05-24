@@ -22,7 +22,6 @@ import android.text.Editable;
 import android.text.TextWatcher;
 import android.provider.DocumentsContract;
 import android.provider.MediaStore;
-import android.util.Pair;
 import android.util.TypedValue;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
@@ -152,6 +151,7 @@ public class FileBrowserQueueActivity extends Activity {
     private int tagReadProgressTotal;
     private final AtomicInteger tagReadProgressDone = new AtomicInteger(0);
     private final AtomicBoolean progressRedrawPending = new AtomicBoolean(false);
+    private final ExecutorService tagReadExecutor = Executors.newFixedThreadPool(4);
     private ClipDrawable progressClipDrawable;
 
     // -- queue state --------------------------------------------------------
@@ -1400,65 +1400,65 @@ public class FileBrowserQueueActivity extends Activity {
         int threadCount = Math.min(4, pendingEntries.size());
         AtomicInteger pending = new AtomicInteger(pendingEntries.size());
         MetadataExtractor.TagEntry[] results = new MetadataExtractor.TagEntry[pendingEntries.size()];
-        ExecutorService pool = Executors.newFixedThreadPool(threadCount);
-        for (int i = 0; i < pendingEntries.size(); i++) {
-            FileEntry entry = pendingEntries.get(i);
-            int idx = i;
-            pool.submit(() -> {
-                results[idx] = metadataExtractor.readSortTags(entry.uri);
-                int done = tagReadProgressDone.incrementAndGet();
-                if (done % 8 == 0 && progressRedrawPending.compareAndSet(false, true)) {
-                    runOnUiThread(() -> {
-                        progressRedrawPending.set(false);
-                        applySortButtonLoadingState();
-                    });
-                }
-                if (pending.decrementAndGet() == 0) {
-                    runOnUiThread(() -> {
-                        activeTagReadJobs = Math.max(0, activeTagReadJobs - 1);
-                        if (activeTagReadJobs == 0) {
-                            tagReadProgressTotal = 0;
-                            tagReadProgressDone.set(0);
-                        }
-                        applySortButtonLoadingState();
-
-                        if (versionAtStart != fileEntriesVersion) {
-                            for (FileEntry e : pendingEntries) {
-                                e.sortDateState   = TagState.UNKNOWN;
-                                e.sortGenreState  = TagState.UNKNOWN;
-                                e.sortArtistState = TagState.UNKNOWN;
-                                e.sortBpmState    = TagState.UNKNOWN;
+        AtomicInteger workQueue = new AtomicInteger(0);
+        for (int t = 0; t < threadCount; t++) {
+            tagReadExecutor.submit(() -> {
+                int idx;
+                while ((idx = workQueue.getAndIncrement()) < pendingEntries.size()) {
+                    results[idx] = metadataExtractor.readSortTags(pendingEntries.get(idx).uri);
+                    int done = tagReadProgressDone.incrementAndGet();
+                    if (done % 8 == 0 && progressRedrawPending.compareAndSet(false, true)) {
+                        runOnUiThread(() -> {
+                            progressRedrawPending.set(false);
+                            applySortButtonLoadingState();
+                        });
+                    }
+                    if (pending.decrementAndGet() == 0) {
+                        runOnUiThread(() -> {
+                            activeTagReadJobs = Math.max(0, activeTagReadJobs - 1);
+                            if (activeTagReadJobs == 0) {
+                                tagReadProgressTotal = 0;
+                                tagReadProgressDone.set(0);
                             }
-                            return;
-                        }
+                            applySortButtonLoadingState();
 
-                        boolean changed = false;
-                        for (int j = 0; j < pendingEntries.size(); j++) {
-                            MetadataExtractor.TagEntry tag = results[j];
-                            FileEntry e = pendingEntries.get(j);
-                            e.sortDate   = tag.date;
-                            e.sortGenre  = tag.genre;
-                            e.sortArtist = tag.artist;
-                            e.sortTitle  = tag.title;
-                            e.sortBpm    = tag.bpm;
-                            e.sortDateState   = TagState.RESOLVED;
-                            e.sortGenreState  = TagState.RESOLVED;
-                            e.sortArtistState = TagState.RESOLVED;
-                            e.sortBpmState    = TagState.RESOLVED;
-                            changed = true;
-                        }
-
-                        if (changed) {
-                            if (isTagSortMode(fileSortMode)) {
-                                Collections.sort(fileEntries, FileBrowserQueueActivity.this::compareFileEntries);
+                            if (versionAtStart != fileEntriesVersion) {
+                                for (FileEntry e : pendingEntries) {
+                                    e.sortDateState   = TagState.UNKNOWN;
+                                    e.sortGenreState  = TagState.UNKNOWN;
+                                    e.sortArtistState = TagState.UNKNOWN;
+                                    e.sortBpmState    = TagState.UNKNOWN;
+                                }
+                                return;
                             }
-                            applyFileFilter();
-                        }
-                    });
+
+                            boolean changed = false;
+                            for (int j = 0; j < pendingEntries.size(); j++) {
+                                MetadataExtractor.TagEntry tag = results[j];
+                                FileEntry e = pendingEntries.get(j);
+                                e.sortDate   = tag.date;
+                                e.sortGenre  = tag.genre;
+                                e.sortArtist = tag.artist;
+                                e.sortTitle  = tag.title;
+                                e.sortBpm    = tag.bpm;
+                                e.sortDateState   = TagState.RESOLVED;
+                                e.sortGenreState  = TagState.RESOLVED;
+                                e.sortArtistState = TagState.RESOLVED;
+                                e.sortBpmState    = TagState.RESOLVED;
+                                changed = true;
+                            }
+
+                            if (changed) {
+                                if (isTagSortMode(fileSortMode)) {
+                                    Collections.sort(fileEntries, FileBrowserQueueActivity.this::compareFileEntries);
+                                }
+                                applyFileFilter();
+                            }
+                        });
+                    }
                 }
             });
         }
-        pool.shutdown();
     }
 
     private void applySortButtonLoadingState() {
@@ -1753,28 +1753,31 @@ public class FileBrowserQueueActivity extends Activity {
         if (uncached.isEmpty()) return;
         int threadCount = Math.min(4, uncached.size());
         AtomicInteger pending = new AtomicInteger(uncached.size());
-        List<Pair<QueueEntry, MetadataExtractor.TagEntry>> results =
-                Collections.synchronizedList(new ArrayList<>(uncached.size()));
-        ExecutorService pool = Executors.newFixedThreadPool(threadCount);
-        for (QueueEntry entry : uncached) {
-            pool.submit(() -> {
-                results.add(Pair.create(entry, metadataExtractor.readSortTags(entry.uri)));
-                if (pending.decrementAndGet() == 0) {
-                    runOnUiThread(() -> {
-                        for (Pair<QueueEntry, MetadataExtractor.TagEntry> r : results) {
-                            r.first.title  = r.second.title;
-                            r.first.artist = r.second.artist;
-                            r.first.date   = r.second.date;
-                            r.first.genre  = r.second.genre;
-                            r.first.bpm    = r.second.bpm;
-                            r.first.tagsCached = true;
-                        }
-                        queueAdapter.notifyDataSetChanged();
-                    });
+        MetadataExtractor.TagEntry[] results = new MetadataExtractor.TagEntry[uncached.size()];
+        AtomicInteger workQueue = new AtomicInteger(0);
+        for (int t = 0; t < threadCount; t++) {
+            tagReadExecutor.submit(() -> {
+                int idx;
+                while ((idx = workQueue.getAndIncrement()) < uncached.size()) {
+                    results[idx] = metadataExtractor.readSortTags(uncached.get(idx).uri);
+                    if (pending.decrementAndGet() == 0) {
+                        runOnUiThread(() -> {
+                            for (int j = 0; j < uncached.size(); j++) {
+                                QueueEntry e = uncached.get(j);
+                                MetadataExtractor.TagEntry tag = results[j];
+                                e.title  = tag.title;
+                                e.artist = tag.artist;
+                                e.date   = tag.date;
+                                e.genre  = tag.genre;
+                                e.bpm    = tag.bpm;
+                                e.tagsCached = true;
+                            }
+                            queueAdapter.notifyDataSetChanged();
+                        });
+                    }
                 }
             });
         }
-        pool.shutdown();
     }
 
     private void addToQueue(List<QueueEntry> entries) {
@@ -2853,6 +2856,7 @@ public class FileBrowserQueueActivity extends Activity {
         unregisterPlaybackStateReceiver();
         btController.shutdown();
         if (audioPreviewManager != null) audioPreviewManager.stopPreview();
+        tagReadExecutor.shutdownNow();
         super.onDestroy();
     }
 

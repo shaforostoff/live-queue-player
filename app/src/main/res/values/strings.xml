@@ -60,6 +60,13 @@
   <string name="added_tracks_from_remote">Added %d track(s) from remote</string>
   <string name="requested_file_not_found">Requested file not found: %s</string>
   <string name="requested_files_not_found">%d requested files not found</string>
+  <string name="match_name">Exact: %d</string>
+  <string name="match_tag">Tag: %d</string>
+  <string name="match_tag_name">Tag: %s</string>
+  <string name="match_fuzzy">Fuzzy: %d</string>
+  <string name="match_fuzzy_name">Fuzzy: %s</string>
+  <string name="match_none">Not found: %d</string>
+  <string name="match_none_name">Not found: %s</string>
   <string name="sent_tracks">Sent %d track(s)</string>
   <string name="bt_not_connected">Not connected to Bluetooth server</string>
   <string name="bt_not_available">Bluetooth is not available on this device</string>

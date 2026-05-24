@@ -64,6 +64,8 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import org.json.JSONObject;
+
 /**
  * Activity providing a split-screen file browser (top) and play queue (bottom).
  */
@@ -309,6 +311,10 @@ public class FileBrowserQueueActivity extends Activity {
             @Override
             public void onQueueRequestsReceived(List<BluetoothQueueBridge.TrackRequest> tracks) {
                 onRemoteQueueRequestsReceived(tracks);
+            }
+            @Override
+            public void onMatchResultReceived(String jsonLine) {
+                showMatchResultToast(jsonLine);
             }
         });
 
@@ -2513,17 +2519,31 @@ public class FileBrowserQueueActivity extends Activity {
         new Thread(() -> {
             List<Uri> foundUris = findRequestedAudioUris(tracks);
 
-            boolean anyUnfound = false;
-            for (Uri u : foundUris) if (u == null) { anyUnfound = true; break; }
-            if (anyUnfound) {
+            int nameCount = 0;
+            for (Uri u : foundUris) if (u != null) nameCount++;
+
+            int tagCount = 0, fuzzyCount = 0;
+            String tagMatchedTitle = null, fuzzyMatchedTitle = null;
+            if (nameCount < tracks.size()) {
                 List<Map.Entry<String, MetadataExtractor.TagEntry>> cacheSnapshot =
                         metadataExtractor.snapshotCacheEntries();
+                int[] matchKind = new int[1];
+                String[] matchedTitle = new String[1];
                 for (int i = 0; i < tracks.size(); i++) {
                     if (foundUris.get(i) != null) continue;
                     BluetoothQueueBridge.TrackRequest req = tracks.get(i);
                     if (!req.title.isEmpty()) {
-                        Uri found = findInTagCacheByTitleAndArtist(req.title, req.artist, cacheSnapshot);
-                        if (found != null) foundUris.set(i, found);
+                        Uri found = findInTagCacheByTitleAndArtist(req.title, req.artist, cacheSnapshot, matchKind, matchedTitle);
+                        if (found != null) {
+                            foundUris.set(i, found);
+                            if (matchKind[0] == TAG_MATCH_EXACT) {
+                                tagCount++;
+                                tagMatchedTitle = matchedTitle[0];
+                            } else {
+                                fuzzyCount++;
+                                fuzzyMatchedTitle = matchedTitle[0];
+                            }
+                        }
                     }
                 }
             }
@@ -2538,6 +2558,12 @@ public class FileBrowserQueueActivity extends Activity {
                     notFound.add(tracks.get(i).file);
                 }
             }
+
+            final int fName = nameCount, fTag = tagCount, fFuzzy = fuzzyCount, fNone = notFound.size();
+            final String fNoneName = notFound.size() == 1 ? notFound.get(0) : null;
+            final String fTagName   = tagCount   == 1 ? tagMatchedTitle   : null;
+            final String fFuzzyName = fuzzyCount == 1 ? fuzzyMatchedTitle : null;
+            sendMatchResult(fName, fTag, fFuzzy, fNone, fTagName, fFuzzyName, fNoneName);
             runOnUiThread(() -> {
                 if (!toAdd.isEmpty()) {
                     addToQueue(toAdd);
@@ -2550,6 +2576,65 @@ public class FileBrowserQueueActivity extends Activity {
                 }
             });
         }).start();
+    }
+
+    private void sendMatchResult(int name, int tag, int fuzzy, int none, String tagName, String fuzzyName, String noneName) {
+        try {
+            JSONObject obj = new JSONObject();
+            obj.put("type",  "match_result");
+            obj.put("name",  name);
+            obj.put("tag",   tag);
+            obj.put("fuzzy", fuzzy);
+            obj.put("none",  none);
+            if (tagName   != null) obj.put("tag_name",   tagName);
+            if (fuzzyName != null) obj.put("fuzzy_name", fuzzyName);
+            if (noneName  != null) obj.put("none_name",  noneName);
+            btController.sendRaw(obj.toString());
+        } catch (Exception ignored) {
+        }
+    }
+
+    private void showMatchResultToast(String jsonLine) {
+        if (mode != Mode.REMOTE_SEND) return;
+        try {
+            JSONObject obj = new JSONObject(jsonLine);
+            if (!"match_result".equals(obj.optString("type"))) return;
+            int name  = obj.optInt("name",  0);
+            int tag   = obj.optInt("tag",   0);
+            int fuzzy = obj.optInt("fuzzy", 0);
+            int none  = obj.optInt("none",  0);
+            StringBuilder sb = new StringBuilder();
+            if (name  > 0) appendMatchCategory(sb, getString(R.string.match_name,  name));
+            if (tag   > 0) {
+                String tagName = obj.optString("tag_name", null);
+                if (tag == 1 && tagName != null && !tagName.isEmpty())
+                    appendMatchCategory(sb, getString(R.string.match_tag_name, tagName));
+                else
+                    appendMatchCategory(sb, getString(R.string.match_tag, tag));
+            }
+            if (fuzzy > 0) {
+                String fuzzyName = obj.optString("fuzzy_name", null);
+                if (fuzzy == 1 && fuzzyName != null && !fuzzyName.isEmpty())
+                    appendMatchCategory(sb, getString(R.string.match_fuzzy_name, fuzzyName));
+                else
+                    appendMatchCategory(sb, getString(R.string.match_fuzzy, fuzzy));
+            }
+            if (none  > 0) {
+                String noneName = obj.optString("none_name", null);
+                if (none == 1 && noneName != null && !noneName.isEmpty())
+                    appendMatchCategory(sb, getString(R.string.match_none_name, noneName));
+                else
+                    appendMatchCategory(sb, getString(R.string.match_none, none));
+            }
+            if (sb.length() > 0)
+                Toast.makeText(this, sb.toString(), Toast.LENGTH_LONG).show();
+        } catch (Exception ignored) {
+        }
+    }
+
+    private static void appendMatchCategory(StringBuilder sb, String part) {
+        if (sb.length() > 0) sb.append(" · ");
+        sb.append(part);
     }
 
     private List<Uri> findRequestedAudioUris(List<BluetoothQueueBridge.TrackRequest> requests) {
@@ -2828,11 +2913,15 @@ public class FileBrowserQueueActivity extends Activity {
     }
 
     private static final float FUZZY_TITLE_THRESHOLD = 0.8f;
+    private static final int TAG_MATCH_EXACT = 1;
+    private static final int TAG_MATCH_FUZZY = 2;
 
     private static Uri findInTagCacheByTitleAndArtist(String title, String artist,
-            List<Map.Entry<String, MetadataExtractor.TagEntry>> snapshot) {
+            List<Map.Entry<String, MetadataExtractor.TagEntry>> snapshot,
+            int[] matchKind, String[] matchedTitle) {
         // Pass 1: exact title match (case-insensitive), pick candidate with best fuzzy artist score
         Uri bestExact = null;
+        MetadataExtractor.TagEntry bestExactTag = null;
         float bestExactArtist = -1f;
         for (Map.Entry<String, MetadataExtractor.TagEntry> e : snapshot) {
             MetadataExtractor.TagEntry tag = e.getValue();
@@ -2840,13 +2929,24 @@ public class FileBrowserQueueActivity extends Activity {
             float a = FuzzySearch.matchFuzzy(tag.artist, artist);
             if (bestExact == null || a > bestExactArtist) {
                 bestExact = Uri.parse(e.getKey());
+                bestExactTag = tag;
                 bestExactArtist = a;
             }
         }
-        if (bestExact != null) return bestExact;
+        if (bestExact != null) {
+            matchKind[0] = TAG_MATCH_EXACT;
+            StringBuilder sb = new StringBuilder(bestExactTag.title);
+            if (bestExactTag.artist != null && !bestExactTag.artist.isEmpty())
+                sb.append(" · ").append(bestExactTag.artist);
+            if (bestExactTag.date != null && !bestExactTag.date.isEmpty())
+                sb.append(" · ").append(bestExactTag.date);
+            matchedTitle[0] = sb.toString();
+            return bestExact;
+        }
 
         // Pass 2: fuzzy title match, pick candidate with highest combined score
         Uri bestFuzzy = null;
+        MetadataExtractor.TagEntry bestFuzzyTag = null;
         float bestScore = 0f;
         for (Map.Entry<String, MetadataExtractor.TagEntry> e : snapshot) {
             MetadataExtractor.TagEntry tag = e.getValue();
@@ -2857,7 +2957,17 @@ public class FileBrowserQueueActivity extends Activity {
             if (combined > bestScore) {
                 bestScore = combined;
                 bestFuzzy = Uri.parse(e.getKey());
+                bestFuzzyTag = tag;
             }
+        }
+        if (bestFuzzy != null) {
+            matchKind[0] = TAG_MATCH_FUZZY;
+            StringBuilder sb = new StringBuilder(bestFuzzyTag.title);
+            if (bestFuzzyTag.artist != null && !bestFuzzyTag.artist.isEmpty())
+                sb.append(" · ").append(bestFuzzyTag.artist);
+            if (bestFuzzyTag.date != null && !bestFuzzyTag.date.isEmpty())
+                sb.append(" · ").append(bestFuzzyTag.date);
+            matchedTitle[0] = sb.toString();
         }
         return bestFuzzy;
     }

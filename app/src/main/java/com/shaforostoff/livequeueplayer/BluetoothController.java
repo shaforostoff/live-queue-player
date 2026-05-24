@@ -26,6 +26,7 @@ class BluetoothController {
     interface Callback {
         void onModeSelected();
         void onQueueRequestsReceived(List<BluetoothQueueBridge.TrackRequest> tracks);
+        void onMatchResultReceived(String jsonLine);
     }
 
     private final Activity activity;
@@ -73,6 +74,14 @@ class BluetoothController {
                 }
 
                 @Override
+                public void onMatchResultReceived(String jsonLine) {
+                    activity.runOnUiThread(() -> {
+                        if (!activity.isDestroyed())
+                            callback.onMatchResultReceived(jsonLine);
+                    });
+                }
+
+                @Override
                 public void onConnectionStateChanged(boolean connected, String message) {
                     activity.runOnUiThread(() -> {
                         if (activity.isDestroyed()) return;
@@ -96,6 +105,11 @@ class BluetoothController {
 
     void onPermissionGranted() {
         showModeDialog();
+    }
+
+    boolean sendRaw(String line) {
+        if (bridge == null) return false;
+        return bridge.sendRaw(line);
     }
 
     boolean sendQueueRequests(List<BluetoothQueueBridge.TrackRequest> requests) {

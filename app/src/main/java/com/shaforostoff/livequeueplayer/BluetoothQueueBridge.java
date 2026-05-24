@@ -44,7 +44,7 @@ final class BluetoothQueueBridge {
 
     interface Listener {
         void onQueueRequestsReceived(List<TrackRequest> tracks);
-
+        void onMatchResultReceived(String jsonLine);
         void onConnectionStateChanged(boolean connected, String message);
     }
 
@@ -167,6 +167,24 @@ final class BluetoothQueueBridge {
         }
     }
 
+    boolean sendRaw(String line) {
+        BufferedWriter writer;
+        synchronized (socketLock) {
+            writer = connectedWriter;
+        }
+        if (writer == null) return false;
+        try {
+            writer.write(line);
+            writer.write('\n');
+            writer.flush();
+            return true;
+        } catch (Exception e) {
+            listener.onConnectionStateChanged(false, "Bluetooth send failed");
+            disconnect();
+            return false;
+        }
+    }
+
     boolean isConnected() {
         synchronized (socketLock) {
             return connectedSocket != null && connectedSocket.isConnected();
@@ -218,21 +236,28 @@ final class BluetoothQueueBridge {
 
     private void readLoop(BluetoothSocket socket) {
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(socket.getInputStream()))) {
-            while (running || (socket.isConnected())) {
+            while (running || socket.isConnected()) {
                 String line = reader.readLine();
                 if (line == null) break;
-                JSONArray arr = new JSONArray(line);
-                List<TrackRequest> tracks = new ArrayList<>();
-                for (int i = 0; i < arr.length(); i++) {
-                    JSONObject obj = arr.getJSONObject(i);
-                    String file   = obj.optString("file",   "");
-                    String parent = obj.optString("parent", "");
-                    String title  = obj.optString("title",  "");
-                    String artist = obj.optString("artist", "");
-                    String date   = obj.optString("date",   "");
-                    if (file.length() > 0) tracks.add(new TrackRequest(file, parent, title, artist, date));
+                try {
+                    if (line.startsWith("{")) {
+                        listener.onMatchResultReceived(line);
+                    } else {
+                        JSONArray arr = new JSONArray(line);
+                        List<TrackRequest> tracks = new ArrayList<>();
+                        for (int i = 0; i < arr.length(); i++) {
+                            JSONObject obj = arr.getJSONObject(i);
+                            String file   = obj.optString("file",   "");
+                            String parent = obj.optString("parent", "");
+                            String title  = obj.optString("title",  "");
+                            String artist = obj.optString("artist", "");
+                            String date   = obj.optString("date",   "");
+                            if (file.length() > 0) tracks.add(new TrackRequest(file, parent, title, artist, date));
+                        }
+                        if (!tracks.isEmpty()) listener.onQueueRequestsReceived(tracks);
+                    }
+                } catch (Exception ignored) {
                 }
-                if (!tracks.isEmpty()) listener.onQueueRequestsReceived(tracks);
             }
         } catch (Exception ignored) {
         } finally {

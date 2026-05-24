@@ -55,6 +55,14 @@
   <string name="track_request_sent">Richiesta traccia inviata</string>
   <string name="added_tracks_from_remote">Aggiunte %d tracce dal dispositivo remoto</string>
   <string name="requested_file_not_found">File richiesto non trovato: %s</string>
+  <string name="requested_files_not_found">%d file richiesti non trovati</string>
+  <string name="match_name">Esatto: %d</string>
+  <string name="match_tag">Tag: %d</string>
+  <string name="match_tag_name">Tag: %s</string>
+  <string name="match_fuzzy">Fuzzy: %d</string>
+  <string name="match_fuzzy_name">Fuzzy: %s</string>
+  <string name="match_none">Non trovato: %d</string>
+  <string name="match_none_name">Non trovato: %s</string>
   <string name="sent_tracks">Inviate %d tracce</string>
   <string name="bt_not_connected">Non connesso al server Bluetooth</string>
   <string name="bt_not_available">Bluetooth non disponibile su questo dispositivo</string>

@@ -57,6 +57,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -2018,7 +2019,10 @@ public class FileBrowserQueueActivity extends Activity {
                             int pos = swipeState.startPosition;
                             if (pos >= 0 && pos < queueEntries.size()) {
                                 QueueEntry entry = queueEntries.get(pos);
-                                if (btController.sendQueueRequest(entry.name, getParentFolderName(entry.uri))) {
+                                String title  = entry.tagsCached ? entry.title  : null;
+                                String artist = entry.tagsCached ? entry.artist : null;
+                                String date   = entry.tagsCached ? entry.date   : null;
+                                if (btController.sendQueueRequest(entry.name, getParentFolderName(entry.uri), title, artist, date)) {
                                     Toast.makeText(this, R.string.track_request_sent, Toast.LENGTH_SHORT).show();
                                 }
                             }
@@ -2438,6 +2442,22 @@ public class FileBrowserQueueActivity extends Activity {
         if (!btController.isServerMode() || tracks == null || tracks.isEmpty()) return;
         new Thread(() -> {
             List<Uri> foundUris = findRequestedAudioUris(tracks);
+
+            boolean anyUnfound = false;
+            for (Uri u : foundUris) if (u == null) { anyUnfound = true; break; }
+            if (anyUnfound) {
+                List<Map.Entry<String, MetadataExtractor.TagEntry>> cacheSnapshot =
+                        metadataExtractor.snapshotCacheEntries();
+                for (int i = 0; i < tracks.size(); i++) {
+                    if (foundUris.get(i) != null) continue;
+                    BluetoothQueueBridge.TrackRequest req = tracks.get(i);
+                    if (!req.title.isEmpty()) {
+                        Uri found = findInTagCacheByTitleAndArtist(req.title, req.artist, cacheSnapshot);
+                        if (found != null) foundUris.set(i, found);
+                    }
+                }
+            }
+
             List<QueueEntry> toAdd = new ArrayList<>();
             List<String> notFound = new ArrayList<>();
             for (int i = 0; i < tracks.size(); i++) {
@@ -2616,7 +2636,10 @@ public class FileBrowserQueueActivity extends Activity {
         }
         List<BluetoothQueueBridge.TrackRequest> requests = new ArrayList<>(queueEntries.size());
         for (QueueEntry entry : queueEntries) {
-            requests.add(new BluetoothQueueBridge.TrackRequest(entry.name, getParentFolderName(entry.uri)));
+            String title  = entry.tagsCached ? entry.title  : null;
+            String artist = entry.tagsCached ? entry.artist : null;
+            String date   = entry.tagsCached ? entry.date   : null;
+            requests.add(new BluetoothQueueBridge.TrackRequest(entry.name, getParentFolderName(entry.uri), title, artist, date));
         }
         if (btController.sendQueueRequests(requests)) {
             Toast.makeText(this, getString(R.string.sent_tracks, requests.size()), Toast.LENGTH_SHORT).show();
@@ -2647,6 +2670,41 @@ public class FileBrowserQueueActivity extends Activity {
             results.add(r);
         }
         return results;
+    }
+
+    private static final float FUZZY_TITLE_THRESHOLD = 0.8f;
+
+    private static Uri findInTagCacheByTitleAndArtist(String title, String artist,
+            List<Map.Entry<String, MetadataExtractor.TagEntry>> snapshot) {
+        // Pass 1: exact title match (case-insensitive), pick candidate with best fuzzy artist score
+        Uri bestExact = null;
+        float bestExactArtist = -1f;
+        for (Map.Entry<String, MetadataExtractor.TagEntry> e : snapshot) {
+            MetadataExtractor.TagEntry tag = e.getValue();
+            if (tag.title == null || !tag.title.equalsIgnoreCase(title)) continue;
+            float a = FuzzySearch.matchFuzzy(tag.artist, artist);
+            if (bestExact == null || a > bestExactArtist) {
+                bestExact = Uri.parse(e.getKey());
+                bestExactArtist = a;
+            }
+        }
+        if (bestExact != null) return bestExact;
+
+        // Pass 2: fuzzy title match, pick candidate with highest combined score
+        Uri bestFuzzy = null;
+        float bestScore = 0f;
+        for (Map.Entry<String, MetadataExtractor.TagEntry> e : snapshot) {
+            MetadataExtractor.TagEntry tag = e.getValue();
+            if (tag.title == null) continue;
+            float t = FuzzySearch.matchFuzzy(tag.title, title);
+            if (t < FUZZY_TITLE_THRESHOLD) continue;
+            float combined = t * 0.7f + FuzzySearch.matchFuzzy(tag.artist, artist) * 0.3f;
+            if (combined > bestScore) {
+                bestScore = combined;
+                bestFuzzy = Uri.parse(e.getKey());
+            }
+        }
+        return bestFuzzy;
     }
 
     private void applyStopButtonState() {

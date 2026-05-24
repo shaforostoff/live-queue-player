@@ -25,10 +25,20 @@ final class BluetoothQueueBridge {
     static final class TrackRequest {
         final String file;
         final String parent;
+        final String title;
+        final String artist;
+        final String date;
 
         TrackRequest(String file, String parent) {
-            this.file = file;
+            this(file, parent, null, null, null);
+        }
+
+        TrackRequest(String file, String parent, String title, String artist, String date) {
+            this.file   = file;
             this.parent = parent != null ? parent : "";
+            this.title  = title  != null ? title  : "";
+            this.artist = artist != null ? artist : "";
+            this.date   = date   != null ? date   : "";
         }
     }
 
@@ -141,6 +151,9 @@ final class BluetoothQueueBridge {
                 JSONObject obj = new JSONObject();
                 obj.put("file", req.file);
                 obj.put("parent", req.parent);
+                if (!req.title.isEmpty())  obj.put("title",  req.title);
+                if (!req.artist.isEmpty()) obj.put("artist", req.artist);
+                if (!req.date.isEmpty())   obj.put("date",   req.date);
                 payload.put(obj);
             }
             writer.write(payload.toString());
@@ -212,9 +225,12 @@ final class BluetoothQueueBridge {
                 List<TrackRequest> tracks = new ArrayList<>();
                 for (int i = 0; i < arr.length(); i++) {
                     JSONObject obj = arr.getJSONObject(i);
-                    String file = obj.optString("file", "");
+                    String file   = obj.optString("file",   "");
                     String parent = obj.optString("parent", "");
-                    if (file.length() > 0) tracks.add(new TrackRequest(file, parent));
+                    String title  = obj.optString("title",  "");
+                    String artist = obj.optString("artist", "");
+                    String date   = obj.optString("date",   "");
+                    if (file.length() > 0) tracks.add(new TrackRequest(file, parent, title, artist, date));
                 }
                 if (!tracks.isEmpty()) listener.onQueueRequestsReceived(tracks);
             }

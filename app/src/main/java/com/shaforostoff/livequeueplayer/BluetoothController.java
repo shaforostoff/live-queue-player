@@ -111,9 +111,9 @@ class BluetoothController {
         return sent;
     }
 
-    boolean sendQueueRequest(String name, String parentFolderName) {
+    boolean sendQueueRequest(String name, String parentFolderName, String title, String artist, String date) {
         List<BluetoothQueueBridge.TrackRequest> list = new ArrayList<>(1);
-        list.add(new BluetoothQueueBridge.TrackRequest(name, parentFolderName));
+        list.add(new BluetoothQueueBridge.TrackRequest(name, parentFolderName, title, artist, date));
         return sendQueueRequests(list);
     }
 

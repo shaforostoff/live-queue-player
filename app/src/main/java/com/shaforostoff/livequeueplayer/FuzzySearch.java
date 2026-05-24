@@ -34,6 +34,23 @@ public final class FuzzySearch {
     // -------------------------------------------------------------------------
 
     /**
+     * Symmetric bigram Dice similarity after normalising both strings:
+     * strips parenthesised substrings and punctuation, then applies
+     * diceSimilarity directly to the cleaned strings.
+     *
+     * @return Dice coefficient in [0.0, 1.0]; 0.0 if either string is null/empty.
+     */
+    public static float matchFuzzy(String a, String b) {
+        if (a == null || a.isEmpty() || b == null || b.isEmpty()) return 0.0f;
+        String pa = preprocess(a);
+        String pb = preprocess(b);
+        if (pa.isEmpty() || pb.isEmpty()) return 0.0f;
+        int[] bigramBuf = new int[BIGRAM_BUF_SIZE];
+        int[] dirtyBuf  = new int[MAX_DIRTY];
+        return diceSimilarity(pa, 0, pa.length(), pb, 0, pb.length(), bigramBuf, dirtyBuf);
+    }
+
+    /**
      * @return fraction of query words found in filename, in [0.0, 1.0].
      *         Returns 1.0 for an empty/null query; 0.0 for an empty/null filename.
      */
@@ -187,5 +204,31 @@ public final class FuzzySearch {
 
     private static boolean isWordChar(char c) {
         return Character.isLetterOrDigit(c);
+    }
+
+    /** Removes parenthesised substrings and strips punctuation characters. */
+    private static String preprocess(String s) {
+        StringBuilder sb = new StringBuilder(s.length());
+        int depth = 0;
+        for (int i = 0, len = s.length(); i < len; i++) {
+            char c = s.charAt(i);
+            if (c == '(') { depth++; continue; }
+            if (c == ')') { if (depth > 0) depth--; continue; }
+            if (depth > 0) continue;
+            if (!isPunct(c)) sb.append(c);
+        }
+        return sb.toString().trim();
+    }
+
+    private static boolean isPunct(char c) {
+        switch (c) {
+            case ',': case '.': case '!': case '?': case '-': case '_':
+            case ':': case ';': case '\'': case '"': case '/': case '\\':
+            case '&': case '*': case '+': case '=': case '#': case '@':
+            case '%': case '^': case '~': case '|':
+                return true;
+            default:
+                return false;
+        }
     }
 }

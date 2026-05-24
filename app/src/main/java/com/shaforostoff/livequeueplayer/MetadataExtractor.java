@@ -6,8 +6,10 @@ import android.net.Uri;
 import android.os.ParcelFileDescriptor;
 
 import java.io.InputStream;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.regex.Matcher;
@@ -42,6 +44,12 @@ class MetadataExtractor {
 
     private final ContentResolver contentResolver;
     private final Map<String, TagEntry> tagCache = Collections.synchronizedMap(new HashMap<>());
+
+    List<Map.Entry<String, TagEntry>> snapshotCacheEntries() {
+        synchronized (tagCache) {
+            return new ArrayList<>(tagCache.entrySet());
+        }
+    }
 
     private TagEntry getOrCreate(String key) {
         return tagCache.computeIfAbsent(key, k -> new TagEntry());

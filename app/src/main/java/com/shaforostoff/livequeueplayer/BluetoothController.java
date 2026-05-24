@@ -90,10 +90,10 @@ class BluetoothController {
                             List<BluetoothQueueBridge.TrackRequest> toSend = pendingRequests;
                             pendingRequests = null;
                             if (bridge.sendQueueRequests(toSend)) {
-                                String msg = toSend.size() == 1
-                                        ? "Track request sent"
-                                        : "Sent " + toSend.size() + " track(s)";
-                                Toast.makeText(activity, msg, Toast.LENGTH_SHORT).show();
+                                //String msg = toSend.size() == 1
+                                //        ? "Track request sent"
+                                //        : "Sent " + toSend.size() + " track(s)";
+                                //Toast.makeText(activity, msg, Toast.LENGTH_SHORT).show();
                             }
                         }
                     });

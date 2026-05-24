@@ -1649,7 +1649,8 @@ public class FileBrowserQueueActivity extends Activity {
             if (target.exists() && target.isFile()) {
                 return Uri.fromFile(target);
             }
-            return null;
+            File fallback = findFileWithDifferentExtension(target);
+            return fallback != null ? Uri.fromFile(fallback) : null;
         }
 
         return resolveDocumentPlaylistTargetUri(playlistEntry.uri, pathValue);
@@ -1686,7 +1687,10 @@ public class FileBrowserQueueActivity extends Activity {
 
             String targetDocumentId = volume + ":" + normalizedPath;
             Uri targetUri = DocumentsContract.buildDocumentUriUsingTree(currentTreeUri, targetDocumentId);
-            return documentExists(targetUri) ? targetUri : null;
+            if (documentExists(targetUri)) {
+                return targetUri;
+            }
+            return findDocumentWithDifferentExtension(volume, normalizedPath);
         } catch (Exception ignored) {
             return null;
         }
@@ -1719,6 +1723,32 @@ public class FileBrowserQueueActivity extends Activity {
             builder.append(stack.get(i));
         }
         return builder.toString();
+    }
+
+    private static File findFileWithDifferentExtension(File file) {
+        File dir = file.getParentFile();
+        if (dir == null) return null;
+        String name = file.getName();
+        int dot = name.lastIndexOf('.');
+        String base = dot >= 0 ? name.substring(0, dot) : name;
+        for (String ext : AUDIO_EXTENSIONS) {
+            File candidate = new File(dir, base + ext);
+            if (candidate.isFile()) return candidate;
+        }
+        return null;
+    }
+
+    private Uri findDocumentWithDifferentExtension(String volume, String normalizedPath) {
+        int dot = normalizedPath.lastIndexOf('.');
+        String basePath = dot >= 0 ? normalizedPath.substring(0, dot) : normalizedPath;
+        for (String ext : AUDIO_EXTENSIONS) {
+            String candidateDocId = volume + ":" + basePath + ext;
+            Uri candidateUri = DocumentsContract.buildDocumentUriUsingTree(currentTreeUri, candidateDocId);
+            if (documentExists(candidateUri)) {
+                return candidateUri;
+            }
+        }
+        return null;
     }
 
     private boolean documentExists(Uri documentUri) {

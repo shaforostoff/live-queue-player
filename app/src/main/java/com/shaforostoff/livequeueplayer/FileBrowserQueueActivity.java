@@ -175,6 +175,7 @@ public class FileBrowserQueueActivity extends Activity {
     private boolean browseNextQueued;
     private Uri browseNextUri;
     private boolean browseTransitionActive;
+    private FileEntry currentBrowsePlaylistEntry;
     private BluetoothController btController;
     private Button playButton;
     private Button saveButton;
@@ -335,30 +336,24 @@ public class FileBrowserQueueActivity extends Activity {
                 else navigateToDocumentEntry(entry.uri, entry.name);
                 return;
             }
+            if (isPlaylistFile(entry.name)) {
+                enterPlaylistAsBrowseFolder(entry);
+                return;
+            }
             if (PreviewManager.isEnabled(this) && !hasBrowseBehavior()) {
-                Uri previewUri = isPlaylistFile(entry.name)
-                        ? resolveFirstPlaylistUri(entry) : entry.uri;
-                if (previewUri != null && previewUri.equals(fileBrowserPreviewingUri)) {
+                if (entry.uri.equals(fileBrowserPreviewingUri)) {
                     resetFileBrowserPreview();
                 } else {
-                    fileBrowserPreviewingUri = previewUri;
+                    fileBrowserPreviewingUri = entry.uri;
                     fileBrowserPreviewingEntryUri = entry.uri;
-                    startAudioPreview(previewUri);
+                    startAudioPreview(entry.uri);
                 }
             } else {
                 boolean queueTrackPlaying = !playbackStopped && !Service.sBrowseMode && currentPlayingQueueIndex >= 0;
                 if (hasBrowseBehavior() && !stopFadeInProgress && !(mode == Mode.BROWSE && queueTrackPlaying)) {
                     playBrowseFile(entry);
                 } else {
-                    if (isPlaylistFile(entry.name)) {
-                        int addedCount = addPlaylistToQueue(entry);
-                        if (addedCount > 0)
-                            Toast.makeText(this, getString(R.string.added_files_from_playlist, addedCount, entry.name), Toast.LENGTH_SHORT).show();
-                        else
-                            Toast.makeText(this, getString(R.string.no_playable_files_in_playlist, entry.name), Toast.LENGTH_SHORT).show();
-                    } else {
-                        addToQueue(entry.name, entry.uri);
-                    }
+                    addToQueue(entry.name, entry.uri);
                 }
             }
         });
@@ -572,6 +567,7 @@ public class FileBrowserQueueActivity extends Activity {
     }
 
     private boolean canNavigateUpFromCurrentFolder() {
+        if (currentBrowsePlaylistEntry != null) return true;
         if (browsingDocumentTree) {
             return documentUriStack.size() > 1;
         }
@@ -582,6 +578,7 @@ public class FileBrowserQueueActivity extends Activity {
     }
 
     private void navigateUpFromCurrentFolder() {
+        if (currentBrowsePlaylistEntry != null) { exitPlaylistBrowseFolder(); return; }
         clearFileFilterInput();
         if (browsingDocumentTree) {
             navigateDocumentUp();
@@ -600,6 +597,7 @@ public class FileBrowserQueueActivity extends Activity {
     }
 
     private void navigateTo(File dir) {
+        currentBrowsePlaylistEntry = null;
         resetFileBrowserPreview();
         clearFileFilterInput();
         browsingDocumentTree = false;
@@ -776,6 +774,7 @@ public class FileBrowserQueueActivity extends Activity {
     }
 
     private boolean browseCurrentDocumentDirectory() {
+        currentBrowsePlaylistEntry = null;
         if (currentTreeUri == null || documentUriStack.isEmpty()) {
             return false;
         }
@@ -2169,6 +2168,47 @@ public class FileBrowserQueueActivity extends Activity {
             }
         } catch (Exception ignored) {}
         return null;
+    }
+
+    private void enterPlaylistAsBrowseFolder(FileEntry playlistEntry) {
+        List<FileEntry> tracks = new ArrayList<>();
+        try (InputStream stream = getContentResolver().openInputStream(playlistEntry.uri)) {
+            if (stream != null) {
+                try (BufferedReader reader = new BufferedReader(new InputStreamReader(stream, "UTF-8"))) {
+                    String line;
+                    while ((line = reader.readLine()) != null) {
+                        String trimmed = line.trim();
+                        if (trimmed.isEmpty() || trimmed.startsWith("#")) continue;
+                        Uri uri = resolvePlaylistTargetUri(playlistEntry, trimmed);
+                        if (uri == null) continue;
+                        tracks.add(new FileEntry(uri, getDisplayNameForPlaylistItem(trimmed, uri), false));
+                    }
+                }
+            }
+        } catch (Exception ignored) {}
+
+        if (tracks.isEmpty()) {
+            Toast.makeText(this, getString(R.string.no_playable_files_in_playlist, playlistEntry.name), Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        clearFileFilterInput();
+        fileEntriesVersion++;
+        fileEntries.clear();
+        fileEntries.addAll(tracks);
+        currentBrowsePlaylistEntry = playlistEntry;
+        applyFileFilter();
+        scrollToHighlightedFileEntry();
+        updateStorageButtonState();
+    }
+
+    private void exitPlaylistBrowseFolder() {
+        currentBrowsePlaylistEntry = null;
+        if (browsingDocumentTree) {
+            browseCurrentDocumentDirectory();
+        } else if (currentFileDirectory != null) {
+            navigateTo(currentFileDirectory);
+        }
     }
 
     private void updateQueueHint() {

@@ -17,6 +17,8 @@ class MetadataExtractor {
 
     private static final Pattern FILENAME_YEAR_PATTERN =
             Pattern.compile("(^|\\D)((?:19|20)\\d{2})(?=\\D|$)");
+    private static final ThreadLocal<Matcher> FILENAME_YEAR_MATCHER =
+            ThreadLocal.withInitial(() -> FILENAME_YEAR_PATTERN.matcher(""));
     private static final Pattern BPM_PATTERN = Pattern.compile("\\d{1,3}");
     private static final Pattern YEAR_IN_STRING_PATTERN = Pattern.compile("(19|20)\\d{2}");
     private static final Pattern DATE_IN_COMMENT_PATTERN =
@@ -61,7 +63,7 @@ class MetadataExtractor {
 
     static String extractYearFromFileName(String fileName) {
         if (fileName == null || fileName.length() == 0) return "";
-        Matcher matcher = FILENAME_YEAR_PATTERN.matcher(fileName);
+        Matcher matcher = FILENAME_YEAR_MATCHER.get().reset(fileName);
         if (!matcher.find()) return "";
         String year = matcher.group(2);
         return year == null ? "" : year;

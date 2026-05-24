@@ -2473,8 +2473,10 @@ public class FileBrowserQueueActivity extends Activity {
                     addToQueue(toAdd);
                     Toast.makeText(this, getString(R.string.added_tracks_from_remote, toAdd.size()), Toast.LENGTH_SHORT).show();
                 }
-                for (String name : notFound) {
-                    Toast.makeText(this, getString(R.string.requested_file_not_found, name), Toast.LENGTH_SHORT).show();
+                if (notFound.size() == 1) {
+                    Toast.makeText(this, getString(R.string.requested_file_not_found, notFound.get(0)), Toast.LENGTH_SHORT).show();
+                } else if (notFound.size() > 1) {
+                    Toast.makeText(this, getString(R.string.requested_files_not_found, notFound.size()), Toast.LENGTH_SHORT).show();
                 }
             });
         }).start();

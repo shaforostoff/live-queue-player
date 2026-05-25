@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:a="http://schemas.android.com/apk/res/android"
+  a:id="@+id/remote_queue_panel"
+  a:layout_width="match_parent"
+  a:layout_height="match_parent"
+  a:orientation="vertical">
+
+  <LinearLayout
+    a:layout_width="match_parent"
+    a:layout_height="wrap_content"
+    a:background="@color/buttonBackground"
+    a:orientation="horizontal">
+
+    <TextView
+      a:layout_width="0dp"
+      a:layout_height="wrap_content"
+      a:layout_gravity="center_vertical"
+      a:layout_weight="1"
+      a:padding="6dp"
+      a:text="@string/remote_queue_title"
+      a:textSize="18sp" />
+
+    <ImageButton
+      a:id="@+id/btn_remote_refresh"
+      a:layout_width="wrap_content"
+      a:layout_height="wrap_content"
+      a:layout_margin="4dp"
+      a:src="@drawable/ic_refresh"
+      a:background="?android:attr/selectableItemBackground"
+      a:contentDescription="@string/remote_queue_refresh" />
+
+    <Button
+      a:id="@+id/btn_remote_stop"
+      a:layout_width="wrap_content"
+      a:layout_height="wrap_content"
+      a:layout_margin="4dp"
+      a:text="@string/stop_button_text"
+      a:textSize="14sp"
+      a:visibility="gone" />
+
+    <Button
+      a:id="@+id/btn_remote_play"
+      a:layout_width="wrap_content"
+      a:layout_height="wrap_content"
+      a:layout_margin="4dp"
+      a:text="@string/remote_queue_resume"
+      a:textSize="14sp"
+      a:visibility="gone" />
+  </LinearLayout>
+
+  <ListView
+    a:id="@+id/remote_queue_list"
+    a:layout_width="match_parent"
+    a:layout_height="0dp"
+    a:layout_weight="1"
+    a:divider="@color/buttonBackground"
+    a:dividerHeight="1dp"
+    a:listSelector="@android:color/transparent" />
+
+</LinearLayout>

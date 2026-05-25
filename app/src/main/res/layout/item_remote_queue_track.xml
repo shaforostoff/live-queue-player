@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:a="http://schemas.android.com/apk/res/android"
+  a:layout_width="match_parent"
+  a:layout_height="wrap_content">
+
+  <LinearLayout
+    a:layout_width="match_parent"
+    a:layout_height="match_parent"
+    a:orientation="horizontal"
+    a:paddingStart="16dp"
+    a:paddingEnd="16dp">
+
+    <View
+      a:layout_width="0dp"
+      a:layout_height="0dp"
+      a:layout_weight="1" />
+
+    <TextView
+      a:id="@+id/swipe_hint_end"
+      a:layout_width="wrap_content"
+      a:layout_height="wrap_content"
+      a:layout_gravity="center_vertical"
+      a:textSize="13sp"
+      a:textColor="?android:attr/textColorPrimary"
+      a:text="@string/swipe_hint_remove" />
+
+  </LinearLayout>
+
+  <LinearLayout
+    a:id="@+id/swipe_content"
+    a:layout_width="match_parent"
+    a:layout_height="wrap_content"
+    a:orientation="horizontal"
+    a:padding="8dp"
+    a:background="?android:attr/colorBackground">
+
+    <LinearLayout
+      a:layout_width="0dp"
+      a:layout_height="wrap_content"
+      a:layout_weight="1"
+      a:layout_gravity="center_vertical"
+      a:orientation="vertical">
+
+      <TextView
+        a:id="@+id/file_name"
+        a:layout_width="match_parent"
+        a:layout_height="wrap_content"
+        a:ellipsize="end"
+        a:singleLine="true"
+        a:textSize="15sp" />
+
+      <LinearLayout
+        a:id="@+id/file_meta_row"
+        a:layout_width="match_parent"
+        a:layout_height="wrap_content"
+        a:orientation="horizontal"
+        a:visibility="gone">
+
+        <TextView
+          a:id="@+id/file_artist"
+          a:layout_width="match_parent"
+          a:layout_height="wrap_content"
+          a:ellipsize="end"
+          a:singleLine="true"
+          a:textSize="11sp" />
+
+      </LinearLayout>
+
+    </LinearLayout>
+
+    <TextView
+      a:layout_width="wrap_content"
+      a:layout_height="wrap_content"
+      a:layout_gravity="center_vertical"
+      a:layout_marginStart="8dp"
+      a:textSize="18sp"
+      a:alpha="0.4"
+      a:text="&#x2630;" />
+
+  </LinearLayout>
+
+</FrameLayout>

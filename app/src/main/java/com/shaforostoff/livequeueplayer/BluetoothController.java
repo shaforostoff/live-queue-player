@@ -13,6 +13,8 @@ import android.content.pm.PackageManager;
 import android.os.Build;
 import android.widget.Toast;
 
+import org.json.JSONObject;
+
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
@@ -27,6 +29,8 @@ class BluetoothController {
         void onModeSelected();
         void onQueueRequestsReceived(List<BluetoothQueueBridge.TrackRequest> tracks);
         void onMatchResultReceived(String jsonLine);
+        void onRemoteQueueMessageReceived(String type, JSONObject obj);
+        default void onConnectionStateChanged(boolean connected) {}
     }
 
     private final Activity activity;
@@ -82,10 +86,19 @@ class BluetoothController {
                 }
 
                 @Override
+                public void onRemoteQueueMessageReceived(String type, JSONObject obj) {
+                    activity.runOnUiThread(() -> {
+                        if (!activity.isDestroyed())
+                            callback.onRemoteQueueMessageReceived(type, obj);
+                    });
+                }
+
+                @Override
                 public void onConnectionStateChanged(boolean connected, String message) {
                     activity.runOnUiThread(() -> {
                         if (activity.isDestroyed()) return;
                         Toast.makeText(activity, message, Toast.LENGTH_SHORT).show();
+                        callback.onConnectionStateChanged(connected);
                         if (connected && pendingRequests != null) {
                             List<BluetoothQueueBridge.TrackRequest> toSend = pendingRequests;
                             pendingRequests = null;

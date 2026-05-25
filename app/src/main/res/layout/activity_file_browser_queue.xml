@@ -66,73 +66,81 @@
     a:layout_height="3dp"
     a:background="@color/foreground" />
 
-  <!-- Bottom half: Play Queue (also the drag drop target) -->
-  <LinearLayout
+  <!-- Bottom half: Play Queue (local) or Remote Queue (in REMOTE_SEND mode) -->
+  <FrameLayout
     a:id="@+id/queue_container"
     a:layout_width="match_parent"
     a:layout_height="0dp"
-    a:layout_weight="1"
-    a:orientation="vertical">
+    a:layout_weight="1">
 
     <LinearLayout
+      a:id="@+id/local_queue_panel"
       a:layout_width="match_parent"
-      a:layout_height="wrap_content"
-      a:background="@color/buttonBackground"
-      a:orientation="horizontal">
+      a:layout_height="match_parent"
+      a:orientation="vertical">
+
+      <LinearLayout
+        a:layout_width="match_parent"
+        a:layout_height="wrap_content"
+        a:background="@color/buttonBackground"
+        a:orientation="horizontal">
+
+        <TextView
+          a:layout_width="0dp"
+          a:layout_height="wrap_content"
+          a:layout_gravity="center_vertical"
+          a:layout_weight="1"
+          a:padding="6dp"
+          a:text="Play Queue"
+          a:textSize="18sp" />
+
+        <Button
+          a:id="@+id/btn_play_queue"
+          a:layout_width="wrap_content"
+          a:layout_height="wrap_content"
+          a:layout_margin="4dp"
+          a:text="▶ Play"
+          a:textSize="14sp" />
+
+        <Button
+          a:id="@+id/btn_save_queue"
+          a:layout_width="wrap_content"
+          a:layout_height="wrap_content"
+          a:layout_margin="4dp"
+          a:text="@string/save_queue_button"
+          a:textSize="14sp" />
+
+        <Button
+          a:id="@+id/btn_stop_queue"
+          a:layout_width="wrap_content"
+          a:layout_height="wrap_content"
+          a:layout_margin="4dp"
+          a:text="@string/stop_button_text"
+          a:textSize="14sp" />
+      </LinearLayout>
 
       <TextView
-        a:layout_width="0dp"
+        a:id="@+id/queue_empty_hint"
+        a:layout_width="match_parent"
         a:layout_height="wrap_content"
-        a:layout_gravity="center_vertical"
+        a:gravity="center"
+        a:padding="16dp"
+        a:text="@string/queue_hint_normal"
+        a:textSize="14sp"
+        a:visibility="visible" />
+
+      <ListView
+        a:id="@+id/queue_list"
+        a:layout_width="match_parent"
+        a:layout_height="0dp"
         a:layout_weight="1"
-        a:padding="6dp"
-        a:text="Play Queue"
-        a:textSize="18sp" />
-
-      <Button
-        a:id="@+id/btn_play_queue"
-        a:layout_width="wrap_content"
-        a:layout_height="wrap_content"
-        a:layout_margin="4dp"
-        a:text="▶ Play"
-        a:textSize="14sp" />
-
-      <Button
-        a:id="@+id/btn_save_queue"
-        a:layout_width="wrap_content"
-        a:layout_height="wrap_content"
-        a:layout_margin="4dp"
-        a:text="@string/save_queue_button"
-        a:textSize="14sp" />
-
-      <Button
-        a:id="@+id/btn_stop_queue"
-        a:layout_width="wrap_content"
-        a:layout_height="wrap_content"
-        a:layout_margin="4dp"
-        a:text="@string/stop_button_text"
-        a:textSize="14sp" />
+        a:divider="@color/buttonBackground"
+        a:dividerHeight="1dp"
+        a:listSelector="@android:color/transparent" />
     </LinearLayout>
 
-    <TextView
-      a:id="@+id/queue_empty_hint"
-      a:layout_width="match_parent"
-      a:layout_height="wrap_content"
-      a:gravity="center"
-      a:padding="16dp"
-      a:text="@string/queue_hint_normal"
-      a:textSize="14sp"
-      a:visibility="visible" />
-
-    <ListView
-      a:id="@+id/queue_list"
-      a:layout_width="match_parent"
-      a:layout_height="0dp"
-      a:layout_weight="1"
-      a:divider="@color/buttonBackground"
-      a:dividerHeight="1dp"
-      a:listSelector="@android:color/transparent" />
-  </LinearLayout>
+    <include layout="@layout/partial_remote_queue" />
+  </FrameLayout>
 
 </LinearLayout>
 

@@ -52,7 +52,6 @@
   <string name="load_audio_failed">Impossibile caricare i file audio.</string>
   <string name="added_files_from_playlist">Aggiunti %1$d file da %2$s</string>
   <string name="no_playable_files_in_playlist">Nessun file riproducibile trovato in %s</string>
-  <string name="track_request_sent">Richiesta traccia inviata</string>
   <string name="added_tracks_from_remote">Aggiunte %d tracce dal dispositivo remoto</string>
   <string name="requested_file_not_found">File richiesto non trovato: %s</string>
   <string name="requested_files_not_found">%d file richiesti non trovati</string>

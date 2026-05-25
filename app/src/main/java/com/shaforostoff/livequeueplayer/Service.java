@@ -32,6 +32,7 @@ public class Service extends android.app.Service implements MediaPlayerStateList
     static final String EXTRA_ENTRY_IDS = "entry_ids";
     static final String EXTRA_CURRENT_ENTRY_ID = "current_entry_id";
     static final String EXTRA_SEEK_TO_MS = "seek_to_ms";
+    static final String EXTRA_QUEUE_ALREADY_PERSISTED = "queue_already_persisted";
     private static final long PLAYBACK_PROGRESS_BROADCAST_INTERVAL_MS = 1_000L;
 
     // Readable by the activity to re-sync state after missed broadcasts (e.g. screen off)
@@ -182,8 +183,10 @@ public class Service extends android.app.Service implements MediaPlayerStateList
                 newEntries.add(new QueueStore.Entry(e.title, e.location));
             }
             if (audioPlayer == null) {
-                QueueStore.clear(this);
-                QueueStore.save(this, newEntries);
+                if (!intent.getBooleanExtra(EXTRA_QUEUE_ALREADY_PERSISTED, false)) {
+                    QueueStore.clear(this);
+                    QueueStore.save(this, newEntries);
+                }
                 playEntryFromPlaylist();
             } else {
                 ArrayList<QueueStore.Entry> stored = QueueStore.load(this);

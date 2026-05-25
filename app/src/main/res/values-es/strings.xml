@@ -52,7 +52,6 @@
   <string name="load_audio_failed">Error al cargar los archivos de audio.</string>
   <string name="added_files_from_playlist">Se añadieron %1$d archivos de %2$s</string>
   <string name="no_playable_files_in_playlist">No se encontraron archivos reproducibles en %s</string>
-  <string name="track_request_sent">Solicitud de pista enviada</string>
   <string name="added_tracks_from_remote">Se añadieron %d pistas desde el dispositivo remoto</string>
   <string name="requested_file_not_found">Archivo solicitado no encontrado: %s</string>
   <string name="requested_files_not_found">%d archivos solicitados no encontrados</string>

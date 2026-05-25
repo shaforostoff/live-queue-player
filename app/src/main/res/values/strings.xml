@@ -56,7 +56,6 @@
   <string name="load_audio_failed">Failed to load audio files.</string>
   <string name="added_files_from_playlist">Added %1$d files from %2$s</string>
   <string name="no_playable_files_in_playlist">No playable files found in %s</string>
-  <string name="track_request_sent">Track request sent</string>
   <string name="added_tracks_from_remote">Added %d track(s) from remote</string>
   <string name="requested_file_not_found">Requested file not found: %s</string>
   <string name="requested_files_not_found">%d requested files not found</string>
@@ -81,6 +80,10 @@
   <string name="unknown_device">Unknown</string>
   <string name="swipe_hint_remove">Remove →</string>
   <string name="swipe_hint_send">← Send</string>
+  <string name="swipe_hint_queue">Queue →</string>
+  <string name="remote_queue_title">Remote Queue</string>
+  <string name="remote_queue_refresh">Refresh</string>
+  <string name="remote_queue_resume">▶ Resume</string>
 </resources>
 
 

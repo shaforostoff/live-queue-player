@@ -64,6 +64,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 
 /**
@@ -180,6 +181,9 @@ public class FileBrowserQueueActivity extends Activity {
     private boolean browseTransitionActive;
     private FileEntry currentBrowsePlaylistEntry;
     private BluetoothController btController;
+    private RemoteQueueController remoteQueueController;
+    private View localQueuePanel;
+    private View remoteQueuePanel;
     private Button playButton;
     private Button saveButton;
     private CharSequence defaultPlayButtonText;
@@ -226,10 +230,10 @@ public class FileBrowserQueueActivity extends Activity {
                 currentPlayingQueueIndex = -1;
                 if (stopFadeInProgress) {
                     onFadeOutFinished();
-                    return;
+                } else {
+                    setPlaybackOffset(0);
+                    resetCurrentTrackProgress();
                 }
-                setPlaybackOffset(0);
-                resetCurrentTrackProgress();
             } else if (serviceBrowseMode) {
                 browseTransitionActive = false;
                 currentPlayingQueueIndex = -1;
@@ -252,6 +256,9 @@ public class FileBrowserQueueActivity extends Activity {
                 queueAdapter.notifyDataSetChanged();
             }
             maybeQueueNextBrowseTrack();
+            if (mode == Mode.REMOTE_RECEIVE && btController != null) {
+                pushPlayState();
+            }
         }
     };
     private boolean playbackReceiverRegistered;
@@ -286,6 +293,9 @@ public class FileBrowserQueueActivity extends Activity {
         fileBrowserList = findViewById(R.id.file_browser_list);
         queueList                = findViewById(R.id.queue_list);
         View     queueContainer  = findViewById(R.id.queue_container);
+        localQueuePanel  = findViewById(R.id.local_queue_panel);
+        remoteQueuePanel = findViewById(R.id.remote_queue_panel);
+        remoteQueuePanel.setVisibility(View.GONE);
         if (getIntent().getBooleanExtra(EXTRA_BROWSE_MODE, false)) {
             mode = Mode.BROWSE;
         }
@@ -301,12 +311,17 @@ public class FileBrowserQueueActivity extends Activity {
             @Override
             public void onModeSelected() {
                 if (getIntent().getBooleanExtra(EXTRA_REMOTE_QUEUE_FILL_MODE, false) && mode == Mode.DJ) {
-                    mode = btController.isServerMode() ? Mode.REMOTE_RECEIVE : Mode.REMOTE_SEND;
+                    if (btController.isServerMode()) {
+                        mode = Mode.REMOTE_RECEIVE;
+                    } else {
+                        enterRemoteSendMode();
+                    }
                 }
                 if (mode == Mode.REMOTE_RECEIVE) {
                     startRecursiveTagScanAsync();
                 }
                 applyPlayButtonModeState();
+                if (fileAdapter != null) fileAdapter.notifyDataSetChanged();
             }
             @Override
             public void onQueueRequestsReceived(List<BluetoothQueueBridge.TrackRequest> tracks) {
@@ -315,6 +330,29 @@ public class FileBrowserQueueActivity extends Activity {
             @Override
             public void onMatchResultReceived(String jsonLine) {
                 showMatchResultToast(jsonLine);
+            }
+            @Override
+            public void onRemoteQueueMessageReceived(String type, JSONObject obj) {
+                if (mode == Mode.REMOTE_SEND && remoteQueueController != null) {
+                    if ("queue_state".equals(type))      remoteQueueController.onQueueStateReceived(obj);
+                    else if ("play_state".equals(type))  remoteQueueController.onPlaybackStateReceived(obj);
+                    return;
+                }
+                if (mode != Mode.REMOTE_RECEIVE) return;
+                switch (type) {
+                    case "request_queue":   handleRemoteRequestQueue(obj);  break;
+                    case "move_track":      handleRemoteMoveTrack(obj);     break;
+                    case "remove_track":    handleRemoteRemoveTrack(obj);   break;
+                    case "stop_playback":   stopPlaybackWithFadeout();   pushPlayState(); break;
+                    case "resume_playback": cancelFadeOutAndContinue();  pushPlayState(); break;
+                    case "play_track":      handleRemotePlayTrack(obj);     break;
+                }
+            }
+            @Override
+            public void onConnectionStateChanged(boolean connected) {
+                if (connected && mode == Mode.REMOTE_SEND && remoteQueueController != null) {
+                    remoteQueueController.onConnected();
+                }
             }
         });
 
@@ -417,7 +455,7 @@ public class FileBrowserQueueActivity extends Activity {
                 mode = Mode.REMOTE_RECEIVE;
                 btController.startRemoteSetupAsServer();
             } else if (serverMode == 0) {
-                mode = Mode.REMOTE_SEND;
+                enterRemoteSendMode();
                 btController.startRemoteSetupAsClient();
             } else {
                 btController.startRemoteSetup(); // mode set in onModeSelected callback
@@ -2001,7 +2039,7 @@ public class FileBrowserQueueActivity extends Activity {
                             swipeState.contentView = swipeState.swipingView.findViewById(R.id.swipe_content);
                             if (swipeState.contentView == null) swipeState.contentView = swipeState.swipingView;
                             TextView qHintStart = swipeState.swipingView.findViewById(R.id.swipe_hint_start);
-                            if (qHintStart != null) qHintStart.setText(mode == Mode.REMOTE_SEND ? getString(R.string.swipe_hint_send) : "");
+                            if (qHintStart != null) qHintStart.setText("");
                             TextView qHintEnd = swipeState.swipingView.findViewById(R.id.swipe_hint_end);
                             if (qHintEnd != null) qHintEnd.setText(R.string.swipe_hint_remove);
                             int[] itemScreenPos = new int[2];
@@ -2083,25 +2121,6 @@ public class FileBrowserQueueActivity extends Activity {
                         swipeState.resetView();
                         swipeState.startPosition = -1;
                         return false;
-                    }
-                    if (dx > 0 && swipeState.swipingView != null && mode == Mode.REMOTE_SEND) {
-                        swipeState.contentView.setTranslationX(Math.min(dx, swipeState.contentView.getWidth()));
-                        list.getParent().requestDisallowInterceptTouchEvent(true);
-                        if (swipeState.contentView.getWidth() > 0 && dx >= swipeState.contentView.getWidth() / 2f) {
-                            swipeState.handled = true;
-                            swipeState.resetView();
-                            int pos = swipeState.startPosition;
-                            if (pos >= 0 && pos < queueEntries.size()) {
-                                QueueEntry entry = queueEntries.get(pos);
-                                String title  = entry.tagsCached ? entry.title  : null;
-                                String artist = entry.tagsCached ? entry.artist : null;
-                                String date   = entry.tagsCached ? entry.date   : null;
-                                if (btController.sendQueueRequest(entry.name, getParentFolderName(entry.uri), title, artist, date)) {
-                                    Toast.makeText(this, R.string.track_request_sent, Toast.LENGTH_SHORT).show();
-                                }
-                            }
-                        }
-                        return true;
                     }
                     if (dx < 0 && swipeState.swipingView != null) {
                         swipeState.contentView.setTranslationX(Math.max(dx, -swipeState.contentView.getWidth()));
@@ -2232,11 +2251,20 @@ public class FileBrowserQueueActivity extends Activity {
     private void installFileBrowserSwipeAdd(ListView fileBrowserList) {
         installSwipeListener(fileBrowserList,
             pos -> pos < filteredFileEntries.size() && !filteredFileEntries.get(pos).isDirectory,
-            "Queue →", null,
+            null, null,
             position -> {
                 if (position >= filteredFileEntries.size()) return;
                 FileEntry entry = filteredFileEntries.get(position);
                 if (entry.isDirectory) return;
+                if (mode == Mode.REMOTE_SEND) {
+                    if (isPlaylistFile(entry.name)) {
+                        sendPlaylistToRemote(entry);
+                    } else {
+                        btController.sendQueueRequest(entry.name, getParentFolderName(entry.uri),
+                                entry.sortTitle, entry.sortArtist, entry.sortDate);
+                    }
+                    return;
+                }
                 if (isPlaylistFile(entry.name)) {
                     int addedCount = addPlaylistToQueue(entry);
                     if (addedCount > 0)
@@ -2360,6 +2388,7 @@ public class FileBrowserQueueActivity extends Activity {
         intent.setType("audio/*");
         intent.putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris);
         intent.putExtra(Service.EXTRA_ENTRY_IDS, ids);
+        intent.putExtra(Service.EXTRA_QUEUE_ALREADY_PERSISTED, true);
         if (forceImmediateRestart) {
             queueTransitionActive = true;
             sendStopNowCommand();
@@ -2372,6 +2401,92 @@ public class FileBrowserQueueActivity extends Activity {
         currentTrackPositionMs = 0;
         currentTrackDurationMs = 0;
         queueAdapter.notifyDataSetChanged();
+    }
+
+    private int currentPlayingEntryId() {
+        if (currentPlayingQueueIndex >= 0 && currentPlayingQueueIndex < queueEntries.size())
+            return queueEntries.get(currentPlayingQueueIndex).id;
+        return -1;
+    }
+
+    private void pushPlayState() {
+        try {
+            JSONObject msg = new JSONObject();
+            msg.put("type", "play_state");
+            boolean fading = stopFadeInProgress;
+            msg.put("state", fading ? "fading" : (playbackStopped ? "stopped" : "playing"));
+            msg.put("current_id", currentPlayingEntryId());
+            if (fading) msg.put("fade_duration_ms", AudioOutputRouter.getFadeOutSeconds(this) * 1000L);
+            btController.sendRaw(msg.toString());
+        } catch (Exception ignored) {
+        }
+    }
+
+    private void handleRemoteRequestQueue(JSONObject obj) {
+        int maxKnownId = obj.optInt("max_known_id", 0);
+        int minKnownId = obj.optInt("min_known_id", 0);
+        try {
+            JSONObject response = new JSONObject();
+            response.put("type", "queue_state");
+            response.put("current_id", currentPlayingEntryId());
+            boolean fading = stopFadeInProgress;
+            response.put("playback_state", fading ? "fading" : (playbackStopped ? "stopped" : "playing"));
+            if (fading) response.put("fade_duration_ms", AudioOutputRouter.getFadeOutSeconds(this) * 1000L);
+            JSONArray tracks = new JSONArray();
+            for (QueueEntry entry : queueEntries) {
+                JSONObject t = new JSONObject();
+                t.put("id", entry.id);
+                boolean clientKnows = maxKnownId > 0
+                        && entry.id <= maxKnownId
+                        && (minKnownId == 0 || entry.id >= minKnownId);
+                if (!clientKnows) {
+                    t.put("name", entry.name != null ? entry.name : "");
+                    if (entry.tagsCached) {
+                        if (entry.title  != null && !entry.title.isEmpty())  t.put("title",  entry.title);
+                        if (entry.artist != null && !entry.artist.isEmpty()) t.put("artist", entry.artist);
+                        if (entry.date   != null && !entry.date.isEmpty())   t.put("date",   entry.date);
+                    }
+                }
+                tracks.put(t);
+            }
+            response.put("tracks", tracks);
+            btController.sendRaw(response.toString());
+        } catch (Exception ignored) {
+        }
+    }
+
+    private void handleRemoteMoveTrack(JSONObject obj) {
+        int id = obj.optInt("id", -1);
+        int toPos = obj.optInt("to_position", -1);
+        int fromPos = findQueueIndexById(id);
+        if (fromPos < 0 || toPos < 0 || toPos >= queueEntries.size()) return;
+        moveQueueItem(fromPos, toPos);
+        persistQueue();
+        if (!playbackStopped && !stopFadeInProgress) syncServicePendingQueue();
+    }
+
+    private void handleRemoteRemoveTrack(JSONObject obj) {
+        int id = obj.optInt("id", -1);
+        int pos = findQueueIndexById(id);
+        if (pos >= 0) removeQueueAt(pos);
+    }
+
+    private void handleRemotePlayTrack(JSONObject obj) {
+        if (!playbackStopped && !stopFadeInProgress) {
+            pushPlayState();
+            return;
+        }
+        int id = obj.optInt("id", -1);
+        int pos = findQueueIndexById(id);
+        if (pos >= 0) playQueueFrom(pos, stopFadeInProgress);
+        pushPlayState();
+    }
+
+    private int findQueueIndexById(int id) {
+        for (int i = 0; i < queueEntries.size(); i++) {
+            if (queueEntries.get(i).id == id) return i;
+        }
+        return -1;
     }
 
     private void stopPlaybackWithFadeout() {
@@ -2604,7 +2719,6 @@ public class FileBrowserQueueActivity extends Activity {
             final String fNoneName = notFound.size() == 1 ? notFound.get(0) : null;
             final String fTagName   = tagCount   == 1 ? tagMatchedTitle   : null;
             final String fFuzzyName = fuzzyCount == 1 ? fuzzyMatchedTitle : null;
-            sendMatchResult(fName, fTag, fFuzzy, fNone, fTagName, fFuzzyName, fNoneName);
             runOnUiThread(() -> {
                 if (!toAdd.isEmpty()) {
                     addToQueue(toAdd);
@@ -2615,6 +2729,8 @@ public class FileBrowserQueueActivity extends Activity {
                 } else if (notFound.size() > 1) {
                     Toast.makeText(this, getString(R.string.requested_files_not_found, notFound.size()), Toast.LENGTH_SHORT).show();
                 }
+                // Send after addToQueue so a client requestQueue triggered by match_result sees the new state.
+                sendMatchResult(fName, fTag, fFuzzy, fNone, fTagName, fFuzzyName, fNoneName);
             });
         }).start();
     }
@@ -2640,6 +2756,7 @@ public class FileBrowserQueueActivity extends Activity {
         try {
             JSONObject obj = new JSONObject(jsonLine);
             if (!"match_result".equals(obj.optString("type"))) return;
+            if (remoteQueueController != null) remoteQueueController.refreshAndScrollToBottom();
             int name  = obj.optInt("name",  0);
             int tag   = obj.optInt("tag",   0);
             int fuzzy = obj.optInt("fuzzy", 0);
@@ -2907,6 +3024,53 @@ public class FileBrowserQueueActivity extends Activity {
         } else {
             saveButton.setText(R.string.save_queue_button);
             saveButton.setOnClickListener(v -> promptSaveQueueFilename());
+        }
+    }
+
+    private void enterRemoteSendMode() {
+        mode = Mode.REMOTE_SEND;
+        if (localQueuePanel != null)  localQueuePanel.setVisibility(View.GONE);
+        if (remoteQueuePanel != null) remoteQueuePanel.setVisibility(View.VISIBLE);
+        if (remoteQueueController == null && remoteQueuePanel != null) {
+            ListView list = findViewById(R.id.remote_queue_list);
+            View refresh  = findViewById(R.id.btn_remote_refresh);
+            View stop     = findViewById(R.id.btn_remote_stop);
+            View play     = findViewById(R.id.btn_remote_play);
+            remoteQueueController = new RemoteQueueController(this, btController, list, refresh, stop, play);
+        }
+    }
+
+    private void sendPlaylistToRemote(FileEntry playlistEntry) {
+        List<BluetoothQueueBridge.TrackRequest> requests = new ArrayList<>();
+        try (InputStream stream = getContentResolver().openInputStream(playlistEntry.uri)) {
+            if (stream != null) {
+                try (BufferedReader reader = new BufferedReader(new InputStreamReader(stream, "UTF-8"))) {
+                    String line;
+                    while ((line = reader.readLine()) != null) {
+                        String trimmed = line.trim();
+                        if (trimmed.isEmpty() || trimmed.startsWith("#")) continue;
+                        String normalized = trimmed.replace('\\', '/');
+                        int lastSlash = normalized.lastIndexOf('/');
+                        String filename = lastSlash >= 0 ? normalized.substring(lastSlash + 1) : normalized;
+                        String parentFolder = "";
+                        if (lastSlash > 0) {
+                            int prevSlash = normalized.lastIndexOf('/', lastSlash - 1);
+                            parentFolder = prevSlash >= 0
+                                    ? normalized.substring(prevSlash + 1, lastSlash)
+                                    : normalized.substring(0, lastSlash);
+                        }
+                        requests.add(new BluetoothQueueBridge.TrackRequest(filename, parentFolder));
+                    }
+                }
+            }
+        } catch (Exception ignored) {}
+
+        if (requests.isEmpty()) {
+            Toast.makeText(this, getString(R.string.no_playable_files_in_playlist, playlistEntry.name), Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (btController.sendQueueRequests(requests)) {
+            Toast.makeText(this, getString(R.string.sent_tracks, requests.size()), Toast.LENGTH_SHORT).show();
         }
     }
 
@@ -3228,6 +3392,7 @@ public class FileBrowserQueueActivity extends Activity {
     protected void onDestroy() {
         uiHandler.removeCallbacks(playbackStateSyncRunnable);
         unregisterPlaybackStateReceiver();
+        if (remoteQueueController != null) remoteQueueController.shutdown();
         btController.shutdown();
         if (audioPreviewManager != null) audioPreviewManager.stopPreview();
         tagReadExecutor.shutdownNow();
@@ -3352,6 +3517,7 @@ public class FileBrowserQueueActivity extends Activity {
         final View metaRow;
         final TextView artist;
         final TextView meta;
+        final TextView hintStart;
         ViewHolder(View v) {
             content = v.findViewById(R.id.swipe_content);
             icon = v.findViewById(R.id.file_icon);
@@ -3360,6 +3526,7 @@ public class FileBrowserQueueActivity extends Activity {
             metaRow = v.findViewById(R.id.file_meta_row);
             artist = v.findViewById(R.id.file_artist);
             meta = v.findViewById(R.id.file_meta);
+            hintStart = v.findViewById(R.id.swipe_hint_start);
         }
     }
 
@@ -3393,6 +3560,13 @@ public class FileBrowserQueueActivity extends Activity {
             }
 
             FileEntry entry = filteredFileEntries.get(position);
+            if (vh.hintStart != null) {
+                if (entry.isDirectory) {
+                    vh.hintStart.setText("");
+                } else {
+                    vh.hintStart.setText(mode == Mode.REMOTE_SEND ? R.string.swipe_hint_send : R.string.swipe_hint_queue);
+                }
+            }
             vh.icon.setText(entry.isDirectory ? "\uD83D\uDCC1" : "\uD83C\uDFB5");
             vh.name.setText(fileSortMode != SORT_FILENAME && entry.sortTitle != null && !entry.sortTitle.isEmpty() ? entry.sortTitle : entry.name);
             String metaText = entry.isDirectory ? "" :

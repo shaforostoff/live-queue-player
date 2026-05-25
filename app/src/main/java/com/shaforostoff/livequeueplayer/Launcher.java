@@ -116,7 +116,6 @@ public class Launcher extends Activity {
                 intent.putExtra(FileBrowserQueueActivity.EXTRA_REMOTE_QUEUE_SERVER_MODE, 0);
                 startActivity(intent);
             });
-
              /* stop playback after the current track finishes */
              stopAfterCurrentButton = findViewById(R.id.stop_after_current);
              stopAfterCurrentButton.setOnClickListener(v -> {

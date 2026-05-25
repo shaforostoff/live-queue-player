@@ -45,6 +45,7 @@ final class BluetoothQueueBridge {
     interface Listener {
         void onQueueRequestsReceived(List<TrackRequest> tracks);
         void onMatchResultReceived(String jsonLine);
+        void onRemoteQueueMessageReceived(String type, JSONObject obj);
         void onConnectionStateChanged(boolean connected, String message);
     }
 
@@ -241,7 +242,16 @@ final class BluetoothQueueBridge {
                 if (line == null) break;
                 try {
                     if (line.startsWith("{")) {
-                        listener.onMatchResultReceived(line);
+                        try {
+                            JSONObject obj = new JSONObject(line);
+                            String type = obj.optString("type", "");
+                            if ("match_result".equals(type) || type.isEmpty()) {
+                                listener.onMatchResultReceived(line);
+                            } else {
+                                listener.onRemoteQueueMessageReceived(type, obj);
+                            }
+                        } catch (Exception ignored) {
+                        }
                     } else {
                         JSONArray arr = new JSONArray(line);
                         List<TrackRequest> tracks = new ArrayList<>();

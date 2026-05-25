@@ -30,6 +30,7 @@ class AudioPlayer extends Thread implements MediaPlayer.OnCompletionListener, Me
   private volatile boolean pausedForFocusLoss;
   private final AtomicInteger fadeToken = new AtomicInteger();
   private final float baseGain;
+  private PowerManager.WakeLock transitionWakeLock;
 
   /**
    * Initiate an audio player, throws exceptions if failed.
@@ -61,6 +62,13 @@ class AudioPlayer extends Thread implements MediaPlayer.OnCompletionListener, Me
 
     // Keep CPU awake only while playback is active.
     mediaPlayer.setWakeMode(service.getApplicationContext(), PowerManager.PARTIAL_WAKE_LOCK);
+
+    // Bridge the gap between reset() releasing the old wake lock and start() acquiring the new
+    // one. Without this, prepare() (blocking I/O) can stall indefinitely when the CPU sleeps.
+    PowerManager pm = (PowerManager) service.getSystemService(android.content.Context.POWER_SERVICE);
+    transitionWakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "LittleMusicPlayer:TrackTransition");
+    transitionWakeLock.setReferenceCounted(false);
+    transitionWakeLock.acquire(30_000); // released after prepare()+start(); 30 s safety timeout
 
     /* setup player variables */
     if (AiffConverter.isAiff(service, location)) {
@@ -98,13 +106,23 @@ class AudioPlayer extends Thread implements MediaPlayer.OnCompletionListener, Me
       // This ensures preview (with TRANSIENT_MAY_DUCK) won't interrupt us
       requestAudioFocus();
       service.setState(true);
+      releaseTransitionWakeLock(); // MediaPlayer now holds its own PARTIAL_WAKE_LOCK via setWakeMode
     } catch (IllegalStateException e) {
+      releaseTransitionWakeLock();
       Exceptions.throwError(service, Exceptions.IllegalState);
       service.playOrDestroy();
     } catch (IOException e) {
+      releaseTransitionWakeLock();
       Exceptions.throwError(service, Exceptions.IO);
       service.playOrDestroy();
     }
+  }
+
+  private void releaseTransitionWakeLock() {
+    if (transitionWakeLock != null && transitionWakeLock.isHeld()) {
+      transitionWakeLock.release();
+    }
+    transitionWakeLock = null;
   }
 
   /**
@@ -237,6 +255,7 @@ class AudioPlayer extends Thread implements MediaPlayer.OnCompletionListener, Me
   private void releasePlayer() {
     if (!released) {
       released = true;
+      releaseTransitionWakeLock();
       if (audioManager != null) {
         audioManager.unregisterAudioDeviceCallback(audioDeviceCallback);
       }

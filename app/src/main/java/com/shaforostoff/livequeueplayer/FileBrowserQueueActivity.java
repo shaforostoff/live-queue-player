@@ -1618,40 +1618,70 @@ public class FileBrowserQueueActivity extends Activity {
     }
 
     private int addPlaylistToQueue(FileEntry playlistEntry) {
-        ArrayList<QueueEntry> resolvedEntries = new ArrayList<>();
-        int missingCount = 0;
+        List<String> lines = new ArrayList<>();
         try (InputStream stream = getContentResolver().openInputStream(playlistEntry.uri)) {
-            if (stream == null) {
-                return 0;
-            }
-            try (BufferedReader reader = new BufferedReader(
-                    new InputStreamReader(stream, "UTF-8"))) {
+            if (stream == null) return 0;
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(stream, "UTF-8"))) {
                 String line;
                 while ((line = reader.readLine()) != null) {
                     String trimmed = line.trim();
-                    if (trimmed.length() == 0 || trimmed.startsWith("#")) {
-                        continue;
-                    }
-                    Uri resolvedUri = resolvePlaylistTargetUri(playlistEntry, trimmed);
-                    if (resolvedUri == null) {
-                        if (missingCount < 1) {
-                            String name = getDisplayNameForPlaylistItem(trimmed, null);
-                            Toast.makeText(this, getString(R.string.requested_file_not_found, name), Toast.LENGTH_LONG).show();
-                        }
-                        missingCount++;
-                        continue;
-                    }
-                    String displayName = getDisplayNameForPlaylistItem(trimmed, resolvedUri);
-                    resolvedEntries.add(new QueueEntry(displayName, resolvedUri));
+                    if (trimmed.length() == 0 || trimmed.startsWith("#")) continue;
+                    lines.add(trimmed);
                 }
             }
         } catch (Exception ignored) {
             return 0;
         }
 
-        if (missingCount > 1) {
+        // Pass 1: resolve each entry using same-directory logic (exact + different extension)
+        Uri[] resolved = new Uri[lines.size()];
+        for (int i = 0; i < lines.size(); i++) {
+            resolved[i] = resolvePlaylistTargetUri(playlistEntry, lines.get(i));
+        }
+
+        // Pass 2: for still-unresolved entries, do a single recursive search from the browser root
+        List<Integer> missingIndices = new ArrayList<>();
+        List<BluetoothQueueBridge.TrackRequest> requests = new ArrayList<>();
+        for (int i = 0; i < lines.size(); i++) {
+            if (resolved[i] != null) continue;
+            String normalized = lines.get(i).replace('\\', '/');
+            int lastSlash = normalized.lastIndexOf('/');
+            String filename = lastSlash >= 0 ? normalized.substring(lastSlash + 1) : normalized;
+            String parentFolder = "";
+            if (lastSlash > 0) {
+                int prevSlash = normalized.lastIndexOf('/', lastSlash - 1);
+                parentFolder = prevSlash >= 0
+                        ? normalized.substring(prevSlash + 1, lastSlash)
+                        : normalized.substring(0, lastSlash);
+            }
+            missingIndices.add(i);
+            requests.add(new BluetoothQueueBridge.TrackRequest(filename, parentFolder));
+        }
+        if (!requests.isEmpty()) {
+            List<Uri> found = findRequestedAudioUris(requests);
+            for (int j = 0; j < missingIndices.size(); j++) {
+                resolved[missingIndices.get(j)] = found.get(j);
+            }
+        }
+
+        // Build queue entries; toast for first 2 still-missing files, then a summary
+        ArrayList<QueueEntry> resolvedEntries = new ArrayList<>();
+        int missingCount = 0;
+        for (int i = 0; i < lines.size(); i++) {
+            if (resolved[i] == null) {
+                if (missingCount < 2) {
+                    String name = getDisplayNameForPlaylistItem(lines.get(i), null);
+                    Toast.makeText(this, getString(R.string.requested_file_not_found, name), Toast.LENGTH_LONG).show();
+                }
+                missingCount++;
+            } else {
+                resolvedEntries.add(new QueueEntry(getDisplayNameForPlaylistItem(lines.get(i), resolved[i]), resolved[i]));
+            }
+        }
+        if (missingCount > 2) {
             Toast.makeText(this, getString(R.string.requested_files_not_found, missingCount), Toast.LENGTH_LONG).show();
         }
+
         addToQueue(resolvedEntries);
         return resolvedEntries.size();
     }

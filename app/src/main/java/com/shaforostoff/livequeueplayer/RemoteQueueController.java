@@ -297,6 +297,11 @@ final class RemoteQueueController {
                         int pos = swipeState.startPosition;
                         longPressRunnable[0] = () -> {
                             if (!swipeState.handled && !dragState.active && swipeState.swipingView != null) {
+                                if (pos >= 0 && pos < queueEntries.size()
+                                        && queueEntries.get(pos).id == currentId) {
+                                    longPressRunnable[0] = null;
+                                    return;
+                                }
                                 View src = swipeState.swipingView;
                                 Bitmap bmp = Bitmap.createBitmap(src.getWidth(), src.getHeight(), Bitmap.Config.ARGB_8888);
                                 src.draw(new Canvas(bmp));

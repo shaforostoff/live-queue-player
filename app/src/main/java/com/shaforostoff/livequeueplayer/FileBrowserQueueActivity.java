@@ -1685,21 +1685,26 @@ public class FileBrowserQueueActivity extends Activity {
         return lower.endsWith(".m3u") || lower.endsWith(".m3u8");
     }
 
-    private int addPlaylistToQueue(FileEntry playlistEntry) {
+    private List<String> readPlaylistLines(FileEntry playlistEntry) {
         List<String> lines = new ArrayList<>();
         try (InputStream stream = getContentResolver().openInputStream(playlistEntry.uri)) {
-            if (stream == null) return 0;
+            if (stream == null) return lines;
             try (BufferedReader reader = new BufferedReader(new InputStreamReader(stream, "UTF-8"))) {
                 String line;
                 while ((line = reader.readLine()) != null) {
                     String trimmed = line.trim();
-                    if (trimmed.length() == 0 || trimmed.startsWith("#")) continue;
+                    if (!trimmed.isEmpty() && trimmed.charAt(0) == '\uFEFF') trimmed = trimmed.substring(1);
+                    if (trimmed.isEmpty() || trimmed.startsWith("#")) continue;
                     lines.add(trimmed);
                 }
             }
-        } catch (Exception ignored) {
-            return 0;
-        }
+        } catch (Exception ignored) {}
+        return lines;
+    }
+
+    private int addPlaylistToQueue(FileEntry playlistEntry) {
+        List<String> lines = readPlaylistLines(playlistEntry);
+        if (lines.isEmpty()) return 0;
 
         // Pass 1: resolve each entry using same-directory logic (exact + different extension)
         Uri[] resolved = new Uri[lines.size()];
@@ -2300,20 +2305,11 @@ public class FileBrowserQueueActivity extends Activity {
     private void enterPlaylistAsBrowseFolder(FileEntry playlistEntry) {
         stopBrowsePlaybackForFolderSwitch();
         List<FileEntry> tracks = new ArrayList<>();
-        try (InputStream stream = getContentResolver().openInputStream(playlistEntry.uri)) {
-            if (stream != null) {
-                try (BufferedReader reader = new BufferedReader(new InputStreamReader(stream, "UTF-8"))) {
-                    String line;
-                    while ((line = reader.readLine()) != null) {
-                        String trimmed = line.trim();
-                        if (trimmed.isEmpty() || trimmed.startsWith("#")) continue;
-                        Uri uri = resolvePlaylistTargetUri(playlistEntry, trimmed);
-                        if (uri == null) continue;
-                        tracks.add(new FileEntry(uri, getDisplayNameForPlaylistItem(trimmed, uri), false));
-                    }
-                }
-            }
-        } catch (Exception ignored) {}
+        for (String line : readPlaylistLines(playlistEntry)) {
+            Uri uri = resolvePlaylistTargetUri(playlistEntry, line);
+            if (uri == null) continue;
+            tracks.add(new FileEntry(uri, getDisplayNameForPlaylistItem(line, uri), false));
+        }
 
         if (tracks.isEmpty()) {
             Toast.makeText(this, getString(R.string.no_playable_files_in_playlist, playlistEntry.name), Toast.LENGTH_SHORT).show();

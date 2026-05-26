@@ -59,6 +59,8 @@ public class Service extends android.app.Service implements MediaPlayerStateList
     private Playlist playlist;
     /** Index of the next entry to play in {@link #playlist}. */
     private int playlistPosition = 0;
+    // Tracks which playlist index has already been retried once, to avoid infinite retry loops.
+    private volatile int retriedAtPosition = -1;
     private int progressAnchorPositionMs = 0;
     private long progressAnchorElapsedMs = 0L;
     private final Handler progressHandler = new Handler(Looper.getMainLooper());
@@ -276,8 +278,18 @@ public class Service extends android.app.Service implements MediaPlayerStateList
     }
 
     public void playOrDestroy() {
-        if (!playNextEntry())
-            onMediaPlayerDestroy();
+        int failedPosition = playlistPosition - 1;
+        if (retriedAtPosition != failedPosition) {
+            // First failure at this position — retry once before giving up.
+            retriedAtPosition = failedPosition;
+            playlistPosition = failedPosition;
+            onMediaPlayerReset();
+            playEntryFromPlaylist();
+        } else {
+            retriedAtPosition = -1;
+            if (!playNextEntry())
+                onMediaPlayerDestroy();
+        }
     }
 
     @Override

@@ -1447,7 +1447,9 @@ public class FileBrowserQueueActivity extends Activity {
         }
 
         if (cacheApplied) {
-            Collections.sort(fileEntries, this::compareFileEntries);
+            if (currentBrowsePlaylistEntry == null) {
+                Collections.sort(fileEntries, this::compareFileEntries);
+            }
             applyFileFilter();
         }
 
@@ -1515,7 +1517,7 @@ public class FileBrowserQueueActivity extends Activity {
                             }
 
                             if (changed) {
-                                if (isTagSortMode(fileSortMode)) {
+                                if (isTagSortMode(fileSortMode) && currentBrowsePlaylistEntry == null) {
                                     Collections.sort(fileEntries, FileBrowserQueueActivity.this::compareFileEntries);
                                 }
                                 applyFileFilter();
@@ -2323,6 +2325,7 @@ public class FileBrowserQueueActivity extends Activity {
         fileEntries.clear();
         fileEntries.addAll(tracks);
         currentBrowsePlaylistEntry = playlistEntry;
+        resolveTagMetadataForVisibleFolderAsync();
         applyFileFilter();
         scrollToHighlightedFileEntry();
         updateStorageButtonState();

@@ -612,6 +612,7 @@ public class FileBrowserQueueActivity extends Activity {
     }
 
     private void navigateTo(File dir) {
+        stopBrowsePlaybackForFolderSwitch();
         currentBrowsePlaylistEntry = null;
         resetFileBrowserPreview();
         clearFileFilterInput();
@@ -754,6 +755,7 @@ public class FileBrowserQueueActivity extends Activity {
             return;
         }
 
+        stopBrowsePlaybackForFolderSwitch();
         resetFileBrowserPreview();
         clearFileFilterInput();
         documentUriStack.add(documentUri);
@@ -767,6 +769,7 @@ public class FileBrowserQueueActivity extends Activity {
             return;
         }
 
+        stopBrowsePlaybackForFolderSwitch();
         resetFileBrowserPreview();
         clearFileFilterInput();
         if (documentUriStack.size() > 1) {
@@ -2265,6 +2268,7 @@ public class FileBrowserQueueActivity extends Activity {
     }
 
     private void enterPlaylistAsBrowseFolder(FileEntry playlistEntry) {
+        stopBrowsePlaybackForFolderSwitch();
         List<FileEntry> tracks = new ArrayList<>();
         try (InputStream stream = getContentResolver().openInputStream(playlistEntry.uri)) {
             if (stream != null) {
@@ -2297,6 +2301,7 @@ public class FileBrowserQueueActivity extends Activity {
     }
 
     private void exitPlaylistBrowseFolder() {
+        stopBrowsePlaybackForFolderSwitch();
         currentBrowsePlaylistEntry = null;
         if (browsingDocumentTree) {
             browseCurrentDocumentDirectory();
@@ -2406,6 +2411,12 @@ public class FileBrowserQueueActivity extends Activity {
     private void stopPlaybackImmediately() {
         sendStopNowCommand();
         applyStoppedState();
+    }
+
+    private void stopBrowsePlaybackForFolderSwitch() {
+        if (mode == Mode.REMOTE_SEND && Service.sBrowseMode) {
+            stopPlaybackImmediately();
+        }
     }
 
     private void applyStoppedState() {

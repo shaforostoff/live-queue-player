@@ -1648,7 +1648,8 @@ public class FileBrowserQueueActivity extends Activity {
             pendingBackScrollUri = null;
             for (int i = 0; i < filteredFileEntries.size(); i++) {
                 if (target.equals(filteredFileEntries.get(i).uri)) {
-                    fileBrowserList.setSelection(i);
+                    final int idx = i;
+                    fileBrowserList.post(() -> fileBrowserList.setSelection(idx));
                     return true;
                 }
             }
@@ -3660,7 +3661,7 @@ public class FileBrowserQueueActivity extends Activity {
             vh.meta.setText(metaText);
             boolean hasSubtext = artistText.length() > 0 || metaText.length() > 0;
             vh.metaRow.setVisibility(hasSubtext ? View.VISIBLE : View.GONE);
-            vh.name.setGravity(hasSubtext ? Gravity.START : Gravity.CENTER);
+            vh.name.setGravity(entry.isDirectory && !hasSubtext ? Gravity.CENTER : Gravity.START);
 
             boolean isBrowseEntry = Service.sBrowseMode
                     && !entry.isDirectory
@@ -3762,7 +3763,7 @@ public class FileBrowserQueueActivity extends Activity {
                     ? buildMetaText(entry.date, entry.genre, entry.bpm) : "";
             boolean hasSubtext = !artistText.isEmpty() || !metaText.isEmpty();
             vh.name.setText(displayName);
-            vh.name.setGravity(hasSubtext ? Gravity.START : Gravity.CENTER);
+            vh.name.setGravity(Gravity.START);
             vh.artist.setText(artistText);
             vh.meta.setText(metaText);
             vh.metaRow.setVisibility(hasSubtext ? View.VISIBLE : View.GONE);

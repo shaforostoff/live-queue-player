@@ -73,17 +73,25 @@ final class PlaylistGenerator {
         void parse(Uri m3uLocation) {
             try {
                 if ("content".equals(m3uLocation.getScheme())) {
-                    parse(new Scanner(context.getContentResolver().openInputStream(m3uLocation)));
+                    parse(new Scanner(context.getContentResolver().openInputStream(m3uLocation)), null);
                 } else {
-                    // assume scheme is file://
-                    parse(new Scanner(new File(m3uLocation.toString())));
+                    File m3uFile = new File(m3uLocation.getPath());
+                    parse(new Scanner(m3uFile), m3uFile.getParentFile());
                 }
             } catch (FileNotFoundException e) {
                 Exceptions.throwError(context, "File not found!\nLocation: " + m3uLocation);
             }
         }
 
-        private void parse(Scanner input) {
+        private Uri resolveLocation(String line, File baseDir) {
+            Uri uri = Uri.parse(line);
+            if (uri.getScheme() == null && baseDir != null && !line.startsWith("/")) {
+                return Uri.fromFile(new File(baseDir, line).toPath().normalize().toFile());
+            }
+            return uri;
+        }
+
+        private void parse(Scanner input, File baseDir) {
             while (input.hasNextLine()) {
                 var line = input.nextLine().trim();
                 if (line.length() == 0)
@@ -92,11 +100,11 @@ final class PlaylistGenerator {
                 if (line.startsWith("#EXTINF:")) {
                     var infoAndName = line.split(",");
                     entry.title = infoAndName[infoAndName.length - 1];
-                    entry.location = Uri.parse(input.nextLine());
+                    entry.location = resolveLocation(input.nextLine().trim(), baseDir);
                     generator.generate(entry.title, entry.location);
                 } else if (!line.startsWith("#")) {
                     entry.title = new File(line).getName();
-                    entry.location = Uri.parse(line);
+                    entry.location = resolveLocation(line, baseDir);
                     generator.generate(entry.title, entry.location);
                 }
             }

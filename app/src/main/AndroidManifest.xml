@@ -16,6 +16,7 @@
   <uses-permission a:name="android.permission.BLUETOOTH_CONNECT"/>
 
   <application
+    a:name=".App"
     a:icon="@drawable/ic_launcher"
     a:label="@string/app_name"
     a:resizeableActivity="true"

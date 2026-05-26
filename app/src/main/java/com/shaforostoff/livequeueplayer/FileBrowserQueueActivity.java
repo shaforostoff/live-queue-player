@@ -311,7 +311,7 @@ public class FileBrowserQueueActivity extends Activity {
         sortButton = findViewById(R.id.btn_sort_files);
         saveButton = findViewById(R.id.btn_save_queue);
         stopButton = findViewById(R.id.btn_stop_queue);
-        metadataExtractor = new MetadataExtractor(getContentResolver());
+        metadataExtractor = ((App) getApplication()).getMetadataExtractor();
         btController = new BluetoothController(this, new BluetoothController.Callback() {
             @Override
             public void onModeSelected() {
@@ -516,9 +516,7 @@ public class FileBrowserQueueActivity extends Activity {
         }
 
         rememberLastTreeUri(treeUri);
-
-        
-
+        metadataExtractor.clearCache();
 
 
 

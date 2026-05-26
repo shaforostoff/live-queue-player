@@ -51,6 +51,10 @@ class MetadataExtractor {
         }
     }
 
+    void clearCache() {
+        tagCache.clear();
+    }
+
     private TagEntry getOrCreate(String key) {
         return tagCache.computeIfAbsent(key, k -> new TagEntry());
     }

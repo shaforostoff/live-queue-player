@@ -9,6 +9,7 @@ import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
+import android.os.PowerManager;
 import android.os.SystemClock;
 
 import java.io.IOException;
@@ -50,6 +51,10 @@ public class Service extends android.app.Service implements MediaPlayerStateList
     private Notifications notifications;
     private AudioPlayer audioPlayer;
     private SilenceStreamer silenceStreamer;
+    // Held continuously from playback start through every track transition, so the CPU cannot
+    // sleep in the wake-lock-free gap between an old MediaPlayer's PLAYBACK_COMPLETED state
+    // (framework releases its setWakeMode lock) and the new MediaPlayer's prepare()+start().
+    private PowerManager.WakeLock playbackWakeLock;
 
     private Playlist playlist;
     /** Index of the next entry to play in {@link #playlist}. */
@@ -88,8 +93,23 @@ public class Service extends android.app.Service implements MediaPlayerStateList
         hwListener = new HWListener(this);
         notifications = new Notifications(this);
         playlist = new Playlist(this);
+        PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
+        playbackWakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "LittleMusicPlayer:Playback");
+        playbackWakeLock.setReferenceCounted(false);
         hwListener.create();
         notifications.create();
+    }
+
+    private void acquirePlaybackWakeLock() {
+        if (playbackWakeLock != null && !playbackWakeLock.isHeld()) {
+            playbackWakeLock.acquire();
+        }
+    }
+
+    private void releasePlaybackWakeLock() {
+        if (playbackWakeLock != null && playbackWakeLock.isHeld()) {
+            playbackWakeLock.release();
+        }
     }
 
     /**
@@ -197,6 +217,10 @@ public class Service extends android.app.Service implements MediaPlayerStateList
     }
 
     private void playEntryFromPlaylist() {
+        // Acquire before constructing the new AudioPlayer so the wake lock is held through the
+        // upcoming prepare() (blocking I/O). For auto-advance this is already held from the
+        // previous track; for the first track this is where it first becomes held.
+        acquirePlaybackWakeLock();
         var entry = playlist.get(playlistPosition);
         playlistPosition++;
         int currentIndex = playlistPosition - 1;
@@ -249,6 +273,8 @@ public class Service extends android.app.Service implements MediaPlayerStateList
 
     @Override
     public void setState(boolean playing) {
+        if (playing) acquirePlaybackWakeLock();
+        else releasePlaybackWakeLock();
         audioPlayer.setState(playing);
         hwListener.setState(playing);
         notifications.setState(playing);
@@ -357,6 +383,7 @@ public class Service extends android.app.Service implements MediaPlayerStateList
         if (audioPlayer != null)
             audioPlayer.onMediaPlayerDestroy();
         playlist.clear();
+        releasePlaybackWakeLock();
 
         super.onDestroy();
     }
@@ -430,6 +457,7 @@ public class Service extends android.app.Service implements MediaPlayerStateList
     }
 
     void onAudioFocusLoss(int currentPositionMs) {
+        releasePlaybackWakeLock();
         hwListener.setState(false);
         notifications.setState(false);
         sPlaybackPositionMs = currentPositionMs;
@@ -441,6 +469,7 @@ public class Service extends android.app.Service implements MediaPlayerStateList
     }
 
     void onAudioFocusResume(int currentPositionMs) {
+        acquirePlaybackWakeLock();
         hwListener.setState(true);
         notifications.setState(true);
         sPlaybackPositionMs = currentPositionMs;

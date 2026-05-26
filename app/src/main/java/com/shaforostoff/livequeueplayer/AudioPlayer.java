@@ -189,9 +189,10 @@ class AudioPlayer extends Thread implements MediaPlayer.OnCompletionListener, Me
 
   @Override
   public void onMediaPlayerReset() {
-    if (!released) {
-      mediaPlayer.reset();
-    }
+    // Track change replaces this AudioPlayer with a fresh one, so fully release instead of
+    // just resetting the MediaPlayer — otherwise the AudioDeviceCallback, AudioFocusRequest
+    // and native MediaPlayer resources leak for the rest of the queue's lifetime.
+    releasePlayer();
   }
 
   /**

@@ -201,7 +201,7 @@ class AudioPlayer extends Thread implements MediaPlayer.OnCompletionListener, Me
   @SuppressWarnings("unused")
   public void fadeOutAndStop(long durationMs) {
     if (released) {
-      service.stopSelf();
+      service.onFadeOutComplete();
       return;
     }
 
@@ -210,9 +210,9 @@ class AudioPlayer extends Thread implements MediaPlayer.OnCompletionListener, Me
     new Thread(() -> {
       try {
         if (released || !mediaPlayer.isPlaying()) {
-          if (token == fadeToken.get()) {
+          if (token == fadeToken.get() && !released) {
             fadeOutInProgress = false;
-            service.stopSelf();
+            service.onFadeOutComplete();
           }
           return;
         }
@@ -245,9 +245,12 @@ class AudioPlayer extends Thread implements MediaPlayer.OnCompletionListener, Me
           }
         }
       } finally {
-        if (token == fadeToken.get()) {
+        // Skip onFadeOutComplete if we were released externally (e.g. KILL while fading): the
+        // service has already torn down playback and may have started a new track. Calling
+        // onFadeOutComplete now would tear down that new track.
+        if (token == fadeToken.get() && !released) {
           fadeOutInProgress = false;
-          service.stopSelf();
+          service.onFadeOutComplete();
         }
       }
     }).start();

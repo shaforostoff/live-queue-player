@@ -17,8 +17,10 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
 import android.os.Handler;
+import android.os.SystemClock;
 import android.os.storage.StorageManager;
 import android.os.storage.StorageVolume;
+import android.view.KeyEvent;
 import android.text.Editable;
 import android.text.TextWatcher;
 import android.provider.DocumentsContract;
@@ -215,6 +217,12 @@ public class FileBrowserQueueActivity extends Activity {
             boolean serviceFade = intent.getBooleanExtra(Service.EXTRA_FADE_OUT_IN_PROGRESS, false);
             if (serviceFade && !stopFadeInProgress) {
                 stopFadeInProgress = true;
+                applyStopButtonState();
+            } else if (!serviceFade && stopFadeInProgress && isPlaying && serviceIndex >= 0) {
+                // A new track started while the previous fade-out was in progress (e.g. a remote
+                // play_track during fade). The fade has been aborted by the service; clear our
+                // local flag so the UI and pushed play_state reflect "playing" instead of "fading".
+                stopFadeInProgress = false;
                 applyStopButtonState();
             }
 
@@ -2382,6 +2390,18 @@ public class FileBrowserQueueActivity extends Activity {
             return;
         }
 
+        // Persist queue + start position so the Service's MediaSession onPlay callback can
+        // read them. We then trigger playback two ways:
+        //  1. startForegroundService(intent) — fast path; works when the app is in the
+        //     foreground or the Service is already running.
+        //  2. dispatchMediaPlayKey() — fallback for Android 14+ when the Activity is in the
+        //     background. The OS routes the key through MediaSessionManager to our MediaSession
+        //     callback; foreground-service starts originating from there are exempt from the
+        //     background-FGS-start restrictions that defer (1) until the device is unlocked.
+        // Whichever path arrives first wins; the second becomes a no-op once audioPlayer is set.
+        persistQueue();
+        setPlaybackOffset(position);
+
         int count = queueEntries.size() - position;
         ArrayList<Uri> uris = new ArrayList<>(count);
         int[] ids = new int[count];
@@ -2390,25 +2410,41 @@ public class FileBrowserQueueActivity extends Activity {
             uris.add(e.uri);
             ids[i - position] = e.id;
         }
-
-        Intent intent = new Intent(this, Launcher.class);
+        Intent intent = new Intent(this, Service.class);
         intent.setAction(ACTION_SEND_MULTIPLE_COMPAT);
         intent.setType("audio/*");
         intent.putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris);
         intent.putExtra(Service.EXTRA_ENTRY_IDS, ids);
         intent.putExtra(Service.EXTRA_QUEUE_ALREADY_PERSISTED, true);
+
         if (forceImmediateRestart) {
             queueTransitionActive = true;
             sendStopNowCommand();
         }
         resetStopButtonState();
-        startActivity(intent);
+        startPlaybackService(intent);
+        if (!forceImmediateRestart) {
+            // Only dispatch the media-play key when starting from a stopped/idle state — that's
+            // where the FGS-start exemption from a MediaSession callback actually matters. During
+            // a fade-out the service is already alive, so the KILL + ACTION_SEND_MULTIPLE intents
+            // above are sufficient and a racing media-key PLAY arriving before the KILL would
+            // call cancelFadeOutAndResume() on the current (wrong) track.
+            dispatchMediaPlayKey();
+        }
+
         playbackStopped = false;
-        setPlaybackOffset(position);
         currentPlayingQueueIndex = position;
         currentTrackPositionMs = 0;
         currentTrackDurationMs = 0;
         queueAdapter.notifyDataSetChanged();
+    }
+
+    private void dispatchMediaPlayKey() {
+        AudioManager am = (AudioManager) getSystemService(AUDIO_SERVICE);
+        if (am == null) return;
+        long now = SystemClock.uptimeMillis();
+        am.dispatchMediaKeyEvent(new KeyEvent(now, now, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_MEDIA_PLAY, 0));
+        am.dispatchMediaKeyEvent(new KeyEvent(now, now, KeyEvent.ACTION_UP, KeyEvent.KEYCODE_MEDIA_PLAY, 0));
     }
 
     private int currentPlayingEntryId() {
@@ -2468,8 +2504,13 @@ public class FileBrowserQueueActivity extends Activity {
             JSONObject response = new JSONObject();
             response.put("type", "queue_state");
             response.put("current_id", currentPlayingEntryId());
-            boolean fading = stopFadeInProgress;
-            response.put("playback_state", fading ? "fading" : (playbackStopped ? "stopped" : "playing"));
+            // Derive from the Service static fields (written immediately by the fade thread)
+            // rather than the activity-local mirror, which can lag the broadcast and report a
+            // stale "fading" right after the fade actually finished — causing the remote to
+            // reschedule a fade-end timer and re-show the Resume button.
+            boolean fading = Service.sFadeOutInProgress;
+            boolean playing = Service.sIsPlaying;
+            response.put("playback_state", fading ? "fading" : (playing ? "playing" : "stopped"));
             if (fading) response.put("fade_duration_ms", AudioOutputRouter.getFadeOutSeconds(this) * 1000L);
             JSONArray tracks = new JSONArray();
             for (QueueEntry entry : queueEntries) {
@@ -2562,6 +2603,14 @@ public class FileBrowserQueueActivity extends Activity {
         startService(intent);
     }
 
+    private void startPlaybackService(Intent intent) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(intent);
+        } else {
+            startService(intent);
+        }
+    }
+
     private void stopPlaybackImmediately() {
         sendStopNowCommand();
         applyStoppedState();
@@ -2603,7 +2652,7 @@ public class FileBrowserQueueActivity extends Activity {
         ArrayList<Uri> uris = new ArrayList<>(1);
         uris.add(uri);
 
-        Intent intent = new Intent(this, Launcher.class);
+        Intent intent = new Intent(this, Service.class);
         intent.setAction(ACTION_SEND_MULTIPLE_COMPAT);
         intent.setType("audio/*");
         intent.putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris);
@@ -2612,7 +2661,7 @@ public class FileBrowserQueueActivity extends Activity {
         browseTransitionActive = true;
         sendStopNowCommand();
         resetStopButtonState();
-        startActivity(intent);
+        startPlaybackService(intent);
 
         browseFileUri = uri;
         browseNextQueued = false;

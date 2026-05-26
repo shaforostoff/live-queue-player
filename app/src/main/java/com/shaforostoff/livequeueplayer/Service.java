@@ -122,7 +122,14 @@ public class Service extends android.app.Service implements MediaPlayerStateList
             var action = intent.getByteExtra(Launcher.TYPE, Launcher.NULL);
             if (audioPlayer == null) {
                 if (action == Launcher.KILL || action == Launcher.STOP) {
-                    stopSelf();
+                    onPlaybackStoppedKeepAlive();
+                }
+                if (action == Launcher.PLAY || action == Launcher.PLAY_PAUSE) {
+                    // Media-button route from the activity: the persisted queue is the source
+                    // of truth for what to play. Allowed from background because this onStart
+                    // was triggered by a MediaSession callback, which the OS treats as system-
+                    // initiated.
+                    playFromQueueStore();
                 }
                 if (action == Launcher.CLEAR_QUEUE) {
                     playlist.clear();
@@ -170,8 +177,10 @@ public class Service extends android.app.Service implements MediaPlayerStateList
                     int seekToMs = intent.getIntExtra(EXTRA_SEEK_TO_MS, -1);
                     if (seekToMs >= 0 && audioPlayer != null) seekTo(seekToMs);
                 }
-                /* cancel audio playback and kill service */
-                case Launcher.KILL -> stopSelf();
+                /* cancel current playback but keep the service alive so a remote command can
+                 * resume without starting a new foreground service from the background, which
+                 * Android 14+ defers until unlock. */
+                case Launcher.KILL -> onPlaybackStoppedKeepAlive();
             }
         } else {
             sBrowseMode = intent.getBooleanExtra(EXTRA_BROWSE_MODE, false);
@@ -363,7 +372,60 @@ public class Service extends android.app.Service implements MediaPlayerStateList
      */
     void onMediaPlayerComplete() {
         if (!playNextEntry())
-            onMediaPlayerDestroy();
+            onPlaybackStoppedKeepAlive();
+    }
+
+    /**
+     * Called by AudioPlayer when the user-initiated fade-out finishes.
+     */
+    void onFadeOutComplete() {
+        onPlaybackStoppedKeepAlive();
+    }
+
+    /**
+     * Load the persisted queue from {@link QueueStore} and start playback from the persisted
+     * offset. Called when a Launcher.PLAY arrives with no active player — typically because
+     * the activity dispatched a media-play key and the MediaSession routed it back here.
+     */
+    private void playFromQueueStore() {
+        if (audioPlayer != null) return;
+        ArrayList<QueueStore.Entry> persisted = QueueStore.load(this);
+        int offset = QueueStore.loadPlaybackOffset(this);
+        if (persisted.isEmpty() || offset < 0 || offset >= persisted.size()) return;
+
+        playlist.clear();
+        playlistPosition = 0;
+        for (int i = offset; i < persisted.size(); i++) {
+            QueueStore.Entry e = persisted.get(i);
+            Playlist.Entry pe = new Playlist.Entry();
+            pe.title = e.name != null ? e.name : "";
+            pe.location = e.uri;
+            pe.queueEntryId = e.id;
+            playlist.add(pe);
+        }
+        playEntryFromPlaylist();
+    }
+
+    /**
+     * Tear down the current playback but keep the foreground service running, so a subsequent
+     * remote command (Bluetooth play_track, media-button play, etc.) can start a new track
+     * without needing to start a new service from the background — which Android 14+ defers
+     * until the device is unlocked.
+     */
+    private void onPlaybackStoppedKeepAlive() {
+        sFadeOutInProgress = false;
+        if (audioPlayer != null) {
+            audioPlayer.onMediaPlayerDestroy();
+            audioPlayer = null;
+        }
+        playlist.clear();
+        playlistPosition = 0;
+        releasePlaybackWakeLock();
+        hwListener.setState(false);
+        if (notifications.builder != null) {
+            notifications.setState(false);
+        }
+        notifyPlaybackState(false, -1, null);
     }
 
     /**

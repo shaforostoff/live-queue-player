@@ -59,9 +59,12 @@ import java.io.OutputStreamWriter;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Locale;
+import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -1822,6 +1825,102 @@ public class FileBrowserQueueActivity extends Activity {
         return builder.toString();
     }
 
+    private List<Uri> resolveDocumentPlaylistUrisBatch(Uri playlistUri, List<String> pathValues, Uri treeUri) {
+        int n = pathValues.size();
+        List<Uri> result = new ArrayList<>(n);
+        for (int i = 0; i < n; i++) result.add(null);
+
+        String volume;
+        String baseDir;
+        try {
+            String playlistDocumentId = DocumentsContract.getDocumentId(playlistUri);
+            int separator = playlistDocumentId.indexOf(':');
+            if (separator < 0) return result;
+            volume = playlistDocumentId.substring(0, separator);
+            String playlistPath = playlistDocumentId.substring(separator + 1).replace('\\', '/');
+            int lastSlash = playlistPath.lastIndexOf('/');
+            baseDir = lastSlash >= 0 ? playlistPath.substring(0, lastSlash) : "";
+        } catch (Exception e) {
+            return result;
+        }
+
+        // Pass 1: compute target document IDs — pure string ops, no I/O
+        String[] targetDocIds = new String[n];
+        for (int i = 0; i < n; i++) {
+            String pathValue = pathValues.get(i);
+            Uri parsed = Uri.parse(pathValue);
+            if (parsed.getScheme() != null) {
+                result.set(i, parsed);
+                continue;
+            }
+            String normalizedInput = pathValue.replace('\\', '/');
+            String combinedPath = normalizedInput.startsWith("/")
+                    ? normalizedInput.substring(1)
+                    : baseDir.isEmpty() ? normalizedInput : baseDir + "/" + normalizedInput;
+            String normalizedPath = normalizeRelativePath(combinedPath);
+            if (normalizedPath != null && !normalizedPath.isEmpty())
+                targetDocIds[i] = volume + ":" + normalizedPath;
+        }
+
+        // Collect unique parent directories for entries that still need resolution
+        Set<String> parentDocIds = new HashSet<>();
+        for (int i = 0; i < n; i++) {
+            if (result.get(i) != null || targetDocIds[i] == null) continue;
+            String docId = targetDocIds[i];
+            int colon = docId.indexOf(':');
+            String path = colon >= 0 ? docId.substring(colon + 1) : docId;
+            int slash = path.lastIndexOf('/');
+            String parentPath = slash >= 0 ? path.substring(0, slash) : "";
+            parentDocIds.add(volume + ":" + parentPath);
+        }
+
+        // Batch query: one ContentResolver query per distinct parent directory
+        Map<String, Set<String>> dirContents = new HashMap<>();
+        for (String parentDocId : parentDocIds) {
+            Uri childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, parentDocId);
+            Set<String> children = new HashSet<>();
+            try (Cursor cursor = getContentResolver().query(childrenUri,
+                    new String[]{DocumentsContract.Document.COLUMN_DOCUMENT_ID}, null, null, null)) {
+                if (cursor != null) {
+                    int col = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DOCUMENT_ID);
+                    if (col >= 0) {
+                        while (cursor.moveToNext())
+                            children.add(cursor.getString(col));
+                    }
+                }
+            } catch (Exception ignored) {}
+            dirContents.put(parentDocId, children);
+        }
+
+        // Pass 2: match each entry against cached directory listings
+        for (int i = 0; i < n; i++) {
+            if (result.get(i) != null || targetDocIds[i] == null) continue;
+            String docId = targetDocIds[i];
+            int colon = docId.indexOf(':');
+            String path = colon >= 0 ? docId.substring(colon + 1) : docId;
+            int slash = path.lastIndexOf('/');
+            String parentPath = slash >= 0 ? path.substring(0, slash) : "";
+            Set<String> siblings = dirContents.getOrDefault(volume + ":" + parentPath, Collections.emptySet());
+
+            if (siblings.contains(docId)) {
+                result.set(i, DocumentsContract.buildDocumentUriUsingTree(treeUri, docId));
+            } else {
+                // Extension fallback using the already-fetched sibling listing
+                int dot = docId.lastIndexOf('.');
+                String baseDocId = dot >= 0 ? docId.substring(0, dot) : docId;
+                for (String ext : AUDIO_EXTENSIONS) {
+                    String candidate = baseDocId + ext;
+                    if (siblings.contains(candidate)) {
+                        result.set(i, DocumentsContract.buildDocumentUriUsingTree(treeUri, candidate));
+                        break;
+                    }
+                }
+            }
+        }
+
+        return result;
+    }
+
     private static File findFileWithDifferentExtension(File file) {
         File dir = file.getParentFile();
         if (dir == null) return null;
@@ -2302,27 +2401,48 @@ public class FileBrowserQueueActivity extends Activity {
 
     private void enterPlaylistAsBrowseFolder(FileEntry playlistEntry) {
         stopBrowsePlaybackForFolderSwitch();
-        List<FileEntry> tracks = new ArrayList<>();
-        for (String line : readPlaylistLines(playlistEntry)) {
-            Uri uri = resolvePlaylistTargetUri(playlistEntry, line);
-            if (uri == null) continue;
-            tracks.add(new FileEntry(uri, getDisplayNameForPlaylistItem(line, uri), false));
-        }
-
-        if (tracks.isEmpty()) {
-            Toast.makeText(this, getString(R.string.no_playable_files_in_playlist, playlistEntry.name), Toast.LENGTH_SHORT).show();
-            return;
-        }
-
         clearFileFilterInput();
         fileEntriesVersion++;
         fileEntries.clear();
-        fileEntries.addAll(tracks);
         currentBrowsePlaylistEntry = playlistEntry;
-        resolveTagMetadataForVisibleFolderAsync();
         applyFileFilter();
-        scrollToHighlightedFileEntry();
         updateStorageButtonState();
+
+        final int versionAtStart = fileEntriesVersion;
+        final Uri treeUri = currentTreeUri;
+        tagReadExecutor.submit(() -> {
+            List<String> lines = readPlaylistLines(playlistEntry);
+            List<FileEntry> tracks = new ArrayList<>(lines.size());
+            if (playlistEntry.file == null && treeUri != null) {
+                List<Uri> uris = resolveDocumentPlaylistUrisBatch(playlistEntry.uri, lines, treeUri);
+                for (int i = 0; i < lines.size(); i++) {
+                    Uri uri = uris.get(i);
+                    if (uri != null)
+                        tracks.add(new FileEntry(uri, getDisplayNameForPlaylistItem(lines.get(i), uri), false));
+                }
+            } else {
+                for (String line : lines) {
+                    Uri uri = resolvePlaylistTargetUri(playlistEntry, line);
+                    if (uri != null)
+                        tracks.add(new FileEntry(uri, getDisplayNameForPlaylistItem(line, uri), false));
+                }
+            }
+            runOnUiThread(() -> {
+                if (versionAtStart != fileEntriesVersion) return;
+                if (tracks.isEmpty()) {
+                    currentBrowsePlaylistEntry = null;
+                    Toast.makeText(FileBrowserQueueActivity.this,
+                            getString(R.string.no_playable_files_in_playlist, playlistEntry.name),
+                            Toast.LENGTH_SHORT).show();
+                    return;
+                }
+                fileEntries.addAll(tracks);
+                resolveTagMetadataForVisibleFolderAsync();
+                applyFileFilter();
+                scrollToHighlightedFileEntry();
+                updateStorageButtonState();
+            });
+        });
     }
 
     private void exitPlaylistBrowseFolder() {

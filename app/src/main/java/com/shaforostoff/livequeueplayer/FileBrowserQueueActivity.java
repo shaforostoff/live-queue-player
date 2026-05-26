@@ -182,6 +182,7 @@ public class FileBrowserQueueActivity extends Activity {
     private Uri browseNextUri;
     private boolean browseTransitionActive;
     private FileEntry currentBrowsePlaylistEntry;
+    private Uri pendingBackScrollUri;
     private BluetoothController btController;
     private RemoteQueueController remoteQueueController;
     private String lastBroadcastPushedPlayKey;
@@ -249,7 +250,7 @@ public class FileBrowserQueueActivity extends Activity {
                 int prevIndex = currentPlayingQueueIndex;
                 currentPlayingQueueIndex = resolvePlayingQueueIndex(entryId, serviceIndex, currentUri);
                 if (currentPlayingQueueIndex >= 0 && currentPlayingQueueIndex != prevIndex) {
-                    queueList.smoothScrollToPosition(currentPlayingQueueIndex);
+                    scrollTo(queueList, currentPlayingQueueIndex);
                 }
             }
 
@@ -652,6 +653,7 @@ public class FileBrowserQueueActivity extends Activity {
         }
         File parent = currentFileDirectory.getParentFile();
         if (parent != null) {
+            pendingBackScrollUri = Uri.fromFile(currentFileDirectory);
             navigateTo(parent);
         }
     }
@@ -818,6 +820,7 @@ public class FileBrowserQueueActivity extends Activity {
         resetFileBrowserPreview();
         clearFileFilterInput();
         if (documentUriStack.size() > 1) {
+            pendingBackScrollUri = documentUriStack.get(documentUriStack.size() - 1);
             documentUriStack.remove(documentUriStack.size() - 1);
             browseCurrentDocumentDirectory();
         } else {
@@ -1628,8 +1631,28 @@ public class FileBrowserQueueActivity extends Activity {
         updateStorageButtonState();
     }
 
+    private static void scrollTo(ListView list, int position) {
+        int first = list.getFirstVisiblePosition();
+        int last  = list.getLastVisiblePosition();
+        if (position >= first && position <= last) return;
+        if (Math.abs(position - first) > 8 && Math.abs(position - last) > 8)
+            list.setSelection(position);
+        else
+            list.smoothScrollToPosition(position);
+    }
+
     private boolean scrollToHighlightedFileEntry() {
         if (fileBrowserList == null) return false;
+        if (pendingBackScrollUri != null) {
+            Uri target = pendingBackScrollUri;
+            pendingBackScrollUri = null;
+            for (int i = 0; i < filteredFileEntries.size(); i++) {
+                if (target.equals(filteredFileEntries.get(i).uri)) {
+                    fileBrowserList.setSelection(i);
+                    return true;
+                }
+            }
+        }
         Uri highlightedUri = null;
         if (Service.sBrowseMode && browseFileUri != null) {
             highlightedUri = browseFileUri;
@@ -1639,13 +1662,7 @@ public class FileBrowserQueueActivity extends Activity {
         if (highlightedUri == null) return false;
         for (int i = 0; i < filteredFileEntries.size(); i++) {
             if (highlightedUri.equals(filteredFileEntries.get(i).uri)) {
-                int first = fileBrowserList.getFirstVisiblePosition();
-                int last = fileBrowserList.getLastVisiblePosition();
-                if (Math.abs(i - first) > 16 && Math.abs(i - last) > 16) {
-                    fileBrowserList.setSelection(i);
-                } else {
-                    fileBrowserList.smoothScrollToPosition(i);
-                }
+                scrollTo(fileBrowserList, i);
                 return true;
             }
         }
@@ -1918,7 +1935,7 @@ public class FileBrowserQueueActivity extends Activity {
         }
         queueEntries.addAll(entries);
         queueAdapter.notifyDataSetChanged();
-        queueList.smoothScrollToPosition(queueEntries.size() - 1);
+        scrollTo(queueList, queueEntries.size() - 1);
         updateQueueHint();
         persistQueue();
         ensureQueueTagsCachedAsync();
@@ -2337,6 +2354,7 @@ public class FileBrowserQueueActivity extends Activity {
 
     private void exitPlaylistBrowseFolder() {
         stopBrowsePlaybackForFolderSwitch();
+        pendingBackScrollUri = currentBrowsePlaylistEntry.uri;
         currentBrowsePlaylistEntry = null;
         if (browsingDocumentTree) {
             browseCurrentDocumentDirectory();
@@ -3318,8 +3336,9 @@ public class FileBrowserQueueActivity extends Activity {
         super.onResume();
         applyStopButtonState();
         scrollToHighlightedFileEntry();
-        if (queueList != null && currentPlayingQueueIndex >= 0)
-            queueList.smoothScrollToPosition(currentPlayingQueueIndex);
+        if (queueList != null && currentPlayingQueueIndex >= 0) {
+            scrollTo(queueList, currentPlayingQueueIndex);
+        }
         if (mode == Mode.REMOTE_SEND && remoteQueueController != null) {
             remoteQueueController.requestQueue();
         }

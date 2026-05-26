@@ -252,7 +252,7 @@ final class RemoteQueueController {
         if (scrollToBottomPending && !queueEntries.isEmpty()) {
             scrollToBottomPending = false;
             final int last = queueEntries.size() - 1;
-            queueList.post(() -> queueList.smoothScrollToPosition(last));
+            queueList.post(() -> scrollTo(queueList, last));
         } else {
             ensureCurrentVisible();
         }
@@ -272,6 +272,16 @@ final class RemoteQueueController {
         }
     }
 
+    private static void scrollTo(ListView list, int position) {
+        int first = list.getFirstVisiblePosition();
+        int last  = list.getLastVisiblePosition();
+        if (position >= first && position <= last) return;
+        if (Math.abs(position - first) > 8 && Math.abs(position - last) > 8)
+            list.setSelection(position);
+        else
+            list.smoothScrollToPosition(position);
+    }
+
     private void ensureCurrentVisible() {
         if (currentId < 0) return;
         int idx = -1;
@@ -280,14 +290,7 @@ final class RemoteQueueController {
         }
         if (idx < 0) return;
         final int target = idx;
-        queueList.post(() -> {
-            int first = queueList.getFirstVisiblePosition();
-            int last  = queueList.getLastVisiblePosition();
-            // If the row is partially clipped at top/bottom, smoothScroll still re-aligns it nicely.
-            if (target < first || target > last) {
-                queueList.smoothScrollToPosition(target);
-            }
-        });
+        queueList.post(() -> scrollTo(queueList, target));
     }
 
     void onConnected() {

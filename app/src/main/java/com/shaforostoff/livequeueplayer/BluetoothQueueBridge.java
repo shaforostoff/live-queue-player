@@ -9,13 +9,17 @@ import android.bluetooth.BluetoothSocket;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
-import java.io.BufferedReader;
-import java.io.BufferedWriter;
-import java.io.InputStreamReader;
-import java.io.OutputStreamWriter;
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.DataInputStream;
+import java.io.IOException;
+import java.io.OutputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
+import java.util.zip.GZIPInputStream;
+import java.util.zip.GZIPOutputStream;
 
 /**
  * Minimal classic Bluetooth bridge for queue-fill messages.
@@ -51,13 +55,14 @@ final class BluetoothQueueBridge {
 
     private static final String SERVICE_NAME = "LiveQueuePlayerRemoteFill";
     private static final UUID SERVICE_UUID = UUID.fromString("0d58a337-968d-4b4c-a8a2-6c4b04e6a8d5");
+    private static final int COMPRESS_THRESHOLD = 1024;
 
     private final Listener listener;
     private final Object socketLock = new Object();
 
     private BluetoothServerSocket serverSocket;
     private BluetoothSocket connectedSocket;
-    private BufferedWriter connectedWriter;
+    private OutputStream connectedOutput;
     private Thread acceptThread;
     private Thread connectThread;
     private Thread readThread;
@@ -137,14 +142,10 @@ final class BluetoothQueueBridge {
     boolean sendQueueRequests(List<TrackRequest> requests) {
         if (requests == null || requests.isEmpty()) return false;
         BluetoothSocket socket;
-        BufferedWriter writer;
         synchronized (socketLock) {
             socket = connectedSocket;
-            writer = connectedWriter;
         }
-        if (socket == null || !socket.isConnected() || writer == null) {
-            return false;
-        }
+        if (socket == null || !socket.isConnected()) return false;
 
         try {
             JSONArray payload = new JSONArray();
@@ -157,10 +158,7 @@ final class BluetoothQueueBridge {
                 if (!req.date.isEmpty())   obj.put("date",   req.date);
                 payload.put(obj);
             }
-            writer.write(payload.toString());
-            writer.write('\n');
-            writer.flush();
-            return true;
+            return sendBytes(preparePayload(payload.toString()));
         } catch (Exception e) {
             listener.onConnectionStateChanged(false, "Bluetooth send failed");
             disconnect();
@@ -168,17 +166,9 @@ final class BluetoothQueueBridge {
         }
     }
 
-    boolean sendRaw(String line) {
-        BufferedWriter writer;
-        synchronized (socketLock) {
-            writer = connectedWriter;
-        }
-        if (writer == null) return false;
+    boolean sendRaw(String json) {
         try {
-            writer.write(line);
-            writer.write('\n');
-            writer.flush();
-            return true;
+            return sendBytes(preparePayload(json));
         } catch (Exception e) {
             listener.onConnectionStateChanged(false, "Bluetooth send failed");
             disconnect();
@@ -199,7 +189,7 @@ final class BluetoothQueueBridge {
         synchronized (socketLock) {
             toClose = connectedSocket;
             connectedSocket = null;
-            connectedWriter = null;
+            connectedOutput = null;
             connectToInterrupt = connectThread;
             connectThread = null;
             readToInterrupt = readThread;
@@ -216,15 +206,47 @@ final class BluetoothQueueBridge {
         disconnect();
     }
 
+    private boolean sendBytes(byte[] payload) throws IOException {
+        synchronized (socketLock) {
+            OutputStream out = connectedOutput;
+            if (out == null) return false;
+            int len = payload.length;
+            out.write(new byte[]{(byte)(len >>> 24), (byte)(len >>> 16), (byte)(len >>> 8), (byte)len});
+            out.write(payload);
+            out.flush();
+            return true;
+        }
+    }
+
+    private static byte[] preparePayload(String json) throws IOException {
+        byte[] raw = json.getBytes(StandardCharsets.UTF_8);
+        if (raw.length <= COMPRESS_THRESHOLD) return raw;
+        ByteArrayOutputStream buf = new ByteArrayOutputStream();
+        try (GZIPOutputStream gz = new GZIPOutputStream(buf)) {
+            gz.write(raw);
+        }
+        return buf.toByteArray();
+    }
+
+    private static byte[] decompress(byte[] data) throws IOException {
+        try (GZIPInputStream gz = new GZIPInputStream(new ByteArrayInputStream(data));
+             ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+            byte[] tmp = new byte[4096];
+            int n;
+            while ((n = gz.read(tmp)) != -1) out.write(tmp, 0, n);
+            return out.toByteArray();
+        }
+    }
+
     private void attachSocket(BluetoothSocket socket, String message) {
         Thread oldReadThread;
         Thread newReadThread = new Thread(() -> readLoop(socket), "bt-queue-read");
         synchronized (socketLock) {
             closeSocketSilently(connectedSocket);
             connectedSocket = socket;
-            connectedWriter = null;
+            connectedOutput = null;
             try {
-                connectedWriter = new BufferedWriter(new OutputStreamWriter(socket.getOutputStream()));
+                connectedOutput = socket.getOutputStream();
             } catch (Exception ignored) {
             }
             oldReadThread = readThread;
@@ -236,10 +258,16 @@ final class BluetoothQueueBridge {
     }
 
     private void readLoop(BluetoothSocket socket) {
-        try (BufferedReader reader = new BufferedReader(new InputStreamReader(socket.getInputStream()))) {
+        try (DataInputStream in = new DataInputStream(socket.getInputStream())) {
             while (running || socket.isConnected()) {
-                String line = reader.readLine();
-                if (line == null) break;
+                int length = in.readInt();
+                byte[] data = new byte[length];
+                in.readFully(data);
+                // GZIP magic: 0x1F 0x8B
+                if (length >= 2 && (data[0] & 0xFF) == 0x1F && (data[1] & 0xFF) == 0x8B) {
+                    data = decompress(data);
+                }
+                String line = new String(data, StandardCharsets.UTF_8);
                 try {
                     if (line.startsWith("{")) {
                         try {
@@ -296,5 +324,3 @@ final class BluetoothQueueBridge {
         }
     }
 }
-
-

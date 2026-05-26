@@ -183,6 +183,7 @@ public class FileBrowserQueueActivity extends Activity {
     private FileEntry currentBrowsePlaylistEntry;
     private BluetoothController btController;
     private RemoteQueueController remoteQueueController;
+    private String lastBroadcastPushedPlayKey;
     private View localQueuePanel;
     private View remoteQueuePanel;
     private Button playButton;
@@ -258,7 +259,10 @@ public class FileBrowserQueueActivity extends Activity {
             }
             maybeQueueNextBrowseTrack();
             if (mode == Mode.REMOTE_RECEIVE && btController != null) {
-                pushPlayState();
+                String key = playStateKey();
+                if (!key.equals(lastBroadcastPushedPlayKey)) {
+                    pushPlayState();
+                }
             }
         }
     };
@@ -2422,8 +2426,15 @@ public class FileBrowserQueueActivity extends Activity {
             msg.put("current_id", currentPlayingEntryId());
             if (fading) msg.put("fade_duration_ms", AudioOutputRouter.getFadeOutSeconds(this) * 1000L);
             btController.sendRaw(msg.toString());
+            lastBroadcastPushedPlayKey = playStateKey();
         } catch (Exception ignored) {
         }
+    }
+
+    private String playStateKey() {
+        boolean fading = stopFadeInProgress;
+        String state = fading ? "fading" : (playbackStopped ? "stopped" : "playing");
+        return state + "|" + currentPlayingEntryId();
     }
 
     private void handleRemoteSetVolume(JSONObject obj) {
@@ -3259,6 +3270,9 @@ public class FileBrowserQueueActivity extends Activity {
         scrollToHighlightedFileEntry();
         if (queueList != null && currentPlayingQueueIndex >= 0)
             queueList.smoothScrollToPosition(currentPlayingQueueIndex);
+        if (mode == Mode.REMOTE_SEND && remoteQueueController != null) {
+            remoteQueueController.requestQueue();
+        }
     }
 
     private void syncWithServiceState() {

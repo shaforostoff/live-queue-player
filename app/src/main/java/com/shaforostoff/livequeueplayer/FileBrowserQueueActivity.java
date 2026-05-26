@@ -1704,31 +1704,6 @@ public class FileBrowserQueueActivity extends Activity {
             resolved[i] = resolvePlaylistTargetUri(playlistEntry, lines.get(i));
         }
 
-        // Pass 2: for still-unresolved entries, do a single recursive search from the browser root
-        List<Integer> missingIndices = new ArrayList<>();
-        List<BluetoothQueueBridge.TrackRequest> requests = new ArrayList<>();
-        for (int i = 0; i < lines.size(); i++) {
-            if (resolved[i] != null) continue;
-            String normalized = lines.get(i).replace('\\', '/');
-            int lastSlash = normalized.lastIndexOf('/');
-            String filename = lastSlash >= 0 ? normalized.substring(lastSlash + 1) : normalized;
-            String parentFolder = "";
-            if (lastSlash > 0) {
-                int prevSlash = normalized.lastIndexOf('/', lastSlash - 1);
-                parentFolder = prevSlash >= 0
-                        ? normalized.substring(prevSlash + 1, lastSlash)
-                        : normalized.substring(0, lastSlash);
-            }
-            missingIndices.add(i);
-            requests.add(new BluetoothQueueBridge.TrackRequest(filename, parentFolder));
-        }
-        if (!requests.isEmpty()) {
-            List<Uri> found = findRequestedAudioUris(requests);
-            for (int j = 0; j < missingIndices.size(); j++) {
-                resolved[missingIndices.get(j)] = found.get(j);
-            }
-        }
-
         // Build queue entries; toast for first 2 still-missing files, then a summary
         ArrayList<QueueEntry> resolvedEntries = new ArrayList<>();
         int missingCount = 0;

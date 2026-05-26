@@ -3,6 +3,7 @@ package com.shaforostoff.livequeueplayer;
 import android.app.Activity;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
+import android.graphics.drawable.ColorDrawable;
 import android.os.Handler;
 import android.util.SparseArray;
 import android.util.TypedValue;
@@ -15,6 +16,8 @@ import android.widget.BaseAdapter;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.ListView;
+import android.widget.Button;
+import android.widget.PopupWindow;
 import android.widget.TextView;
 
 import org.json.JSONArray;
@@ -74,6 +77,7 @@ final class RemoteQueueController {
     private final View refreshButton;
     private final View stopButton;
     private final View playButton;
+    private final View volumeButton;
 
     private final ArrayList<TrackEntry>   queueEntries = new ArrayList<>();
     private final SparseArray<TrackEntry> metaCache    = new SparseArray<>();
@@ -87,18 +91,25 @@ final class RemoteQueueController {
     private boolean scrollToBottomPending;
     private Runnable fadeEndRunnable;
 
+    private PopupWindow volumePopup;
+    private TextView    volumeValueText;
+    private int         cachedVolumeMax   = 15;
+    private int         cachedVolumeValue = -1;
+
     RemoteQueueController(Activity activity,
                           BluetoothController btController,
                           ListView queueList,
                           View refreshButton,
                           View stopButton,
-                          View playButton) {
+                          View playButton,
+                          View volumeButton) {
         this.activity = activity;
         this.btController = btController;
         this.queueList = queueList;
         this.refreshButton = refreshButton;
         this.stopButton = stopButton;
         this.playButton = playButton;
+        this.volumeButton = volumeButton;
 
         adapter = new QueueAdapter();
         queueList.setAdapter(adapter);
@@ -117,9 +128,64 @@ final class RemoteQueueController {
         stopButton.setOnClickListener(v -> btController.sendRaw("{\"type\":\"stop_playback\"}"));
         playButton.setOnClickListener(v -> btController.sendRaw("{\"type\":\"resume_playback\"}"));
         refreshButton.setOnClickListener(v -> requestQueue());
+        volumeButton.setOnClickListener(v -> showVolumePopup());
 
         installGestureHandler(queueList);
         updatePlaybackButtons();
+    }
+
+    private void showVolumePopup() {
+        if (volumePopup != null && volumePopup.isShowing()) {
+            volumePopup.dismiss();
+            return;
+        }
+        View content = LayoutInflater.from(activity).inflate(R.layout.popup_volume_slider, null);
+        volumeValueText = content.findViewById(R.id.tv_volume_value);
+        if (cachedVolumeValue >= 0) volumeValueText.setText(String.valueOf(cachedVolumeValue));
+
+        Button btnUp   = content.findViewById(R.id.btn_volume_up);
+        Button btnDown = content.findViewById(R.id.btn_volume_down);
+        btnUp.setOnClickListener(v -> {
+            int next = Math.min(cachedVolumeValue + 1, cachedVolumeMax);
+            sendVolume(next);
+        });
+        btnDown.setOnClickListener(v -> {
+            int next = Math.max(cachedVolumeValue - 1, 0);
+            sendVolume(next);
+        });
+
+        float density = activity.getResources().getDisplayMetrics().density;
+        int popupW = (int)(64 * density);
+        volumePopup = new PopupWindow(content, popupW, ViewGroup.LayoutParams.WRAP_CONTENT, true);
+        volumePopup.setBackgroundDrawable(new ColorDrawable(0));
+        volumePopup.setOutsideTouchable(true);
+        volumePopup.setOnDismissListener(() -> {
+            volumePopup = null;
+            volumeValueText = null;
+        });
+        volumePopup.showAsDropDown(volumeButton);
+
+        btController.sendRaw("{\"type\":\"request_volume\"}");
+    }
+
+    private void sendVolume(int value) {
+        cachedVolumeValue = value;
+        if (volumeValueText != null) volumeValueText.setText(String.valueOf(value));
+        try {
+            JSONObject cmd = new JSONObject();
+            cmd.put("type", "set_volume");
+            cmd.put("value", value);
+            btController.sendRaw(cmd.toString());
+        } catch (Exception ignored) {}
+    }
+
+    void onVolumeStateReceived(JSONObject obj) {
+        int value = obj.optInt("value", -1);
+        int max   = obj.optInt("max",   -1);
+        if (max   > 0)  cachedVolumeMax   = max;
+        if (value >= 0) cachedVolumeValue = value;
+        if (volumeValueText == null) return;
+        if (value >= 0) volumeValueText.setText(String.valueOf(value));
     }
 
     void refreshAndScrollToBottom() {
@@ -232,6 +298,9 @@ final class RemoteQueueController {
         if (fadeEndRunnable != null) {
             uiHandler.removeCallbacks(fadeEndRunnable);
             fadeEndRunnable = null;
+        }
+        if (volumePopup != null && volumePopup.isShowing()) {
+            volumePopup.dismiss();
         }
     }
 

@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:a="http://schemas.android.com/apk/res/android"
+    a:layout_width="64dp"
+    a:layout_height="wrap_content"
+    a:background="@color/buttonBackground"
+    a:elevation="8dp"
+    a:orientation="vertical"
+    a:padding="4dp">
+
+    <Button
+        a:id="@+id/btn_volume_up"
+        a:layout_width="match_parent"
+        a:layout_height="wrap_content"
+        a:minHeight="0dp"
+        a:paddingTop="8dp"
+        a:paddingBottom="8dp"
+        a:text="▲"
+        a:textSize="18sp"
+        a:background="?android:attr/selectableItemBackground" />
+
+    <TextView
+        a:id="@+id/tv_volume_value"
+        a:layout_width="match_parent"
+        a:layout_height="wrap_content"
+        a:gravity="center"
+        a:padding="8dp"
+        a:textSize="16sp"
+        a:text="--" />
+
+    <Button
+        a:id="@+id/btn_volume_down"
+        a:layout_width="match_parent"
+        a:layout_height="wrap_content"
+        a:minHeight="0dp"
+        a:paddingTop="8dp"
+        a:paddingBottom="8dp"
+        a:text="▼"
+        a:textSize="18sp"
+        a:background="?android:attr/selectableItemBackground" />
+
+</LinearLayout>

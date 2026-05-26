@@ -10,6 +10,7 @@ import android.content.pm.PackageManager;
 import android.content.SharedPreferences;
 import android.content.UriPermission;
 import android.database.Cursor;
+import android.media.AudioManager;
 import android.media.MediaMetadataRetriever;
 import android.net.Uri;
 import android.os.Build;
@@ -334,8 +335,9 @@ public class FileBrowserQueueActivity extends Activity {
             @Override
             public void onRemoteQueueMessageReceived(String type, JSONObject obj) {
                 if (mode == Mode.REMOTE_SEND && remoteQueueController != null) {
-                    if ("queue_state".equals(type))      remoteQueueController.onQueueStateReceived(obj);
-                    else if ("play_state".equals(type))  remoteQueueController.onPlaybackStateReceived(obj);
+                    if ("queue_state".equals(type))        remoteQueueController.onQueueStateReceived(obj);
+                    else if ("play_state".equals(type))    remoteQueueController.onPlaybackStateReceived(obj);
+                    else if ("volume_state".equals(type))  remoteQueueController.onVolumeStateReceived(obj);
                     return;
                 }
                 if (mode != Mode.REMOTE_RECEIVE) return;
@@ -346,6 +348,8 @@ public class FileBrowserQueueActivity extends Activity {
                     case "stop_playback":   stopPlaybackWithFadeout();   pushPlayState(); break;
                     case "resume_playback": cancelFadeOutAndContinue();  pushPlayState(); break;
                     case "play_track":      handleRemotePlayTrack(obj);     break;
+                    case "set_volume":      handleRemoteSetVolume(obj);     break;
+                    case "request_volume":  pushVolumeState();              break;
                 }
             }
             @Override
@@ -2422,6 +2426,30 @@ public class FileBrowserQueueActivity extends Activity {
         }
     }
 
+    private void handleRemoteSetVolume(JSONObject obj) {
+        int value = obj.optInt("value", -1);
+        if (value < 0) return;
+
+        AudioManager am = (AudioManager) getSystemService(AUDIO_SERVICE);
+        if (am == null) return;
+        int max = am.getStreamMaxVolume(AudioManager.STREAM_MUSIC);
+        am.setStreamVolume(AudioManager.STREAM_MUSIC, Math.max(0, Math.min(max, value)), 0);
+        pushVolumeState();
+    }
+
+    private void pushVolumeState() {
+        try {
+            AudioManager am = (AudioManager) getSystemService(AUDIO_SERVICE);
+            if (am == null) return;
+            JSONObject msg = new JSONObject();
+            msg.put("type",  "volume_state");
+            msg.put("value", am.getStreamVolume(AudioManager.STREAM_MUSIC));
+            msg.put("max",   am.getStreamMaxVolume(AudioManager.STREAM_MUSIC));
+            btController.sendRaw(msg.toString());
+        } catch (Exception ignored) {
+        }
+    }
+
     private void handleRemoteRequestQueue(JSONObject obj) {
         int maxKnownId = obj.optInt("max_known_id", 0);
         int minKnownId = obj.optInt("min_known_id", 0);
@@ -3036,7 +3064,8 @@ public class FileBrowserQueueActivity extends Activity {
             View refresh  = findViewById(R.id.btn_remote_refresh);
             View stop     = findViewById(R.id.btn_remote_stop);
             View play     = findViewById(R.id.btn_remote_play);
-            remoteQueueController = new RemoteQueueController(this, btController, list, refresh, stop, play);
+            View volume   = findViewById(R.id.btn_remote_volume);
+            remoteQueueController = new RemoteQueueController(this, btController, list, refresh, stop, play, volume);
         }
     }
 

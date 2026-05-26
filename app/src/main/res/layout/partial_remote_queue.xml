@@ -21,6 +21,15 @@
       a:textSize="18sp" />
 
     <ImageButton
+      a:id="@+id/btn_remote_volume"
+      a:layout_width="wrap_content"
+      a:layout_height="wrap_content"
+      a:layout_margin="4dp"
+      a:src="@drawable/ic_volume"
+      a:background="?android:attr/selectableItemBackground"
+      a:contentDescription="@string/remote_volume_button" />
+
+    <ImageButton
       a:id="@+id/btn_remote_refresh"
       a:layout_width="wrap_content"
       a:layout_height="wrap_content"

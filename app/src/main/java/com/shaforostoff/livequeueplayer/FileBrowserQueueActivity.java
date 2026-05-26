@@ -144,8 +144,8 @@ public class FileBrowserQueueActivity extends Activity {
     private static final int SORT_ARTIST = 4;
 
     private static final String[] AUDIO_EXTENSIONS = {
-            ".mp3", ".mp4", ".m4a", ".aac", ".ogg", ".flac",
-            ".wav", ".wma", ".opus", ".m3u", ".m3u8", ".3gp", ".aiff", ".aif"
+            ".m4a", ".mp3", ".mp4", ".aac", ".ogg", ".flac", ".aiff", ".aif",
+            ".wav", ".opus", ".wma", ".3gp", ".m3u", ".m3u8"
     };
 
     // -- file browser state -------------------------------------------------

@@ -2704,6 +2704,11 @@ public class FileBrowserQueueActivity extends Activity {
         int id = obj.optInt("id", -1);
         int pos = findQueueIndexById(id);
         if (pos >= 0) playQueueFrom(pos, isStopFadeInProgress());
+        // Clear synchronously so pushPlayState() sees "playing" rather than "fading".
+        // sIsPlaying is still true (the fading player is alive until the KILL intent is
+        // processed), so the client flips Resume→Stop immediately rather than waiting for
+        // the async KILL+new-track round-trip.  Mirrors the pattern in cancelFadeOutAndContinue().
+        Service.sFadeOutInProgress = false;
         pushPlayState();
     }
 
@@ -2728,6 +2733,10 @@ public class FileBrowserQueueActivity extends Activity {
         Intent intent = new Intent(this, Service.class);
         intent.putExtra(Launcher.TYPE, Launcher.STOP);
         startService(intent);
+        // Set synchronously so the immediately-following pushPlayState() sees "fading"
+        // rather than "playing" — the Service does the same in its STOP handler, but
+        // that runs asynchronously and would still show the old state at push time.
+        Service.sFadeOutInProgress = true;
         playbackStopped = true;
         showStopButtonFadingState();
     }
@@ -2737,6 +2746,11 @@ public class FileBrowserQueueActivity extends Activity {
         intent.putExtra(Launcher.TYPE, Launcher.PLAY);
         startService(intent);
 
+        // Clear the flag synchronously so that pushPlayState() (called right after this
+        // in the resume_playback handler) sees "playing" rather than "fading".  The Service
+        // does the same thing in its PLAY branch of onStartCommand(), but that runs
+        // asynchronously — the flag would still be true by the time we push state.
+        Service.sFadeOutInProgress = false;
         playbackStopped = false;
         resetStopButtonState();
         queueAdapter.notifyDataSetChanged();

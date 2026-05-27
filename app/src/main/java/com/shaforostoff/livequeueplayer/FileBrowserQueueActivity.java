@@ -2598,14 +2598,25 @@ public class FileBrowserQueueActivity extends Activity {
         return -1;
     }
 
+    /** Derives the canonical playback state string from the Service volatile fields,
+     *  which are written immediately by the fade/playback thread and never lag. */
+    private String remotePlaybackState() {
+        boolean fading = Service.sFadeOutInProgress;
+        return fading ? "fading" : (Service.sIsPlaying ? "playing" : "stopped");
+    }
+
+    private long fadeDurationMs() {
+        return AudioOutputRouter.getFadeOutSeconds(this) * 1000L;
+    }
+
     private void pushPlayState() {
         try {
             JSONObject msg = new JSONObject();
             msg.put("type", "play_state");
-            boolean fading = isStopFadeInProgress();
-            msg.put("state", fading ? "fading" : (playbackStopped ? "stopped" : "playing"));
+            String state = remotePlaybackState();
+            msg.put("state", state);
             msg.put("current_id", currentPlayingEntryId());
-            if (fading) msg.put("fade_duration_ms", AudioOutputRouter.getFadeOutSeconds(this) * 1000L);
+            if ("fading".equals(state)) msg.put("fade_duration_ms", fadeDurationMs());
             btController.sendRaw(msg.toString());
             lastBroadcastPushedPlayKey = playStateKey();
         } catch (Exception ignored) {
@@ -2613,9 +2624,7 @@ public class FileBrowserQueueActivity extends Activity {
     }
 
     private String playStateKey() {
-        boolean fading = isStopFadeInProgress();
-        String state = fading ? "fading" : (playbackStopped ? "stopped" : "playing");
-        return state + "|" + currentPlayingEntryId();
+        return remotePlaybackState() + "|" + currentPlayingEntryId();
     }
 
     private void handleRemoteSetVolume(JSONObject obj) {
@@ -2649,14 +2658,9 @@ public class FileBrowserQueueActivity extends Activity {
             JSONObject response = new JSONObject();
             response.put("type", "queue_state");
             response.put("current_id", currentPlayingEntryId());
-            // Derive from the Service static fields (written immediately by the fade thread)
-            // rather than the activity-local mirror, which can lag the broadcast and report a
-            // stale "fading" right after the fade actually finished — causing the remote to
-            // reschedule a fade-end timer and re-show the Resume button.
-            boolean fading = Service.sFadeOutInProgress;
-            boolean playing = Service.sIsPlaying;
-            response.put("playback_state", fading ? "fading" : (playing ? "playing" : "stopped"));
-            if (fading) response.put("fade_duration_ms", AudioOutputRouter.getFadeOutSeconds(this) * 1000L);
+            String state = remotePlaybackState();
+            response.put("playback_state", state);
+            if ("fading".equals(state)) response.put("fade_duration_ms", fadeDurationMs());
             JSONArray tracks = new JSONArray();
             for (QueueEntry entry : queueEntries) {
                 JSONObject t = new JSONObject();

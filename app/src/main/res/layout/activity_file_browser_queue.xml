@@ -95,13 +95,17 @@
         a:orientation="horizontal">
 
         <TextView
+          a:id="@+id/play_queue_label"
           a:layout_width="0dp"
           a:layout_height="wrap_content"
           a:layout_gravity="center_vertical"
           a:layout_weight="1"
           a:padding="6dp"
           a:text="Play Queue"
-          a:textSize="18sp" />
+          a:textSize="18sp"
+          a:background="?android:attr/selectableItemBackground"
+          a:clickable="true"
+          a:focusable="true" />
 
         <Button
           a:id="@+id/btn_play_queue"

@@ -196,6 +196,7 @@ public class FileBrowserQueueActivity extends Activity {
     private String lastBroadcastPushedPlayKey;
     private View localQueuePanel;
     private View remoteQueuePanel;
+    private boolean localQueueShownInRemoteMode = false;
     private Button playButton;
     private Button saveButton;
     private CharSequence defaultPlayButtonText;
@@ -2383,7 +2384,7 @@ public class FileBrowserQueueActivity extends Activity {
                 if (position >= filteredFileEntries.size()) return;
                 FileEntry entry = filteredFileEntries.get(position);
                 if (entry.isDirectory) return;
-                if (mode == Mode.REMOTE_SEND) {
+                if (mode == Mode.REMOTE_SEND && !localQueueShownInRemoteMode) {
                     if (isPlaylistFile(entry.name)) {
                         sendPlaylistToRemote(entry);
                     } else {
@@ -2483,9 +2484,9 @@ public class FileBrowserQueueActivity extends Activity {
     private void updateQueueHint() {
         if (queueEntries.isEmpty()) {
             int hintRes;
-            if (mode == Mode.REMOTE_SEND) {
+            if (mode == Mode.REMOTE_SEND && !localQueueShownInRemoteMode) {
                 hintRes = R.string.queue_hint_remote;
-            } else if (mode == Mode.BROWSE) {
+            } else if (mode == Mode.REMOTE_SEND || mode == Mode.BROWSE) {
                 hintRes = R.string.queue_hint_browse;
             } else if (PreviewManager.isEnabled(this)) {
                 hintRes = R.string.queue_hint_preview;
@@ -3252,6 +3253,25 @@ public class FileBrowserQueueActivity extends Activity {
             View volume   = findViewById(R.id.btn_remote_volume);
             remoteQueueController = new RemoteQueueController(this, btController, list, refresh, stop, play, volume);
         }
+        View remoteLabel = findViewById(R.id.remote_queue_label);
+        if (remoteLabel != null) remoteLabel.setOnClickListener(v -> showLocalQueueInRemoteMode());
+        View playQueueLabel = findViewById(R.id.play_queue_label);
+        if (playQueueLabel != null) playQueueLabel.setOnClickListener(v -> showRemoteQueueInRemoteMode());
+    }
+
+    private void showLocalQueueInRemoteMode() {
+        localQueueShownInRemoteMode = true;
+        if (localQueuePanel  != null) localQueuePanel.setVisibility(View.VISIBLE);
+        if (remoteQueuePanel != null) remoteQueuePanel.setVisibility(View.GONE);
+        updateQueueHint();
+        if (fileAdapter != null) fileAdapter.notifyDataSetChanged();
+    }
+
+    private void showRemoteQueueInRemoteMode() {
+        localQueueShownInRemoteMode = false;
+        if (localQueuePanel  != null) localQueuePanel.setVisibility(View.GONE);
+        if (remoteQueuePanel != null) remoteQueuePanel.setVisibility(View.VISIBLE);
+        if (fileAdapter != null) fileAdapter.notifyDataSetChanged();
     }
 
     private void sendPlaylistToRemote(FileEntry playlistEntry) {
@@ -3799,7 +3819,8 @@ public class FileBrowserQueueActivity extends Activity {
                 if (entry.isDirectory) {
                     vh.hintStart.setText("");
                 } else {
-                    vh.hintStart.setText(mode == Mode.REMOTE_SEND ? R.string.swipe_hint_send : R.string.swipe_hint_queue);
+                    vh.hintStart.setText((mode == Mode.REMOTE_SEND && !localQueueShownInRemoteMode)
+                            ? R.string.swipe_hint_send : R.string.swipe_hint_queue);
                 }
             }
             vh.icon.setText(entry.isDirectory ? "\uD83D\uDCC1" : "\uD83C\uDFB5");

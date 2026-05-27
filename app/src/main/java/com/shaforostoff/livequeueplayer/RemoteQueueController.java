@@ -214,7 +214,6 @@ final class RemoteQueueController {
     void onQueueStateReceived(JSONObject obj) {
         currentId     = obj.optInt("current_id", -1);
         playbackState = obj.optString("playback_state", "stopped");
-        applyFadeTimer(obj, playbackState);
         JSONArray tracks = obj.optJSONArray("tracks");
         queueEntries.clear();
         if (tracks != null) {
@@ -247,15 +246,7 @@ final class RemoteQueueController {
                 queueEntries.add(entry);
             }
         }
-        adapter.notifyDataSetChanged();
-        updatePlaybackButtons();
-        if (scrollToBottomPending && !queueEntries.isEmpty()) {
-            scrollToBottomPending = false;
-            final int last = queueEntries.size() - 1;
-            queueList.post(() -> scrollTo(queueList, last));
-        } else {
-            ensureCurrentVisible();
-        }
+        applyStateUpdate(obj, scrollToBottomPending);
     }
 
     void onPlaybackStateReceived(JSONObject obj) {
@@ -263,12 +254,22 @@ final class RemoteQueueController {
         boolean stateChanged = !newState.equals(playbackState);
         playbackState = newState;
         currentId    = obj.optInt("current_id", -1);
+        applyStateUpdate(obj, false);
+        if (stateChanged && ("playing".equals(playbackState) || "stopped".equals(playbackState))) {
+            requestQueue();
+        }
+    }
+
+    private void applyStateUpdate(JSONObject obj, boolean scrollToBottom) {
         applyFadeTimer(obj, playbackState);
         adapter.notifyDataSetChanged();
         updatePlaybackButtons();
-        ensureCurrentVisible();
-        if (stateChanged && ("playing".equals(playbackState) || "stopped".equals(playbackState))) {
-            requestQueue();
+        if (scrollToBottom && !queueEntries.isEmpty()) {
+            scrollToBottomPending = false;
+            final int last = queueEntries.size() - 1;
+            queueList.post(() -> scrollTo(queueList, last));
+        } else {
+            ensureCurrentVisible();
         }
     }
 

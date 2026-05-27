@@ -180,6 +180,7 @@ public class FileBrowserQueueActivity extends Activity {
     private int draggingQueueIndex = -1;
     private int servicePlaybackOffset = 0;
     private Button stopButton;
+    private Button browserStopButton;
     private Button sortButton;
     private Button openStorageButton;
     private Mode mode = Mode.DJ;
@@ -412,6 +413,7 @@ public class FileBrowserQueueActivity extends Activity {
                     fileBrowserPreviewingUri = entry.uri;
                     fileBrowserPreviewingEntryUri = entry.uri;
                     startAudioPreview(entry.uri);
+                    updateBrowserStopButtonVisibility();
                 }
             } else {
                 boolean queueTrackPlaying = !playbackStopped && !Service.sBrowseMode && currentPlayingQueueIndex >= 0;
@@ -493,6 +495,11 @@ public class FileBrowserQueueActivity extends Activity {
             }
         });
 
+        browserStopButton = findViewById(R.id.btn_stop_browser);
+        browserStopButton.setOnClickListener(v -> {
+            resetFileBrowserPreview();
+            if (Service.sBrowseMode) stopPlaybackImmediately();
+        });
 
         // -- kick off storage permission + browse ----------------------------
         if (!restorePersistedDocumentTree()) {
@@ -3404,6 +3411,15 @@ public class FileBrowserQueueActivity extends Activity {
             stopButton.setTextColor(getColor(R.color.foreground));
             stopButton.setText(R.string.stop_button_text);
         }
+        updateBrowserStopButtonVisibility();
+    }
+
+    private void updateBrowserStopButtonVisibility() {
+        if (browserStopButton == null) return;
+        boolean browseServicePlaying = !playbackStopped && Service.sBrowseMode
+                && (mode == Mode.DJ || mode == Mode.REMOTE_SEND);
+        boolean previewPlaying = fileBrowserPreviewingUri != null && mode == Mode.DJ;
+        browserStopButton.setVisibility(browseServicePlaying || previewPlaying ? View.VISIBLE : View.GONE);
     }
 
     private void showStopButtonFadingState() {
@@ -3548,6 +3564,7 @@ public class FileBrowserQueueActivity extends Activity {
         fileBrowserPreviewingUri = null;
         fileBrowserPreviewingEntryUri = null;
         stopAudioPreview();
+        updateBrowserStopButtonVisibility();
     }
 
     private int resolvePlayingQueueIndex(int entryId, int serviceIndex, Uri currentUri) {

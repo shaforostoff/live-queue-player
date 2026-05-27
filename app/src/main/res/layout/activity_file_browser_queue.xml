@@ -49,6 +49,15 @@
         a:textColor="@color/foreground"
         a:textColorHint="@color/inputHint"
         a:textSize="14sp" />
+
+      <Button
+        a:id="@+id/btn_stop_browser"
+        a:layout_width="wrap_content"
+        a:layout_height="wrap_content"
+        a:layout_margin="4dp"
+        a:text="@string/stop_browser_button"
+        a:textSize="14sp"
+        a:visibility="gone" />
     </LinearLayout>
 
     <ListView

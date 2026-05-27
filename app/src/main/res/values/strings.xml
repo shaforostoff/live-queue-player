@@ -16,6 +16,7 @@
   <string name="storage_picker_failed">Unable to open the selected storage location.</string>
   <string name="stop_button_text">■ Stop</string>
   <string name="stop_button_fading_text">■ Fading…</string>
+  <string name="stop_browser_button">■ Stop</string>
   <string name="clear_button_text">Clear</string>
   <string name="save_queue_button">Save</string>
   <string name="send_queue_button">Send</string>

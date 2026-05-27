@@ -147,6 +147,10 @@ public class FileBrowserQueueActivity extends Activity {
             ".m4a", ".mp3", ".mp4", ".aac", ".ogg", ".flac", ".aiff", ".aif",
             ".wav", ".opus", ".wma", ".3gp", ".m3u", ".m3u8"
     };
+    private static final String[] AUDIO_EXTENSIONS_NO_PLAYLIST = {
+            ".m4a", ".mp3", ".mp4", ".aac", ".ogg", ".flac", ".aiff", ".aif",
+            ".wav", ".opus", ".wma", ".3gp"
+    };
 
     // -- file browser state -------------------------------------------------
     private final List<FileEntry> fileEntries = new ArrayList<>();
@@ -1908,7 +1912,9 @@ public class FileBrowserQueueActivity extends Activity {
                 // Extension fallback using the already-fetched sibling listing
                 int dot = docId.lastIndexOf('.');
                 String baseDocId = dot >= 0 ? docId.substring(0, dot) : docId;
-                for (String ext : AUDIO_EXTENSIONS) {
+                String originalExt = dot >= 0 ? docId.substring(dot) : "";
+                for (String ext : AUDIO_EXTENSIONS_NO_PLAYLIST) {
+                    if (ext.equals(originalExt)) continue;
                     String candidate = baseDocId + ext;
                     if (siblings.contains(candidate)) {
                         result.set(i, DocumentsContract.buildDocumentUriUsingTree(treeUri, candidate));
@@ -1927,7 +1933,9 @@ public class FileBrowserQueueActivity extends Activity {
         String name = file.getName();
         int dot = name.lastIndexOf('.');
         String base = dot >= 0 ? name.substring(0, dot) : name;
-        for (String ext : AUDIO_EXTENSIONS) {
+        String originalExt = dot >= 0 ? name.substring(dot) : "";
+        for (String ext : AUDIO_EXTENSIONS_NO_PLAYLIST) {
+            if (ext.equals(originalExt)) continue;
             File candidate = new File(dir, base + ext);
             if (candidate.isFile()) return candidate;
         }
@@ -1937,7 +1945,9 @@ public class FileBrowserQueueActivity extends Activity {
     private Uri findDocumentWithDifferentExtension(String volume, String normalizedPath) {
         int dot = normalizedPath.lastIndexOf('.');
         String basePath = dot >= 0 ? normalizedPath.substring(0, dot) : normalizedPath;
-        for (String ext : AUDIO_EXTENSIONS) {
+        String originalExt = dot >= 0 ? normalizedPath.substring(dot) : "";
+        for (String ext : AUDIO_EXTENSIONS_NO_PLAYLIST) {
+            if (ext.equals(originalExt)) continue;
             String candidateDocId = volume + ":" + basePath + ext;
             Uri candidateUri = DocumentsContract.buildDocumentUriUsingTree(currentTreeUri, candidateDocId);
             if (documentExists(candidateUri)) {

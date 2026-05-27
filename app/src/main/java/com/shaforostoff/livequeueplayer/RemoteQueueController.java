@@ -228,12 +228,7 @@ final class RemoteQueueController {
                     entry.title  = t.optString("title",  "");
                     entry.artist = t.optString("artist", "");
                     entry.date   = t.optString("date",   "");
-                    TrackEntry cached = new TrackEntry(id);
-                    cached.name   = entry.name;
-                    cached.title  = entry.title;
-                    cached.artist = entry.artist;
-                    cached.date   = entry.date;
-                    metaCache.put(id, cached);
+                    metaCache.put(id, entry);
                 } else {
                     TrackEntry cached = metaCache.get(id);
                     if (cached != null) {

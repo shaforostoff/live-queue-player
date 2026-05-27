@@ -3263,6 +3263,9 @@ public class FileBrowserQueueActivity extends Activity {
         localQueueShownInRemoteMode = true;
         if (localQueuePanel  != null) localQueuePanel.setVisibility(View.VISIBLE);
         if (remoteQueuePanel != null) remoteQueuePanel.setVisibility(View.GONE);
+        View label = findViewById(R.id.play_queue_label);
+        if (label instanceof TextView) ((TextView) label).setText(R.string.staging_queue_title);
+        if (stopButton != null) stopButton.setVisibility(View.GONE);
         updateQueueHint();
         if (fileAdapter != null) fileAdapter.notifyDataSetChanged();
     }
@@ -3271,6 +3274,9 @@ public class FileBrowserQueueActivity extends Activity {
         localQueueShownInRemoteMode = false;
         if (localQueuePanel  != null) localQueuePanel.setVisibility(View.GONE);
         if (remoteQueuePanel != null) remoteQueuePanel.setVisibility(View.VISIBLE);
+        View label = findViewById(R.id.play_queue_label);
+        if (label instanceof TextView) ((TextView) label).setText("Play Queue");
+        if (stopButton != null) stopButton.setVisibility(View.VISIBLE);
         if (fileAdapter != null) fileAdapter.notifyDataSetChanged();
     }
 

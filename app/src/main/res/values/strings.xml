@@ -83,6 +83,7 @@
   <string name="swipe_hint_send">← Send</string>
   <string name="swipe_hint_queue">Queue →</string>
   <string name="remote_queue_title">Remote Queue</string>
+  <string name="staging_queue_title">Staging Queue</string>
   <string name="remote_queue_refresh">Refresh</string>
   <string name="remote_volume_button">Volume</string>
   <string name="remote_queue_resume">▶ Resume</string>

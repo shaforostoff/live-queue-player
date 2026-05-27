@@ -429,6 +429,10 @@ public class FileBrowserQueueActivity extends Activity {
 
         // -- queue: tap item to play when stopped ----------------------------
         queueList.setOnItemClickListener((parent, view, position, id) -> {
+            if (localQueueShownInRemoteMode && position == currentPlayingQueueIndex && isPlaybackActiveOrFading()) {
+                showLyricsOverlayForQueueEntry(queueEntries.get(position));
+                return;
+            }
             if (mode == Mode.REMOTE_SEND || Service.sBrowseMode) {
                 clearBrowseState();
                 fileAdapter.notifyDataSetChanged();
@@ -2158,7 +2162,7 @@ public class FileBrowserQueueActivity extends Activity {
                         int firstVisible = list.getFirstVisiblePosition();
                         int childIndex = swipeState.startPosition - firstVisible;
                         if (childIndex >= 0 && childIndex < list.getChildCount()
-                                && swipeState.startPosition != currentPlayingQueueIndex) {
+                                && (swipeState.startPosition != currentPlayingQueueIndex || localQueueShownInRemoteMode)) {
                             swipeState.swipingView = list.getChildAt(childIndex);
                             swipeState.contentView = swipeState.swipingView.findViewById(R.id.swipe_content);
                             if (swipeState.contentView == null) swipeState.contentView = swipeState.swipingView;

@@ -387,7 +387,9 @@ public class FileBrowserQueueActivity extends Activity {
             public void afterTextChanged(Editable s) {
                 fileFilterQuery = (s == null) ? "" : s.toString();
                 applyFileFilter();
-                fileBrowserList.setSelection(0);
+                if (!scrollToHighlightedFileEntry()) {
+                    fileBrowserList.setSelection(0);
+                }
             }
         });
 
@@ -2457,6 +2459,7 @@ public class FileBrowserQueueActivity extends Activity {
 
     private void exitPlaylistBrowseFolder() {
         stopBrowsePlaybackForFolderSwitch();
+        fileFilterInput.setText("");
         pendingBackScrollUri = currentBrowsePlaylistEntry.uri;
         currentBrowsePlaylistEntry = null;
         if (browsingDocumentTree) {

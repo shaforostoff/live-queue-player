@@ -173,7 +173,6 @@ public class FileBrowserQueueActivity extends Activity {
     private QueueAdapter queueAdapter;
     private ListView queueList;
     private TextView queueEmptyHint;
-    private boolean playbackStopped = true;
     private boolean queueTransitionActive;
     private boolean browsingDocumentTree;
     private int currentPlayingQueueIndex = -1;
@@ -222,7 +221,6 @@ public class FileBrowserQueueActivity extends Activity {
             currentTrackDurationMs = intent.getIntExtra(
                     Service.EXTRA_PLAYBACK_DURATION_MS,
                     Service.sPlaybackDurationMs);
-            playbackStopped = !isPlaying;
             // The fading button state is derived from Service.sFadeOutInProgress (see
             // isStopFadeInProgress()), so every broadcast just re-applies the current state.
             applyStopButtonState();
@@ -417,7 +415,7 @@ public class FileBrowserQueueActivity extends Activity {
                     updateBrowserStopButtonVisibility();
                 }
             } else {
-                boolean queueTrackPlaying = !playbackStopped && !Service.sBrowseMode && currentPlayingQueueIndex >= 0;
+                boolean queueTrackPlaying = Service.sIsPlaying && !Service.sBrowseMode && currentPlayingQueueIndex >= 0;
                 if (hasBrowseBehavior() && !isStopFadeInProgress() && !(mode == Mode.BROWSE && queueTrackPlaying)) {
                     playBrowseFile(entry);
                 } else {
@@ -445,7 +443,7 @@ public class FileBrowserQueueActivity extends Activity {
             }
             if (isStopFadeInProgress()) {
                 playQueueFrom(position, true);
-            } else if (playbackStopped) {
+            } else if (!Service.sIsPlaying && !queueTransitionActive) {
                 playQueueFrom(position);
             } else {
                 Toast.makeText(this, R.string.stop_playback_first, Toast.LENGTH_SHORT).show();
@@ -2045,7 +2043,7 @@ public class FileBrowserQueueActivity extends Activity {
         ensureQueueTagsCachedAsync();
 
         // Keep the running service queue aligned with the visible queue.
-        if (!playbackStopped && !isStopFadeInProgress()) {
+        if (Service.sIsPlaying && !isStopFadeInProgress()) {
             syncServicePendingQueue();
         }
     }
@@ -2074,7 +2072,7 @@ public class FileBrowserQueueActivity extends Activity {
         queueAdapter.notifyDataSetChanged();
         updateQueueHint();
         persistQueue();
-        if (!playbackStopped && !isStopFadeInProgress()) {
+        if (Service.sIsPlaying && !isStopFadeInProgress()) {
             syncServicePendingQueue();
         }
         return true;
@@ -2292,7 +2290,7 @@ public class FileBrowserQueueActivity extends Activity {
                         draggingQueueIndex = -1;
                         queueAdapter.notifyDataSetChanged();
                         persistQueue();
-                        if (!playbackStopped && !isStopFadeInProgress()) {
+                        if (Service.sIsPlaying && !isStopFadeInProgress()) {
                             syncServicePendingQueue();
                         }
                         return true;
@@ -2562,8 +2560,8 @@ public class FileBrowserQueueActivity extends Activity {
         intent.putExtra(Service.EXTRA_ENTRY_IDS, ids);
         intent.putExtra(Service.EXTRA_QUEUE_ALREADY_PERSISTED, true);
 
+        queueTransitionActive = true;
         if (forceImmediateRestart) {
-            queueTransitionActive = true;
             sendStopNowCommand();
         }
         resetStopButtonState();
@@ -2577,7 +2575,6 @@ public class FileBrowserQueueActivity extends Activity {
             dispatchMediaPlayKey();
         }
 
-        playbackStopped = false;
         currentPlayingQueueIndex = position;
         currentTrackPositionMs = 0;
         currentTrackDurationMs = 0;
@@ -2602,7 +2599,9 @@ public class FileBrowserQueueActivity extends Activity {
      *  which are written immediately by the fade/playback thread and never lag. */
     private String remotePlaybackState() {
         boolean fading = Service.sFadeOutInProgress;
-        return fading ? "fading" : (Service.sIsPlaying ? "playing" : "stopped");
+        // queueTransitionActive treated as "playing": mirrors the sFadeOutInProgress sync pattern
+        // so pushPlayState() sends the correct state before the async service broadcast arrives.
+        return fading ? "fading" : (Service.sIsPlaying || queueTransitionActive ? "playing" : "stopped");
     }
 
     private long fadeDurationMs() {
@@ -2691,7 +2690,7 @@ public class FileBrowserQueueActivity extends Activity {
         if (fromPos < 0 || toPos < 0 || toPos >= queueEntries.size()) return;
         moveQueueItem(fromPos, toPos);
         persistQueue();
-        if (!playbackStopped && !isStopFadeInProgress()) syncServicePendingQueue();
+        if (Service.sIsPlaying && !isStopFadeInProgress()) syncServicePendingQueue();
     }
 
     private void handleRemoteRemoveTrack(JSONObject obj) {
@@ -2701,7 +2700,7 @@ public class FileBrowserQueueActivity extends Activity {
     }
 
     private void handleRemotePlayTrack(JSONObject obj) {
-        if (!playbackStopped && !isStopFadeInProgress()) {
+        if ((Service.sIsPlaying || queueTransitionActive) && !isStopFadeInProgress()) {
             pushPlayState();
             return;
         }
@@ -2729,7 +2728,7 @@ public class FileBrowserQueueActivity extends Activity {
         }
 
         // Do not show fading UI when nothing is currently playing.
-        if (playbackStopped || (currentPlayingQueueIndex < 0 && !Service.sBrowseMode)) {
+        if ((!Service.sIsPlaying && !queueTransitionActive) || (currentPlayingQueueIndex < 0 && !Service.sBrowseMode)) {
             resetStopButtonState();
             return;
         }
@@ -2741,7 +2740,6 @@ public class FileBrowserQueueActivity extends Activity {
         // rather than "playing" — the Service does the same in its STOP handler, but
         // that runs asynchronously and would still show the old state at push time.
         Service.sFadeOutInProgress = true;
-        playbackStopped = true;
         showStopButtonFadingState();
     }
 
@@ -2755,7 +2753,6 @@ public class FileBrowserQueueActivity extends Activity {
         // does the same thing in its PLAY branch of onStartCommand(), but that runs
         // asynchronously — the flag would still be true by the time we push state.
         Service.sFadeOutInProgress = false;
-        playbackStopped = false;
         resetStopButtonState();
         queueAdapter.notifyDataSetChanged();
     }
@@ -2786,7 +2783,6 @@ public class FileBrowserQueueActivity extends Activity {
     }
 
     private void applyStoppedState() {
-        playbackStopped = true;
         queueTransitionActive = false;
         clearBrowseState();
         currentPlayingQueueIndex = -1;
@@ -2828,7 +2824,6 @@ public class FileBrowserQueueActivity extends Activity {
         browseFileUri = uri;
         browseNextQueued = false;
         browseNextUri = null;
-        playbackStopped = false;
         currentPlayingQueueIndex = -1;
         queueAdapter.notifyDataSetChanged();
         fileAdapter.notifyDataSetChanged();
@@ -3247,7 +3242,7 @@ public class FileBrowserQueueActivity extends Activity {
     }
 
     private boolean isPlaybackActiveOrFading() {
-        return !playbackStopped || isStopFadeInProgress();
+        return Service.sIsPlaying || isStopFadeInProgress() || queueTransitionActive;
     }
 
     private boolean hasBrowseBehavior() {
@@ -3487,7 +3482,7 @@ public class FileBrowserQueueActivity extends Activity {
 
     private void updateBrowserStopButtonVisibility() {
         if (browserStopButton == null) return;
-        boolean browseServicePlaying = !playbackStopped && Service.sBrowseMode
+        boolean browseServicePlaying = Service.sIsPlaying && Service.sBrowseMode
                 && (mode == Mode.DJ || mode == Mode.REMOTE_SEND);
         boolean previewPlaying = fileBrowserPreviewingUri != null && mode == Mode.DJ;
         browserStopButton.setVisibility(browseServicePlaying || previewPlaying ? View.VISIBLE : View.GONE);
@@ -3562,12 +3557,10 @@ public class FileBrowserQueueActivity extends Activity {
                 onFadeOutFinished();
                 return;
             }
-            playbackStopped = true;
             currentPlayingQueueIndex = -1;
             setPlaybackOffset(0);
             resetCurrentTrackProgress();
         } else {
-            playbackStopped = false;
             if (serviceBrowseMode) {
                 currentPlayingQueueIndex = -1;
                 if (browseNextUri != null && browseNextUri.equals(serviceUri)) {

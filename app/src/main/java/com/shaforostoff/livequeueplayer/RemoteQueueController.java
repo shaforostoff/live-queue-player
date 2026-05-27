@@ -241,7 +241,7 @@ final class RemoteQueueController {
                 queueEntries.add(entry);
             }
         }
-        applyStateUpdate(obj, scrollToBottomPending);
+        applyStateUpdate(obj, scrollToBottomPending, true);
     }
 
     void onPlaybackStateReceived(JSONObject obj) {
@@ -249,13 +249,16 @@ final class RemoteQueueController {
         boolean stateChanged = !newState.equals(playbackState);
         playbackState = newState;
         currentId    = obj.optInt("current_id", -1);
-        applyStateUpdate(obj, false);
+        // Only scroll to the current track when transitioning into "playing";
+        // fading/stopped state changes should not cause a jarring jump.
+        boolean scrollToCurrent = stateChanged && "playing".equals(playbackState);
+        applyStateUpdate(obj, false, scrollToCurrent);
         if (stateChanged && ("playing".equals(playbackState) || "stopped".equals(playbackState))) {
             requestQueue();
         }
     }
 
-    private void applyStateUpdate(JSONObject obj, boolean scrollToBottom) {
+    private void applyStateUpdate(JSONObject obj, boolean scrollToBottom, boolean scrollToCurrent) {
         applyFadeTimer(obj, playbackState);
         adapter.notifyDataSetChanged();
         updatePlaybackButtons();
@@ -263,7 +266,7 @@ final class RemoteQueueController {
             scrollToBottomPending = false;
             final int last = queueEntries.size() - 1;
             queueList.post(() -> scrollTo(queueList, last));
-        } else {
+        } else if (scrollToCurrent) {
             ensureCurrentVisible();
         }
     }

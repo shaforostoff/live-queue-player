@@ -2129,7 +2129,7 @@ public class FileBrowserQueueActivity extends Activity {
         SwipeState swipeState = new SwipeState();
         DragState dragState = new DragState();
         float verticalSlop = 40f * getResources().getDisplayMetrics().density;
-        float horizontalSlop = 10f * getResources().getDisplayMetrics().density;
+        float horizontalSlop = 20f * getResources().getDisplayMetrics().density;
         Runnable[] longPressRunnable = {null};
 
         list.setOnTouchListener((v, event) -> {
@@ -2238,10 +2238,11 @@ public class FileBrowserQueueActivity extends Activity {
                         swipeState.startPosition = -1;
                         return false;
                     }
-                    if (dx < 0 && swipeState.swipingView != null) {
-                        swipeState.contentView.setTranslationX(Math.max(dx, -swipeState.contentView.getWidth()));
+                    if (dx < -horizontalSlop && swipeState.swipingView != null) {
+                        float effectiveDx = dx + horizontalSlop;
+                        swipeState.contentView.setTranslationX(Math.max(effectiveDx, -swipeState.contentView.getWidth()));
                         list.getParent().requestDisallowInterceptTouchEvent(true);
-                        if (swipeState.contentView.getWidth() > 0 && Math.abs(dx) >= swipeState.contentView.getWidth() / 2f) {
+                        if (swipeState.contentView.getWidth() > 0 && Math.abs(effectiveDx) >= swipeState.contentView.getWidth() / 2f) {
                             swipeState.handled = true;
                             swipeState.resetView();
                             removeQueueAt(swipeState.startPosition);
@@ -2289,6 +2290,7 @@ public class FileBrowserQueueActivity extends Activity {
                                       SwipeAction onRightSwipe, SwipeAction onLeftSwipe) {
         SwipeState state = new SwipeState();
         float verticalSlop = 40f * getResources().getDisplayMetrics().density;
+        float horizontalSlop = 20f * getResources().getDisplayMetrics().density;
         list.setOnTouchListener((v, event) -> {
             switch (event.getAction()) {
                 case MotionEvent.ACTION_DOWN:
@@ -2327,20 +2329,22 @@ public class FileBrowserQueueActivity extends Activity {
                         state.startPosition = -1;
                         return false;
                     }
-                    if (dx > 0 && state.swipingView != null) {
-                        state.contentView.setTranslationX(Math.min(dx, state.contentView.getWidth()));
+                    if (dx > horizontalSlop && state.swipingView != null) {
+                        float effectiveDx = dx - horizontalSlop;
+                        state.contentView.setTranslationX(Math.min(effectiveDx, state.contentView.getWidth()));
                         list.getParent().requestDisallowInterceptTouchEvent(true);
-                        if (state.contentView.getWidth() > 0 && dx >= state.contentView.getWidth() / 2f) {
+                        if (state.contentView.getWidth() > 0 && effectiveDx >= state.contentView.getWidth() / 2f) {
                             state.handled = true;
                             state.resetView();
                             onRightSwipe.onSwipe(state.startPosition);
                         }
                         return true;
                     }
-                    if (dx < 0 && onLeftSwipe != null && state.swipingView != null) {
-                        state.contentView.setTranslationX(Math.max(dx, -state.contentView.getWidth()));
+                    if (dx < -horizontalSlop && onLeftSwipe != null && state.swipingView != null) {
+                        float effectiveDx = dx + horizontalSlop;
+                        state.contentView.setTranslationX(Math.max(effectiveDx, -state.contentView.getWidth()));
                         list.getParent().requestDisallowInterceptTouchEvent(true);
-                        if (state.contentView.getWidth() > 0 && Math.abs(dx) >= state.contentView.getWidth() / 2f) {
+                        if (state.contentView.getWidth() > 0 && Math.abs(effectiveDx) >= state.contentView.getWidth() / 2f) {
                             state.handled = true;
                             state.resetView();
                             onLeftSwipe.onSwipe(state.startPosition);

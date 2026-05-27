@@ -2163,7 +2163,10 @@ public class FileBrowserQueueActivity extends Activity {
                             swipeState.contentView = swipeState.swipingView.findViewById(R.id.swipe_content);
                             if (swipeState.contentView == null) swipeState.contentView = swipeState.swipingView;
                             TextView qHintStart = swipeState.swipingView.findViewById(R.id.swipe_hint_start);
-                            if (qHintStart != null) qHintStart.setText("");
+                            if (qHintStart != null) {
+                                if (localQueueShownInRemoteMode) qHintStart.setText(R.string.swipe_hint_send);
+                                else qHintStart.setText("");
+                            }
                             TextView qHintEnd = swipeState.swipingView.findViewById(R.id.swipe_hint_end);
                             if (qHintEnd != null) qHintEnd.setText(R.string.swipe_hint_remove);
                             int[] itemScreenPos = new int[2];
@@ -2254,6 +2257,17 @@ public class FileBrowserQueueActivity extends Activity {
                             swipeState.handled = true;
                             swipeState.resetView();
                             removeQueueAt(swipeState.startPosition);
+                        }
+                        return true;
+                    } else if (dx > horizontalSlop && swipeState.swipingView != null && localQueueShownInRemoteMode) {
+                        float effectiveDx = dx - horizontalSlop;
+                        swipeState.contentView.setTranslationX(Math.min(effectiveDx, swipeState.contentView.getWidth()));
+                        list.getParent().requestDisallowInterceptTouchEvent(true);
+                        if (swipeState.contentView.getWidth() > 0 && effectiveDx >= swipeState.contentView.getWidth() / 2f) {
+                            swipeState.handled = true;
+                            int pos = swipeState.startPosition;
+                            swipeState.resetView();
+                            sendQueueEntryToRemote(pos);
                         }
                         return true;
                     }
@@ -3312,6 +3326,15 @@ public class FileBrowserQueueActivity extends Activity {
         if (btController.sendQueueRequests(requests)) {
             Toast.makeText(this, getString(R.string.sent_tracks, requests.size()), Toast.LENGTH_SHORT).show();
         }
+    }
+
+    private void sendQueueEntryToRemote(int position) {
+        if (position < 0 || position >= queueEntries.size()) return;
+        QueueEntry entry = queueEntries.get(position);
+        String title  = entry.tagsCached ? entry.title  : null;
+        String artist = entry.tagsCached ? entry.artist : null;
+        String date   = entry.tagsCached ? entry.date   : null;
+        btController.sendQueueRequest(entry.name, getParentFolderName(entry.uri), title, artist, date);
     }
 
     private void sendQueueToRemote() {

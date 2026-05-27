@@ -127,7 +127,7 @@ class BluetoothController {
 
     boolean sendQueueRequests(List<BluetoothQueueBridge.TrackRequest> requests) {
         if (bridge == null || !bridge.isConnected()) {
-            pendingRequests = new ArrayList<>(requests);
+            pendingRequests = requests;
             startRemoteSetup();
             return false;
         }

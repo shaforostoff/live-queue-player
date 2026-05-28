@@ -308,21 +308,23 @@ final class RemoteQueueController {
     }
 
     private void applyFadeTimer(JSONObject obj, String state) {
-        if (fadeEndRunnable != null) {
-            uiHandler.removeCallbacks(fadeEndRunnable);
-            fadeEndRunnable = null;
-        }
-        if ("fading".equals(state)) {
-            long ms = obj.optLong("fade_duration_ms", 0L);
-            if (ms <= 0) return; // server will push "stopped" when done
-            fadeEndRunnable = () -> {
+        if (!"fading".equals(state)) {
+            if (fadeEndRunnable != null) {
+                uiHandler.removeCallbacks(fadeEndRunnable);
                 fadeEndRunnable = null;
-                playbackState = "stopped";
-                updatePlaybackButtons();
-                requestQueue();
-            };
-            uiHandler.postDelayed(fadeEndRunnable, ms);
+            }
+            return;
         }
+        if (fadeEndRunnable != null) return; // timer already running — don't reset with a stale duration
+        long ms = obj.optLong("fade_duration_ms", 0L);
+        if (ms <= 0) return; // server will push "stopped" when done
+        fadeEndRunnable = () -> {
+            fadeEndRunnable = null;
+            playbackState = "stopped";
+            updatePlaybackButtons();
+            requestQueue();
+        };
+        uiHandler.postDelayed(fadeEndRunnable, ms);
     }
 
     private void updatePlaybackButtons() {

@@ -945,7 +945,7 @@ public class FileBrowserQueueActivity extends Activity {
                 .setView(input)
                 .setNegativeButton(android.R.string.cancel, null)
                 .setPositiveButton(R.string.save_queue_dialog_action,
-                        (dialog, which) -> saveQueueAsM3u8(input.getText() == null
+                        (dialog, which) -> promptSaveDestinationThenSave(input.getText() == null
                                 ? ""
                                 : input.getText().toString()))
                 .show();
@@ -983,36 +983,121 @@ public class FileBrowserQueueActivity extends Activity {
         return currentFileDirectory != null;
     }
 
-    private void saveQueueAsM3u8(String rawName) {
+    private void promptSaveDestinationThenSave(String rawName) {
         String fileName = normalizePlaylistFileName(rawName);
         if (fileName == null) {
             Toast.makeText(this, R.string.save_queue_invalid_name, Toast.LENGTH_SHORT).show();
             return;
         }
 
+        if (browsingDocumentTree) {
+            List<Uri> destinations = new ArrayList<>();
+            for (int i = documentUriStack.size() - 1; i >= 0; i--) {
+                destinations.add(documentUriStack.get(i));
+            }
+            if (destinations.size() == 1) {
+                saveQueueToDocUri(fileName, destinations.get(0));
+                return;
+            }
+            CharSequence[] names = new CharSequence[destinations.size()];
+            for (int i = 0; i < destinations.size(); i++) {
+                names[i] = getDocumentDisplayName(destinations.get(i));
+            }
+            final int[] selectedIndex = {0};
+            new AlertDialog.Builder(this)
+                    .setTitle(R.string.save_queue_dialog_title)
+                    .setSingleChoiceItems(names, 0, (d, which) -> selectedIndex[0] = which)
+                    .setNegativeButton(android.R.string.cancel, null)
+                    .setPositiveButton(R.string.save_queue_dialog_action,
+                            (d, which) -> saveQueueToDocUri(fileName, destinations.get(selectedIndex[0])))
+                    .show();
+        } else {
+            List<File> destinations = new ArrayList<>();
+            File dir = currentFileDirectory;
+            while (dir != null) {
+                destinations.add(dir);
+                if (sameFileLocation(dir, currentFileRootDirectory)) break;
+                dir = dir.getParentFile();
+            }
+            if (destinations.size() == 1) {
+                saveQueueToFileDir(fileName, destinations.get(0));
+                return;
+            }
+            CharSequence[] names = new CharSequence[destinations.size()];
+            for (int i = 0; i < destinations.size(); i++) {
+                names[i] = destinations.get(i).getName();
+            }
+            final int[] selectedIndex = {0};
+            new AlertDialog.Builder(this)
+                    .setTitle(R.string.save_queue_dialog_title)
+                    .setSingleChoiceItems(names, 0, (d, which) -> selectedIndex[0] = which)
+                    .setNegativeButton(android.R.string.cancel, null)
+                    .setPositiveButton(R.string.save_queue_dialog_action,
+                            (d, which) -> saveQueueToFileDir(fileName, destinations.get(selectedIndex[0])))
+                    .show();
+        }
+    }
+
+    private String getDocumentDisplayName(Uri docUri) {
+        try (Cursor cursor = getContentResolver().query(
+                docUri, new String[]{DocumentsContract.Document.COLUMN_DISPLAY_NAME}, null, null, null)) {
+            if (cursor != null && cursor.moveToFirst()) {
+                String name = cursor.getString(0);
+                if (name != null && name.length() > 0) return name;
+            }
+        } catch (Exception ignored) {}
+        return fileName(DocumentsContract.getDocumentId(docUri));
+    }
+
+    private void saveQueueToFileDir(String fileName, File destDir) {
         StringBuilder playlist = new StringBuilder("#EXTM3U\n");
         int exportedCount = 0;
         for (QueueEntry entry : queueEntries) {
-            String relativePath = resolveQueueEntryRelativePath(entry.uri);
-            if (relativePath == null || relativePath.length() == 0) {
-                continue;
-            }
+            String relativePath = resolveRelativeFilePath(entry.uri, destDir);
+            if (relativePath == null || relativePath.length() == 0) continue;
             playlist.append(relativePath).append('\n');
             exportedCount++;
         }
-
         if (exportedCount == 0) {
             Toast.makeText(this,
                     "No queue entries can be written as relative paths from this folder",
                     Toast.LENGTH_LONG).show();
             return;
         }
-
-        boolean saved = browsingDocumentTree
-                ? writePlaylistToDocumentFolder(fileName, playlist.toString())
-                : writePlaylistToFileFolder(fileName, playlist.toString());
+        boolean saved = writePlaylistToFileDir(fileName, playlist.toString(), destDir);
         if (saved) {
-            refreshCurrentFolderListing();
+            if (currentFileDirectory != null && sameFileLocation(destDir, currentFileDirectory)) {
+                refreshCurrentFolderListing();
+            }
+            Toast.makeText(this,
+                    getString(R.string.save_queue_success) + ": " + fileName,
+                    Toast.LENGTH_SHORT).show();
+        } else {
+            Toast.makeText(this, R.string.save_queue_failed, Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private void saveQueueToDocUri(String fileName, Uri destDocUri) {
+        StringBuilder playlist = new StringBuilder("#EXTM3U\n");
+        int exportedCount = 0;
+        for (QueueEntry entry : queueEntries) {
+            String relativePath = resolveRelativeDocumentPath(entry.uri, destDocUri);
+            if (relativePath == null || relativePath.length() == 0) continue;
+            playlist.append(relativePath).append('\n');
+            exportedCount++;
+        }
+        if (exportedCount == 0) {
+            Toast.makeText(this,
+                    "No queue entries can be written as relative paths from this folder",
+                    Toast.LENGTH_LONG).show();
+            return;
+        }
+        boolean saved = writePlaylistToDocumentFolder(fileName, playlist.toString(), destDocUri);
+        if (saved) {
+            if (!documentUriStack.isEmpty()
+                    && destDocUri.equals(documentUriStack.get(documentUriStack.size() - 1))) {
+                refreshCurrentFolderListing();
+            }
             Toast.makeText(this,
                     getString(R.string.save_queue_success) + ": " + fileName,
                     Toast.LENGTH_SHORT).show();
@@ -1045,12 +1130,12 @@ public class FileBrowserQueueActivity extends Activity {
         return trimmed;
     }
 
-    private boolean writePlaylistToFileFolder(String fileName, String content) {
-        if (currentFileRootDirectory == null) {
+    private boolean writePlaylistToFileDir(String fileName, String content, File destDir) {
+        if (destDir == null) {
             return false;
         }
 
-        File target = new File(currentFileRootDirectory, fileName);
+        File target = new File(destDir, fileName);
         try (BufferedWriter writer = new BufferedWriter(
                 new OutputStreamWriter(new FileOutputStream(target, false), "UTF-8"))) {
             writer.write(content);
@@ -1060,18 +1145,17 @@ public class FileBrowserQueueActivity extends Activity {
         }
     }
 
-    private boolean writePlaylistToDocumentFolder(String fileName, String content) {
-        if (currentTreeUri == null || documentUriStack.isEmpty()) {
+    private boolean writePlaylistToDocumentFolder(String fileName, String content, Uri destDocUri) {
+        if (currentTreeUri == null || destDocUri == null) {
             return false;
         }
 
-        Uri currentFolderUri = documentUriStack.get(0);
-        Uri targetUri = findDocumentChildByName(currentFolderUri, fileName);
+        Uri targetUri = findDocumentChildByName(destDocUri, fileName);
         if (targetUri == null) {
             try {
                 targetUri = DocumentsContract.createDocument(
                         getContentResolver(),
-                        currentFolderUri,
+                        destDocUri,
                         "application/vnd.apple.mpegurl",
                         fileName);
             } catch (Exception ignored) {
@@ -1126,17 +1210,8 @@ public class FileBrowserQueueActivity extends Activity {
         return null;
     }
 
-    private String resolveQueueEntryRelativePath(Uri entryUri) {
-        if (entryUri == null) {
-            return null;
-        }
-        return browsingDocumentTree
-                ? resolveRelativeDocumentPath(entryUri)
-                : resolveRelativeFilePath(entryUri);
-    }
-
-    private String resolveRelativeFilePath(Uri entryUri) {
-        if (currentFileRootDirectory == null) {
+    private String resolveRelativeFilePath(Uri entryUri, File baseDir) {
+        if (baseDir == null) {
             return null;
         }
 
@@ -1165,10 +1240,10 @@ public class FileBrowserQueueActivity extends Activity {
         String basePath;
         String resolvedTargetPath;
         try {
-            basePath = currentFileRootDirectory.getCanonicalPath();
+            basePath = baseDir.getCanonicalPath();
             resolvedTargetPath = new File(targetPath).getCanonicalPath();
         } catch (Exception ignored) {
-            basePath = currentFileRootDirectory.getAbsolutePath();
+            basePath = baseDir.getAbsolutePath();
             resolvedTargetPath = targetPath;
         }
 
@@ -1181,14 +1256,13 @@ public class FileBrowserQueueActivity extends Activity {
         return computeRelativePath(basePath, resolvedTargetPath);
     }
 
-    private String resolveRelativeDocumentPath(Uri entryUri) {
-        if (documentUriStack.isEmpty() || currentTreeUri == null) {
+    private String resolveRelativeDocumentPath(Uri entryUri, Uri baseDocUri) {
+        if (baseDocUri == null || currentTreeUri == null) {
             return null;
         }
 
         try {
-            Uri currentFolderUri = documentUriStack.get(0);
-            String currentDocumentId = DocumentsContract.getDocumentId(currentFolderUri);
+            String currentDocumentId = DocumentsContract.getDocumentId(baseDocUri);
             String entryDocumentId = DocumentsContract.getDocumentId(entryUri);
 
             int currentSeparator = currentDocumentId.indexOf(':');

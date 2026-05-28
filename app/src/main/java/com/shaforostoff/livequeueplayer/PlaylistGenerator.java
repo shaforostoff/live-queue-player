@@ -2,10 +2,9 @@ package com.shaforostoff.livequeueplayer;
 
 import android.content.Context;
 import android.net.Uri;
-import android.webkit.MimeTypeMap;
-
 import java.io.File;
 import java.io.FileNotFoundException;
+import java.util.Locale;
 import java.util.Scanner;
 
 final class PlaylistGenerator {
@@ -20,27 +19,12 @@ final class PlaylistGenerator {
         this.m3UParser = new M3UParser(context, this);
     }
 
-    /**
-     * Get the mime type of the Uri.
-     *
-     * @param location the Uri to obtain the mime type from
-     * @return mime type, or null if invalid/unavailable
-     */
-    private String getExtension(Uri location) {
-        String scheme = location.getScheme();
-        if ("content".equals(scheme)) {
-            return context.getContentResolver().getType(location);
-        } else {
-            // if "file://" or otherwise, need to handle null
-            var file = new File(location.getPath());
-            var mimeMap = MimeTypeMap.getSingleton();
-            var name = file.getName();
-            var lastDotIndex = name.lastIndexOf(".");
-            if (lastDotIndex >= 0 && lastDotIndex + 1 < name.length()) {
-                name = name.substring(name.lastIndexOf(".") + 1);
-            }
-            return mimeMap.getMimeTypeFromExtension(name);
-        }
+    private static boolean isM3uUri(Uri location) {
+        String seg = location.getLastPathSegment();
+        if (seg == null) seg = location.getPath();
+        if (seg == null) return false;
+        String lower = seg.toLowerCase(Locale.ROOT);
+        return lower.endsWith(".m3u") || lower.endsWith(".m3u8");
     }
 
     void generate(Uri location) {
@@ -48,7 +32,7 @@ final class PlaylistGenerator {
     }
 
     private void generate(String title, Uri location) {
-        if ("audio/x-mpegurl".equals(getExtension(location))) {
+        if (isM3uUri(location)) {
             // special processing if it is a m3u file
             m3UParser.parse(location);
             return;

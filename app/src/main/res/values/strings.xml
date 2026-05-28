@@ -41,7 +41,7 @@
   <string name="output_usb">USB audio</string>
   <string name="bluetooth_track_names">Track names via Bluetooth</string>
   <string name="dj_mode_button">DJ</string>
-  <string name="remote_send_button">+ Send</string>
+  <string name="remote_send_button">+ Remote Control</string>
   <string name="remote_receive_button">+ Receive</string>
   <string name="stop_after_current_button">Stop after current track</string>
   <string name="clear_queue_button">Clear queue</string>

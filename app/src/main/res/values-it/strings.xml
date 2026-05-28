@@ -37,7 +37,7 @@
   <string name="output_wired">Cavo 3,5mm</string>
   <string name="output_usb">Audio USB</string>
   <string name="bluetooth_track_names">Nomi tracce via Bluetooth</string>
-  <string name="remote_send_button">+ Invia</string>
+  <string name="remote_send_button">+ Controllo Remoto</string>
   <string name="remote_receive_button">+ Ricevi</string>
   <string name="stop_after_current_button">Ferma dopo la traccia corrente</string>
   <string name="clear_queue_button">Svuota coda</string>

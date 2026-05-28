@@ -1412,7 +1412,7 @@ public class FileBrowserQueueActivity extends Activity {
         final ArrayList<FileEntry> pendingEntries = new ArrayList<>();
         boolean cacheApplied = false;
         for (FileEntry entry : fileEntries) {
-            if (entry.isDirectory ||
+            if (entry.isDirectory || isPlaylistFile(entry.name) ||
                     (entry.sortDateState == TagState.RESOLVED && entry.sortGenreState == TagState.RESOLVED
                             && entry.sortArtistState == TagState.RESOLVED && entry.sortBpmState == TagState.RESOLVED)
                     || entry.sortDateState == TagState.LOADING || entry.sortGenreState == TagState.LOADING

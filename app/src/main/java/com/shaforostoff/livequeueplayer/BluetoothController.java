@@ -234,9 +234,18 @@ class BluetoothController {
         ArrayList<BluetoothDevice> devices = new ArrayList<>(bondedDevices);
         ArrayList<String> items = new ArrayList<>();
         int selectedIndex = -1;
+
+        java.util.HashMap<String, Integer> nameCount = new java.util.HashMap<>();
+        for (BluetoothDevice device : devices) {
+            String name = device.getName() != null ? device.getName() : activity.getString(R.string.unknown_device);
+            nameCount.put(name, nameCount.getOrDefault(name, 0) + 1);
+        }
+
         for (int i = 0; i < devices.size(); i++) {
             BluetoothDevice device = devices.get(i);
-            items.add((device.getName() != null ? device.getName() : activity.getString(R.string.unknown_device)) + "\n" + device.getAddress());
+            String name = device.getName() != null ? device.getName() : activity.getString(R.string.unknown_device);
+            boolean duplicate = nameCount.getOrDefault(name, 0) > 1;
+            items.add(duplicate ? name + "\n" + device.getAddress() : name);
             if (device.getAddress() != null && device.getAddress().equals(targetDeviceAddress)) {
                 selectedIndex = i;
             }
@@ -287,8 +296,15 @@ class BluetoothController {
                         if (d.getAddress().equals(device.getAddress())) { exists = true; break; }
                     }
                     if (!exists) {
+                        boolean nameCollision = false;
+                        for (BluetoothDevice d : devices) {
+                            if (deviceName.equals(d.getName() != null ? d.getName() : activity.getString(R.string.unknown_device))) {
+                                nameCollision = true;
+                                break;
+                            }
+                        }
                         devices.add(device);
-                        items.add(deviceName + "\n" + device.getAddress());
+                        items.add(nameCollision ? deviceName + "\n" + device.getAddress() : deviceName);
                         adapter.notifyDataSetChanged();
                         Toast.makeText(activity, activity.getString(R.string.bt_device_paired, deviceName), Toast.LENGTH_SHORT).show();
                     }

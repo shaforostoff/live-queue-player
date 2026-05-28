@@ -680,10 +680,14 @@ public class FileBrowserQueueActivity extends Activity {
             return;
         }
 
-        // Directories first, then files; both sorted alphabetically
+        // Directories first, playlists second, then other files; all sorted alphabetically
         Arrays.sort(files, (a, b) -> {
             if (a.isDirectory() != b.isDirectory())
                 return a.isDirectory() ? -1 : 1;
+            boolean aPlaylist = isPlaylistFile(a.getName());
+            boolean bPlaylist = isPlaylistFile(b.getName());
+            if (aPlaylist != bPlaylist)
+                return aPlaylist ? -1 : 1;
             return a.getName().compareToIgnoreCase(b.getName());
         });
 
@@ -1440,6 +1444,11 @@ public class FileBrowserQueueActivity extends Activity {
         }
         if (left.isDirectory) {
             return left.name.compareToIgnoreCase(right.name);
+        }
+        boolean leftIsPlaylist = isPlaylistFile(left.name);
+        boolean rightIsPlaylist = isPlaylistFile(right.name);
+        if (leftIsPlaylist != rightIsPlaylist) {
+            return leftIsPlaylist ? -1 : 1;
         }
         int c;
         if (fileSortMode == SORT_YEAR) {

@@ -129,7 +129,6 @@ final class AudioOutputRouter {
     private static AudioDeviceInfo findBluetooth(AudioDeviceInfo[] outputs) {
         return findFirst(outputs,
                 AudioDeviceInfo.TYPE_BLUETOOTH_A2DP,
-                AudioDeviceInfo.TYPE_BLUETOOTH_SCO,
                 Build.VERSION.SDK_INT >= Build.VERSION_CODES.S ? AudioDeviceInfo.TYPE_BLE_HEADSET : -1,
                 Build.VERSION.SDK_INT >= Build.VERSION_CODES.S ? AudioDeviceInfo.TYPE_BLE_SPEAKER : -1
         );
@@ -154,7 +153,7 @@ final class AudioOutputRouter {
     }
 
     private static boolean isBluetoothConnected(AudioManager am, AudioDeviceInfo[] outputs) {
-        return findBluetooth(outputs) != null || am.isBluetoothA2dpOn();
+        return findBluetooth(outputs) != null;
     }
 
     private static AudioDeviceInfo findFirst(AudioDeviceInfo[] outputs, int... types) {

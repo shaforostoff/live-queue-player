@@ -108,12 +108,13 @@
           a:focusable="true" />
 
         <Button
-          a:id="@+id/btn_play_queue"
+          a:id="@+id/btn_clear_queue"
           a:layout_width="wrap_content"
           a:layout_height="wrap_content"
           a:layout_margin="4dp"
-          a:text="▶ Play"
-          a:textSize="14sp" />
+          a:text="@string/clear_button_text"
+          a:textSize="14sp"
+          a:visibility="gone" />
 
         <Button
           a:id="@+id/btn_save_queue"

@@ -196,9 +196,8 @@ public class FileBrowserQueueActivity extends Activity {
     private View localQueuePanel;
     private View remoteQueuePanel;
     private boolean localQueueShownInRemoteMode = false;
-    private Button playButton;
+    private Button clearButton;
     private Button saveButton;
-    private CharSequence defaultPlayButtonText;
     private int currentTrackPositionMs;
     private int currentTrackDurationMs;
     private PreviewManager audioPreviewManager;
@@ -312,8 +311,7 @@ public class FileBrowserQueueActivity extends Activity {
             mode = Mode.BROWSE;
         }
 
-        playButton = findViewById(R.id.btn_play_queue);
-        defaultPlayButtonText = playButton.getText();
+        clearButton = findViewById(R.id.btn_clear_queue);
         openStorageButton = findViewById(R.id.btn_open_storage);
         sortButton = findViewById(R.id.btn_sort_files);
         saveButton = findViewById(R.id.btn_save_queue);
@@ -453,22 +451,7 @@ public class FileBrowserQueueActivity extends Activity {
         installQueueGestureHandler(queueList);
 
         // -- navigation & playback buttons -----------------------------------
-        playButton.setOnClickListener(v -> {
-            if (hasBrowseBehavior()) {
-                clearQueueAndStopPlayback();
-                return;
-            }
-            if (isStopFadeInProgress()) {
-                cancelFadeOutAndContinue();
-            } else if (!Service.sIsPlaying && Service.sCurrentUri != null) {
-                // A track is paused (e.g. after audio focus loss): resume it
-                Intent resumeIntent = new Intent(this, Service.class);
-                resumeIntent.putExtra(Launcher.TYPE, Launcher.PLAY);
-                startService(resumeIntent);
-            } else {
-                playQueue();
-            }
-        });
+        clearButton.setOnClickListener(v -> clearQueueAndStopPlayback());
         applyPlayButtonModeState();
 
         if (getIntent().getBooleanExtra(EXTRA_REMOTE_QUEUE_FILL_MODE, false)) {
@@ -491,7 +474,9 @@ public class FileBrowserQueueActivity extends Activity {
         applySortButtonLoadingState();
 
         stopButton.setOnClickListener(v -> {
-            if (hasBrowseBehavior() || Service.sBrowseMode) {
+            if (isStopFadeInProgress() || isPlaybackPaused()) {
+                cancelFadeOutAndContinue();
+            } else if (hasBrowseBehavior() || Service.sBrowseMode) {
                 stopPlaybackImmediately();
             } else {
                 stopPlaybackWithFadeout();
@@ -3250,13 +3235,8 @@ public class FileBrowserQueueActivity extends Activity {
     }
 
     private void applyPlayButtonModeState() {
-        if (playButton == null) {
-            return;
-        }
-        if (hasBrowseBehavior()) {
-            playButton.setText(R.string.clear_button_text);
-        } else if (defaultPlayButtonText != null) {
-            playButton.setText(defaultPlayButtonText);
+        if (clearButton != null) {
+            clearButton.setVisibility(hasBrowseBehavior() ? View.VISIBLE : View.GONE);
         }
         applySaveButtonModeState();
     }
@@ -3466,12 +3446,17 @@ public class FileBrowserQueueActivity extends Activity {
         return Service.sFadeOutInProgress;
     }
 
+    private boolean isPlaybackPaused() {
+        return !Service.sBrowseMode && !hasBrowseBehavior()
+                && !Service.sIsPlaying && Service.sCurrentUri != null;
+    }
+
     private void applyStopButtonState() {
         if (stopButton == null) return;
-        if (isStopFadeInProgress()) {
+        if (isStopFadeInProgress() || isPlaybackPaused()) {
             stopButton.setBackgroundColor(getColor(R.color.stopButtonActive));
             stopButton.setTextColor(getColor(R.color.stopButtonActiveText));
-            stopButton.setText(R.string.stop_button_fading_text);
+            stopButton.setText(R.string.remote_queue_resume);
         } else {
             stopButton.setBackgroundColor(getColor(R.color.buttonBackground));
             stopButton.setTextColor(getColor(R.color.foreground));

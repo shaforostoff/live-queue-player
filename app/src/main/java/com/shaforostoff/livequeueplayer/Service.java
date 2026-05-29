@@ -119,6 +119,11 @@ public class Service extends android.app.Service implements MediaPlayerStateList
      */
     @Override
     public void onStart(final Intent intent, final int startId) {
+        // START_STICKY can re-deliver onStartCommand with a null intent after the system killed the
+        // process (e.g. low memory while the screen is off). There is nothing to act on — the queue
+        // is persisted and the user can resume from the media notification — so bail out instead of
+        // dereferencing a null intent and crashing the freshly restarted process.
+        if (intent == null) return;
         /* check if called from self */
         if (intent.getAction() == null) {
             var action = intent.getByteExtra(Launcher.TYPE, Launcher.NULL);

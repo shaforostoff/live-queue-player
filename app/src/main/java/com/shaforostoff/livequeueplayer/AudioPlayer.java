@@ -129,7 +129,14 @@ class AudioPlayer extends Thread implements MediaPlayer.OnCompletionListener, Me
    * check if audio is playing
    */
   public boolean isPlaying() {
-    return mediaPlayer.isPlaying();
+    if (released) return false;
+    try {
+      return mediaPlayer.isPlaying();
+    } catch (IllegalStateException e) {
+      // MediaPlayer can be in an invalid state (released/errored) during a backgrounded
+      // auto-advance transition; treat that as "not playing" rather than crashing the service.
+      return false;
+    }
   }
 
   @Override

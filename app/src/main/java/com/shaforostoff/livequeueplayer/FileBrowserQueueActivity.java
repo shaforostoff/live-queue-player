@@ -95,6 +95,10 @@ public class FileBrowserQueueActivity extends Activity {
     private interface SwipeAction { void onSwipe(int position); }
     @FunctionalInterface
     private interface SwipePredicate { boolean test(int position); }
+    @FunctionalInterface
+    private interface IndexedTask { void run(int index); }
+    @FunctionalInterface
+    private interface RelativePathResolver { String resolve(Uri entryUri); }
 
     private static final class SwipeState {
         float downX, downY;
@@ -1053,26 +1057,21 @@ public class FileBrowserQueueActivity extends Activity {
         return fileName(DocumentsContract.getDocumentId(docUri));
     }
 
-    private void saveQueueToFileDir(String fileName, File destDir) {
+    /** Builds an #EXTM3U playlist from the queue, or returns null if no entry yields a path. */
+    private String buildExportPlaylistContent(RelativePathResolver resolver) {
         StringBuilder playlist = new StringBuilder("#EXTM3U\n");
         int exportedCount = 0;
         for (QueueEntry entry : queueEntries) {
-            String relativePath = resolveRelativeFilePath(entry.uri, destDir);
+            String relativePath = resolver.resolve(entry.uri);
             if (relativePath == null || relativePath.length() == 0) continue;
             playlist.append(relativePath).append('\n');
             exportedCount++;
         }
-        if (exportedCount == 0) {
-            Toast.makeText(this,
-                    "No queue entries can be written as relative paths from this folder",
-                    Toast.LENGTH_LONG).show();
-            return;
-        }
-        boolean saved = writePlaylistToFileDir(fileName, playlist.toString(), destDir);
+        return exportedCount == 0 ? null : playlist.toString();
+    }
+
+    private void onQueueSaveResult(boolean saved, String fileName) {
         if (saved) {
-            if (currentFileDirectory != null && sameFileLocation(destDir, currentFileDirectory)) {
-                refreshCurrentFolderListing();
-            }
             Toast.makeText(this,
                     getString(R.string.save_queue_success) + ": " + fileName,
                     Toast.LENGTH_SHORT).show();
@@ -1081,33 +1080,35 @@ public class FileBrowserQueueActivity extends Activity {
         }
     }
 
-    private void saveQueueToDocUri(String fileName, Uri destDocUri) {
-        StringBuilder playlist = new StringBuilder("#EXTM3U\n");
-        int exportedCount = 0;
-        for (QueueEntry entry : queueEntries) {
-            String relativePath = resolveRelativeDocumentPath(entry.uri, destDocUri);
-            if (relativePath == null || relativePath.length() == 0) continue;
-            playlist.append(relativePath).append('\n');
-            exportedCount++;
-        }
-        if (exportedCount == 0) {
+    private void saveQueueToFileDir(String fileName, File destDir) {
+        String content = buildExportPlaylistContent(uri -> resolveRelativeFilePath(uri, destDir));
+        if (content == null) {
             Toast.makeText(this,
                     "No queue entries can be written as relative paths from this folder",
                     Toast.LENGTH_LONG).show();
             return;
         }
-        boolean saved = writePlaylistToDocumentFolder(fileName, playlist.toString(), destDocUri);
-        if (saved) {
-            if (!documentUriStack.isEmpty()
-                    && destDocUri.equals(documentUriStack.get(documentUriStack.size() - 1))) {
-                refreshCurrentFolderListing();
-            }
-            Toast.makeText(this,
-                    getString(R.string.save_queue_success) + ": " + fileName,
-                    Toast.LENGTH_SHORT).show();
-        } else {
-            Toast.makeText(this, R.string.save_queue_failed, Toast.LENGTH_LONG).show();
+        boolean saved = writePlaylistToFileDir(fileName, content, destDir);
+        if (saved && currentFileDirectory != null && sameFileLocation(destDir, currentFileDirectory)) {
+            refreshCurrentFolderListing();
         }
+        onQueueSaveResult(saved, fileName);
+    }
+
+    private void saveQueueToDocUri(String fileName, Uri destDocUri) {
+        String content = buildExportPlaylistContent(uri -> resolveRelativeDocumentPath(uri, destDocUri));
+        if (content == null) {
+            Toast.makeText(this,
+                    "No queue entries can be written as relative paths from this folder",
+                    Toast.LENGTH_LONG).show();
+            return;
+        }
+        boolean saved = writePlaylistToDocumentFolder(fileName, content, destDocUri);
+        if (saved && !documentUriStack.isEmpty()
+                && destDocUri.equals(documentUriStack.get(documentUriStack.size() - 1))) {
+            refreshCurrentFolderListing();
+        }
+        onQueueSaveResult(saved, fileName);
     }
 
     private void refreshCurrentFolderListing() {
@@ -1300,6 +1301,15 @@ public class FileBrowserQueueActivity extends Activity {
         } catch (Exception ignored) {
             return left.getAbsolutePath().equals(right.getAbsolutePath());
         }
+    }
+
+    /** Returns the immediate parent folder name from a '/'-separated path, or "" if none. */
+    private static String parentFolderFromPath(String path) {
+        int lastSlash = path.lastIndexOf('/');
+        if (lastSlash <= 0) return "";
+        int prevSlash = path.lastIndexOf('/', lastSlash - 1);
+        return prevSlash >= 0 ? path.substring(prevSlash + 1, lastSlash)
+                              : path.substring(0, lastSlash);
     }
 
     private String parentPath(String path) {
@@ -2074,6 +2084,32 @@ public class FileBrowserQueueActivity extends Activity {
         addToQueue(entries);
     }
 
+    /**
+     * Runs {@code work} for each index in [0, count) across up to 4 threads on the tag-read
+     * executor, with workers pulling indices from a shared counter. When the final index
+     * completes, {@code onAllDone} (if non-null) runs on whichever worker finished it.
+     */
+    private void runParallelTagReads(int count, IndexedTask work, Runnable onAllDone) {
+        if (count <= 0) {
+            if (onAllDone != null) onAllDone.run();
+            return;
+        }
+        int threadCount = Math.min(4, count);
+        AtomicInteger pending = new AtomicInteger(count);
+        AtomicInteger workQueue = new AtomicInteger(0);
+        for (int t = 0; t < threadCount; t++) {
+            tagReadExecutor.submit(() -> {
+                int idx;
+                while ((idx = workQueue.getAndIncrement()) < count) {
+                    work.run(idx);
+                    if (pending.decrementAndGet() == 0 && onAllDone != null) {
+                        onAllDone.run();
+                    }
+                }
+            });
+        }
+    }
+
     private void ensureQueueTagsCachedAsync() {
         List<QueueEntry> uncached = new ArrayList<>();
         for (QueueEntry entry : queueEntries) {
@@ -2081,33 +2117,22 @@ public class FileBrowserQueueActivity extends Activity {
                 uncached.add(entry);
         }
         if (uncached.isEmpty()) return;
-        int threadCount = Math.min(4, uncached.size());
-        AtomicInteger pending = new AtomicInteger(uncached.size());
         MetadataExtractor.TagEntry[] results = new MetadataExtractor.TagEntry[uncached.size()];
-        AtomicInteger workQueue = new AtomicInteger(0);
-        for (int t = 0; t < threadCount; t++) {
-            tagReadExecutor.submit(() -> {
-                int idx;
-                while ((idx = workQueue.getAndIncrement()) < uncached.size()) {
-                    results[idx] = metadataExtractor.readSortTags(uncached.get(idx).uri);
-                    if (pending.decrementAndGet() == 0) {
-                        runOnUiThread(() -> {
-                            for (int j = 0; j < uncached.size(); j++) {
-                                QueueEntry e = uncached.get(j);
-                                MetadataExtractor.TagEntry tag = results[j];
-                                e.title  = tag.title;
-                                e.artist = tag.artist;
-                                e.date   = tag.date;
-                                e.genre  = tag.genre;
-                                e.bpm    = tag.bpm;
-                                e.tagsCached = true;
-                            }
-                            queueAdapter.notifyDataSetChanged();
-                        });
+        runParallelTagReads(uncached.size(),
+                idx -> results[idx] = metadataExtractor.readSortTags(uncached.get(idx).uri),
+                () -> runOnUiThread(() -> {
+                    for (int j = 0; j < uncached.size(); j++) {
+                        QueueEntry e = uncached.get(j);
+                        MetadataExtractor.TagEntry tag = results[j];
+                        e.title  = tag.title;
+                        e.artist = tag.artist;
+                        e.date   = tag.date;
+                        e.genre  = tag.genre;
+                        e.bpm    = tag.bpm;
+                        e.tagsCached = true;
                     }
-                }
-            });
-        }
+                    queueAdapter.notifyDataSetChanged();
+                }));
     }
 
     private void addToQueue(List<QueueEntry> entries) {
@@ -2499,18 +2524,10 @@ public class FileBrowserQueueActivity extends Activity {
     }
 
     private Uri resolveFirstPlaylistUri(FileEntry playlistEntry) {
-        try (InputStream stream = getContentResolver().openInputStream(playlistEntry.uri)) {
-            if (stream == null) return null;
-            try (BufferedReader reader = new BufferedReader(new InputStreamReader(stream, "UTF-8"))) {
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    String trimmed = line.trim();
-                    if (trimmed.isEmpty() || trimmed.startsWith("#")) continue;
-                    Uri uri = resolvePlaylistTargetUri(playlistEntry, trimmed);
-                    if (uri != null) return uri;
-                }
-            }
-        } catch (Exception ignored) {}
+        for (String line : readPlaylistLines(playlistEntry)) {
+            Uri uri = resolvePlaylistTargetUri(playlistEntry, line);
+            if (uri != null) return uri;
+        }
         return null;
     }
 
@@ -2969,13 +2986,7 @@ public class FileBrowserQueueActivity extends Activity {
                 if (docId != null) {
                     int colonIdx = docId.indexOf(':');
                     String docPath = colonIdx >= 0 ? docId.substring(colonIdx + 1) : docId;
-                    int lastSlash = docPath.lastIndexOf('/');
-                    if (lastSlash > 0) {
-                        int prevSlash = docPath.lastIndexOf('/', lastSlash - 1);
-                        return prevSlash >= 0
-                                ? docPath.substring(prevSlash + 1, lastSlash)
-                                : docPath.substring(0, lastSlash);
-                    }
+                    return parentFolderFromPath(docPath);
                 }
             } catch (Exception ignored) {
             }
@@ -3143,16 +3154,8 @@ public class FileBrowserQueueActivity extends Activity {
                 if (!metadataExtractor.isAllTagsCached(uri)) toScan.add(uri);
             }
             if (toScan.isEmpty()) return;
-            AtomicInteger workQueue = new AtomicInteger(0);
-            int threadCount = Math.min(4, toScan.size());
-            for (int t = 0; t < threadCount; t++) {
-                tagReadExecutor.submit(() -> {
-                    int idx;
-                    while ((idx = workQueue.getAndIncrement()) < toScan.size()) {
-                        metadataExtractor.readSortTags(toScan.get(idx));
-                    }
-                });
-            }
+            runParallelTagReads(toScan.size(),
+                    idx -> metadataExtractor.readSortTags(toScan.get(idx)), null);
         }).start();
     }
 
@@ -3393,14 +3396,8 @@ public class FileBrowserQueueActivity extends Activity {
                         String normalized = trimmed.replace('\\', '/');
                         int lastSlash = normalized.lastIndexOf('/');
                         String filename = lastSlash >= 0 ? normalized.substring(lastSlash + 1) : normalized;
-                        String parentFolder = "";
-                        if (lastSlash > 0) {
-                            int prevSlash = normalized.lastIndexOf('/', lastSlash - 1);
-                            parentFolder = prevSlash >= 0
-                                    ? normalized.substring(prevSlash + 1, lastSlash)
-                                    : normalized.substring(0, lastSlash);
-                        }
-                        requests.add(new BluetoothQueueBridge.TrackRequest(filename, parentFolder));
+                        requests.add(new BluetoothQueueBridge.TrackRequest(
+                                filename, parentFolderFromPath(normalized)));
                     }
                 }
             }
@@ -3490,12 +3487,7 @@ public class FileBrowserQueueActivity extends Activity {
         }
         if (bestExact != null) {
             matchKind[0] = TAG_MATCH_EXACT;
-            StringBuilder sb = new StringBuilder(bestExactTag.title);
-            if (bestExactTag.artist != null && !bestExactTag.artist.isEmpty())
-                sb.append(" · ").append(bestExactTag.artist);
-            if (bestExactTag.date != null && !bestExactTag.date.isEmpty())
-                sb.append(" · ").append(bestExactTag.date);
-            matchedTitle[0] = sb.toString();
+            matchedTitle[0] = formatTagLabel(bestExactTag);
             return bestExact;
         }
 
@@ -3517,14 +3509,16 @@ public class FileBrowserQueueActivity extends Activity {
         }
         if (bestFuzzy != null) {
             matchKind[0] = TAG_MATCH_FUZZY;
-            StringBuilder sb = new StringBuilder(bestFuzzyTag.title);
-            if (bestFuzzyTag.artist != null && !bestFuzzyTag.artist.isEmpty())
-                sb.append(" · ").append(bestFuzzyTag.artist);
-            if (bestFuzzyTag.date != null && !bestFuzzyTag.date.isEmpty())
-                sb.append(" · ").append(bestFuzzyTag.date);
-            matchedTitle[0] = sb.toString();
+            matchedTitle[0] = formatTagLabel(bestFuzzyTag);
         }
         return bestFuzzy;
+    }
+
+    private static String formatTagLabel(MetadataExtractor.TagEntry tag) {
+        StringBuilder sb = new StringBuilder(tag.title);
+        if (tag.artist != null && !tag.artist.isEmpty()) sb.append(" · ").append(tag.artist);
+        if (tag.date   != null && !tag.date.isEmpty())   sb.append(" · ").append(tag.date);
+        return sb.toString();
     }
 
     /**
@@ -3862,25 +3856,28 @@ public class FileBrowserQueueActivity extends Activity {
     }
 
     private String buildMetaText(String date, String genre, int bpm) {
+        String bpmText = bpm > 0 ? bpm + " BPM" : null;
         StringBuilder sb = new StringBuilder();
-        if (fileSortMode == SORT_YEAR) {
-            if (bpm > 0) sb.append(bpm).append(" BPM");
-            if (genre != null && !genre.isEmpty()) { if (sb.length() > 0) sb.append("  "); sb.append(genre); }
-            if (date  != null && !date.isEmpty())  { if (sb.length() > 0) sb.append("  "); sb.append(date); }
-        } else if (fileSortMode == SORT_GENRE) {
-            if (date  != null && !date.isEmpty()) sb.append(date);
-            if (bpm > 0) { if (sb.length() > 0) sb.append("  "); sb.append(bpm).append(" BPM"); }
-            if (genre != null && !genre.isEmpty()) { if (sb.length() > 0) sb.append("  "); sb.append(genre); }
+        if (fileSortMode == SORT_GENRE) {
+            appendMeta(sb, date);
+            appendMeta(sb, bpmText);
+            appendMeta(sb, genre);
         } else if (fileSortMode == SORT_BPM) {
-            if (date  != null && !date.isEmpty()) sb.append(date);
-            if (genre != null && !genre.isEmpty()) { if (sb.length() > 0) sb.append("  "); sb.append(genre); }
-            if (bpm > 0) { if (sb.length() > 0) sb.append("  "); sb.append(bpm).append(" BPM"); }
-        } else if (fileSortMode == SORT_ARTIST || fileSortMode == SORT_FILENAME) {
-            if (bpm > 0) sb.append(bpm).append(" BPM");
-            if (genre != null && !genre.isEmpty()) { if (sb.length() > 0) sb.append("  "); sb.append(genre); }
-            if (date  != null && !date.isEmpty())  { if (sb.length() > 0) sb.append("  "); sb.append(date); }
+            appendMeta(sb, date);
+            appendMeta(sb, genre);
+            appendMeta(sb, bpmText);
+        } else { // SORT_YEAR, SORT_ARTIST, SORT_FILENAME
+            appendMeta(sb, bpmText);
+            appendMeta(sb, genre);
+            appendMeta(sb, date);
         }
         return sb.toString();
+    }
+
+    private static void appendMeta(StringBuilder sb, String part) {
+        if (part == null || part.isEmpty()) return;
+        if (sb.length() > 0) sb.append("  ");
+        sb.append(part);
     }
 
     private static final class ViewHolder {

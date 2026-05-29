@@ -1787,36 +1787,47 @@ public class FileBrowserQueueActivity extends Activity {
         return lines;
     }
 
-    private int addPlaylistToQueue(FileEntry playlistEntry) {
-        List<String> lines = readPlaylistLines(playlistEntry);
-        if (lines.isEmpty()) return 0;
+    // Reads and resolves the playlist off the main thread (file I/O + per-line URI resolution can
+    // be slow on SAF/content providers), then applies the result and shows toasts on the UI thread.
+    private void addPlaylistToQueue(FileEntry playlistEntry) {
+        tagReadExecutor.submit(() -> {
+            List<String> lines = readPlaylistLines(playlistEntry);
 
-        // Pass 1: resolve each entry using same-directory logic (exact + different extension)
-        Uri[] resolved = new Uri[lines.size()];
-        for (int i = 0; i < lines.size(); i++) {
-            resolved[i] = resolvePlaylistTargetUri(playlistEntry, lines.get(i));
-        }
+            // Resolve each entry using same-directory logic (exact + different extension).
+            ArrayList<QueueEntry> resolvedEntries = new ArrayList<>();
+            ArrayList<String> missingNamesToToast = new ArrayList<>();
+            int missingCount = 0;
+            for (String line : lines) {
+                Uri uri = resolvePlaylistTargetUri(playlistEntry, line);
+                if (uri == null) {
+                    if (missingNamesToToast.size() < 2) {
+                        missingNamesToToast.add(getDisplayNameForPlaylistItem(line, null));
+                    }
+                    missingCount++;
+                } else {
+                    resolvedEntries.add(new QueueEntry(getDisplayNameForPlaylistItem(line, uri), uri));
+                }
+            }
 
-        // Build queue entries; toast for first 2 still-missing files, then a summary
-        ArrayList<QueueEntry> resolvedEntries = new ArrayList<>();
-        int missingCount = 0;
-        for (int i = 0; i < lines.size(); i++) {
-            if (resolved[i] == null) {
-                if (missingCount < 2) {
-                    String name = getDisplayNameForPlaylistItem(lines.get(i), null);
+            final int totalMissing = missingCount;
+            runOnUiThread(() -> {
+                if (isDestroyed()) return;
+                // Toast for first 2 still-missing files, then a summary.
+                for (String name : missingNamesToToast) {
                     Toast.makeText(this, getString(R.string.requested_file_not_found, name), Toast.LENGTH_LONG).show();
                 }
-                missingCount++;
-            } else {
-                resolvedEntries.add(new QueueEntry(getDisplayNameForPlaylistItem(lines.get(i), resolved[i]), resolved[i]));
-            }
-        }
-        if (missingCount > 2) {
-            Toast.makeText(this, getString(R.string.requested_files_not_found, missingCount), Toast.LENGTH_LONG).show();
-        }
+                if (totalMissing > 2) {
+                    Toast.makeText(this, getString(R.string.requested_files_not_found, totalMissing), Toast.LENGTH_LONG).show();
+                }
 
-        addToQueue(resolvedEntries);
-        return resolvedEntries.size();
+                addToQueue(resolvedEntries);
+                if (resolvedEntries.isEmpty()) {
+                    Toast.makeText(this, getString(R.string.no_playable_files_in_playlist, playlistEntry.name), Toast.LENGTH_SHORT).show();
+                } else {
+                    Toast.makeText(this, getString(R.string.added_files_from_playlist, resolvedEntries.size(), playlistEntry.name), Toast.LENGTH_SHORT).show();
+                }
+            });
+        });
     }
 
     private Uri resolvePlaylistTargetUri(FileEntry playlistEntry, String pathValue) {
@@ -2478,11 +2489,7 @@ public class FileBrowserQueueActivity extends Activity {
                     return;
                 }
                 if (isPlaylistFile(entry.name)) {
-                    int addedCount = addPlaylistToQueue(entry);
-                    if (addedCount > 0)
-                        Toast.makeText(this, getString(R.string.added_files_from_playlist, addedCount, entry.name), Toast.LENGTH_SHORT).show();
-                    else
-                        Toast.makeText(this, getString(R.string.no_playable_files_in_playlist, entry.name), Toast.LENGTH_SHORT).show();
+                    addPlaylistToQueue(entry);
                 } else {
                     addToQueue(entry.name, entry.uri);
                 }

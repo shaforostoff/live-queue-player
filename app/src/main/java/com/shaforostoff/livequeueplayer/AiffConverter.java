@@ -6,6 +6,7 @@ import android.net.Uri;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.util.Locale;
 
 /**
  * Converts AIFF/AIFC audio to an in-memory WAV byte array so Android's
@@ -21,17 +22,14 @@ final class AiffConverter {
 
     static final long MAX_BYTES = 100L * 1024 * 1024; // 100 MB
 
+    // ctx is retained for call-site compatibility; detection is now extension-based to avoid the
+    // blocking ContentResolver.getType() query, which ran on the main thread during track start.
     static boolean isAiff(Context ctx, Uri uri) {
-        String mime = ctx.getContentResolver().getType(uri);
-        if (mime != null) {
-            return mime.equalsIgnoreCase("audio/aiff") || mime.equalsIgnoreCase("audio/x-aiff");
-        }
-        String path = uri.getPath();
-        if (path == null) return false;
-        int dot = path.lastIndexOf('.');
-        if (dot < 0) return false;
-        String ext = path.substring(dot + 1).toLowerCase();
-        return ext.equals("aiff") || ext.equals("aif");
+        String seg = uri.getLastPathSegment();
+        if (seg == null) seg = uri.getPath();
+        if (seg == null) return false;
+        String lower = seg.toLowerCase(Locale.ROOT);
+        return lower.endsWith(".aiff") || lower.endsWith(".aif");
     }
 
     /**

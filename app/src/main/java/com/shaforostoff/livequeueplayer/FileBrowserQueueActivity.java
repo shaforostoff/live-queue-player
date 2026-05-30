@@ -1840,9 +1840,20 @@ public class FileBrowserQueueActivity extends Activity {
         });
     }
 
+    /**
+     * True if a playlist line parses to an absolute URI we can actually open. Opaque URIs — a
+     * scheme with no {@code //} authority, e.g. a Windows path "C:\..." that {@link Uri#parse}
+     * reads as scheme "c" — have a null path, can never be played, and would crash File-based
+     * title derivation when the queue is replayed on launch. Reject them so the caller falls back
+     * to resolving the line as a relative/absolute file path instead.
+     */
+    private static boolean isUsableAbsoluteUri(Uri parsed) {
+        return parsed.getScheme() != null && !parsed.isOpaque();
+    }
+
     private Uri resolvePlaylistTargetUri(FileEntry playlistEntry, String pathValue) {
         Uri parsed = Uri.parse(pathValue);
-        if (parsed.getScheme() != null) {
+        if (isUsableAbsoluteUri(parsed)) {
             return parsed;
         }
 
@@ -1954,7 +1965,7 @@ public class FileBrowserQueueActivity extends Activity {
         for (int i = 0; i < n; i++) {
             String pathValue = pathValues.get(i);
             Uri parsed = Uri.parse(pathValue);
-            if (parsed.getScheme() != null) {
+            if (isUsableAbsoluteUri(parsed)) {
                 result.set(i, parsed);
                 continue;
             }

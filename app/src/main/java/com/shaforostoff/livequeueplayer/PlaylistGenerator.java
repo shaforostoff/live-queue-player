@@ -28,7 +28,24 @@ final class PlaylistGenerator {
     }
 
     void generate(Uri location) {
-        generate(new File(location.getPath()).getName(), location);
+        generate(titleFor(location), location);
+    }
+
+    /**
+     * Derive a display title from a Uri without assuming a non-null path. Opaque URIs (a scheme
+     * with no // authority, e.g. an unresolved playlist line that survived into the queue) return
+     * null from getPath(), so {@code new File(getPath())} would throw — crashing the service when
+     * the persisted queue is replayed on launch.
+     */
+    private static String titleFor(Uri location) {
+        String path = location.getPath();
+        if (path != null) {
+            String name = new File(path).getName();
+            if (!name.isEmpty()) return name;
+        }
+        String lastSegment = location.getLastPathSegment();
+        if (lastSegment != null && !lastSegment.isEmpty()) return lastSegment;
+        return location.toString();
     }
 
     private void generate(String title, Uri location) {

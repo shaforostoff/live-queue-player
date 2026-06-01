@@ -1303,6 +1303,17 @@ public class FileBrowserQueueActivity extends Activity {
         }
     }
 
+    /**
+     * Immediate parent folder name for each request, derived from its full relative path.
+     * Used as a disambiguation hint when the fast full-path lookup misses and we fall back
+     * to a recursive tree scan.
+     */
+    private static String[] parentHints(List<BluetoothQueueBridge.TrackRequest> requests) {
+        String[] hints = new String[requests.size()];
+        for (int i = 0; i < hints.length; i++) hints[i] = parentFolderFromPath(requests.get(i).path);
+        return hints;
+    }
+
     /** Returns the immediate parent folder name from a '/'-separated path, or "" if none. */
     private static String parentFolderFromPath(String path) {
         int lastSlash = path.lastIndexOf('/');
@@ -2519,7 +2530,7 @@ public class FileBrowserQueueActivity extends Activity {
                     if (isPlaylistFile(entry.name)) {
                         sendPlaylistToRemote(entry);
                     } else {
-                        btController.sendQueueRequest(entry.name, getParentFolderName(entry.uri),
+                        btController.sendQueueRequest(entry.name, relativePathFromRoot(entry.uri),
                                 entry.sortTitle, entry.sortArtist, entry.sortDate);
                     }
                     return;
@@ -2986,32 +2997,6 @@ public class FileBrowserQueueActivity extends Activity {
         }
     }
 
-    private String getParentFolderName(Uri uri) {
-        if (uri == null) return "";
-        if ("content".equals(uri.getScheme())) {
-            // For SAF URIs, the document ID encodes the real path (e.g. "primary:Music/Artist/Song.mp3").
-            // uri.getPath() decodes %2F separators and prepends the tree segment, making naive
-            // slash-splitting unreliable for files at the tree root.
-            try {
-                String docId = DocumentsContract.getDocumentId(uri);
-                if (docId != null) {
-                    int colonIdx = docId.indexOf(':');
-                    String docPath = colonIdx >= 0 ? docId.substring(colonIdx + 1) : docId;
-                    return parentFolderFromPath(docPath);
-                }
-            } catch (Exception ignored) {
-            }
-            return "";
-        }
-        String path = uri.getPath();
-        if (path == null || path.length() == 0) return "";
-        int lastSlash = path.lastIndexOf('/');
-        if (lastSlash <= 0) return "";
-        int prevSlash = path.lastIndexOf('/', lastSlash - 1);
-        if (prevSlash < 0 || prevSlash + 1 >= lastSlash) return "";
-        return path.substring(prevSlash + 1, lastSlash);
-    }
-
     private void onRemoteQueueRequestsReceived(List<BluetoothQueueBridge.TrackRequest> tracks) {
         if (!btController.isServerMode() || tracks == null || tracks.isEmpty()) return;
         new Thread(() -> {
@@ -3138,15 +3123,76 @@ public class FileBrowserQueueActivity extends Activity {
     }
 
     private List<Uri> findRequestedAudioUris(List<BluetoothQueueBridge.TrackRequest> requests) {
-        if (browsingDocumentTree && !documentUriStack.isEmpty() && currentTreeUri != null) {
-            return findAllInDocumentTree(documentUriStack.get(0), requests);
+        int n = requests.size();
+        boolean isDocTree = browsingDocumentTree && !documentUriStack.isEmpty() && currentTreeUri != null;
+        Uri rootDocUri = isDocTree ? documentUriStack.get(0) : null;
+        File fileRoot = currentFileRootDirectory;
+
+        // Fast path: when the music folders are identical on both devices the full path sent by
+        // the peer resolves directly, so we can skip the expensive recursive tree scan entirely.
+        Uri[] direct = new Uri[n];
+        int resolved = 0;
+        for (int i = 0; i < n; i++) {
+            String relPath = requests.get(i).path;
+            if (relPath.isEmpty()) continue;
+            Uri hit = isDocTree ? resolveDirectDocumentPath(rootDocUri, relPath)
+                                : resolveDirectFilePath(fileRoot, relPath);
+            if (hit != null) {
+                direct[i] = hit;
+                resolved++;
+            }
         }
-        if (currentFileRootDirectory != null && currentFileRootDirectory.exists()) {
-            return findAllInFileDirectory(currentFileRootDirectory, requests);
+        if (resolved == n) {
+            List<Uri> all = new ArrayList<>(n);
+            for (Uri u : direct) all.add(u);
+            return all;
         }
-        List<Uri> nulls = new ArrayList<>(requests.size());
-        for (int i = 0; i < requests.size(); i++) nulls.add(null);
-        return nulls;
+
+        // Fall back to a full tree traversal for the entries the fast path could not resolve.
+        List<Uri> results;
+        if (isDocTree) {
+            results = findAllInDocumentTree(rootDocUri, requests);
+        } else if (fileRoot != null && fileRoot.exists()) {
+            results = findAllInFileDirectory(fileRoot, requests);
+        } else {
+            results = new ArrayList<>(n);
+            for (int i = 0; i < n; i++) results.add(null);
+        }
+        for (int i = 0; i < n; i++) {
+            if (direct[i] != null) results.set(i, direct[i]);
+        }
+        return results;
+    }
+
+    /** Resolves a root-relative path directly against a file-based root folder, or null if absent. */
+    private Uri resolveDirectFilePath(File root, String relPath) {
+        if (root == null) return null;
+        File target = new File(root, relPath);
+        return target.isFile() ? Uri.fromFile(target) : null;
+    }
+
+    /** Resolves a root-relative path directly against a SAF document-tree root, or null if absent. */
+    private Uri resolveDirectDocumentPath(Uri rootDocUri, String relPath) {
+        if (rootDocUri == null || currentTreeUri == null) return null;
+        try {
+            String rootDocId = DocumentsContract.getDocumentId(rootDocUri);
+            if (rootDocId == null) return null;
+            String sep = (rootDocId.endsWith(":") || rootDocId.endsWith("/")) ? "" : "/";
+            String targetDocId = rootDocId + sep + relPath;
+            Uri target = DocumentsContract.buildDocumentUriUsingTree(currentTreeUri, targetDocId);
+            try (Cursor cursor = getContentResolver().query(
+                    target,
+                    new String[]{DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                                 DocumentsContract.Document.COLUMN_MIME_TYPE},
+                    null, null, null)) {
+                if (cursor != null && cursor.moveToFirst()
+                        && !DocumentsContract.Document.MIME_TYPE_DIR.equals(cursor.getString(1))) {
+                    return target;
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return null;
     }
 
     private void startRecursiveTagScanAsync() {
@@ -3234,6 +3280,7 @@ public class FileBrowserQueueActivity extends Activity {
         Uri[] hintMatches = new Uri[n];
         Uri[] nameMatches = new Uri[n];
         Uri[] extMatches  = new Uri[n];
+        String[] hints = parentHints(requests);
 
         ArrayList<File> stack = new ArrayList<>();
         stack.add(root);
@@ -3250,7 +3297,7 @@ public class FileBrowserQueueActivity extends Activity {
                 for (int i = 0; i < n; i++) {
                     if (hintMatches[i] != null) continue;
                     if (childName.equalsIgnoreCase(requests.get(i).file)) {
-                        String hint = requests.get(i).parent;
+                        String hint = hints[i];
                         if (hint.length() > 0 && dirName.equalsIgnoreCase(hint)) {
                             hintMatches[i] = childUri;
                         } else if (nameMatches[i] == null) {
@@ -3275,6 +3322,7 @@ public class FileBrowserQueueActivity extends Activity {
         Uri[] hintMatches = new Uri[n];
         Uri[] nameMatches = new Uri[n];
         Uri[] extMatches  = new Uri[n];
+        String[] hints = parentHints(requests);
 
         String rootDocId;
         try {
@@ -3314,7 +3362,7 @@ public class FileBrowserQueueActivity extends Activity {
                     for (int i = 0; i < n; i++) {
                         if (hintMatches[i] != null) continue;
                         if (!childName.equalsIgnoreCase(requests.get(i).file)) continue;
-                        String hint = requests.get(i).parent;
+                        String hint = hints[i];
                         if (hint.length() > 0 && dirName.equalsIgnoreCase(hint)) {
                             hintMatches[i] = childUri;
                         } else if (nameMatches[i] == null) {
@@ -3407,8 +3455,9 @@ public class FileBrowserQueueActivity extends Activity {
                         String normalized = trimmed.replace('\\', '/');
                         int lastSlash = normalized.lastIndexOf('/');
                         String filename = lastSlash >= 0 ? normalized.substring(lastSlash + 1) : normalized;
-                        requests.add(new BluetoothQueueBridge.TrackRequest(
-                                filename, parentFolderFromPath(normalized)));
+                        // Playlist entries are already paths relative to the playlist (typically the
+                        // root) folder, so forward the whole thing as the full-path fast-match hint.
+                        requests.add(new BluetoothQueueBridge.TrackRequest(filename, normalized));
                     }
                 }
             }
@@ -3429,7 +3478,24 @@ public class FileBrowserQueueActivity extends Activity {
         String title  = entry.tagsCached ? entry.title  : null;
         String artist = entry.tagsCached ? entry.artist : null;
         String date   = entry.tagsCached ? entry.date   : null;
-        btController.sendQueueRequest(entry.name, getParentFolderName(entry.uri), title, artist, date);
+        btController.sendQueueRequest(entry.name, relativePathFromRoot(entry.uri), title, artist, date);
+    }
+
+    /**
+     * Returns the file's path relative to the currently selected root folder
+     * (the one chosen via Browse), e.g. "Artist/Album/song.mp3", or "" if it can't be resolved.
+     * The receiver tries this exact path first before falling back to a full tree scan.
+     */
+    private String relativePathFromRoot(Uri uri) {
+        if (uri == null) return "";
+        String rel;
+        if (browsingDocumentTree) {
+            rel = documentUriStack.isEmpty() ? null
+                    : resolveRelativeDocumentPath(uri, documentUriStack.get(0));
+        } else {
+            rel = resolveRelativeFilePath(uri, currentFileRootDirectory);
+        }
+        return rel != null ? rel : "";
     }
 
     private void sendQueueToRemote() {
@@ -3442,7 +3508,8 @@ public class FileBrowserQueueActivity extends Activity {
             String title  = entry.tagsCached ? entry.title  : null;
             String artist = entry.tagsCached ? entry.artist : null;
             String date   = entry.tagsCached ? entry.date   : null;
-            requests.add(new BluetoothQueueBridge.TrackRequest(entry.name, getParentFolderName(entry.uri), title, artist, date));
+            requests.add(new BluetoothQueueBridge.TrackRequest(entry.name,
+                    relativePathFromRoot(entry.uri), title, artist, date));
         }
         if (btController.sendQueueRequests(requests)) {
             Toast.makeText(this, getString(R.string.sent_tracks, requests.size()), Toast.LENGTH_SHORT).show();

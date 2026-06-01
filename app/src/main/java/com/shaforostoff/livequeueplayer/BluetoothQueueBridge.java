@@ -28,18 +28,19 @@ final class BluetoothQueueBridge {
 
     static final class TrackRequest {
         final String file;
-        final String parent;
+        /** Full path relative to the sender's root folder (e.g. "Artist/Album/song.mp3"), or "". */
+        final String path;
         final String title;
         final String artist;
         final String date;
 
-        TrackRequest(String file, String parent) {
-            this(file, parent, null, null, null);
+        TrackRequest(String file, String path) {
+            this(file, path, null, null, null);
         }
 
-        TrackRequest(String file, String parent, String title, String artist, String date) {
+        TrackRequest(String file, String path, String title, String artist, String date) {
             this.file   = file;
-            this.parent = parent != null ? parent : "";
+            this.path   = path   != null ? path   : "";
             this.title  = title  != null ? title  : "";
             this.artist = artist != null ? artist : "";
             this.date   = date   != null ? date   : "";
@@ -152,7 +153,7 @@ final class BluetoothQueueBridge {
             for (TrackRequest req : requests) {
                 JSONObject obj = new JSONObject();
                 obj.put("file", req.file);
-                obj.put("parent", req.parent);
+                if (!req.path.isEmpty())   obj.put("path",   req.path);
                 if (!req.title.isEmpty())  obj.put("title",  req.title);
                 if (!req.artist.isEmpty()) obj.put("artist", req.artist);
                 if (!req.date.isEmpty())   obj.put("date",   req.date);
@@ -286,11 +287,11 @@ final class BluetoothQueueBridge {
                         for (int i = 0; i < arr.length(); i++) {
                             JSONObject obj = arr.getJSONObject(i);
                             String file   = obj.optString("file",   "");
-                            String parent = obj.optString("parent", "");
+                            String path   = obj.optString("path",   "");
                             String title  = obj.optString("title",  "");
                             String artist = obj.optString("artist", "");
                             String date   = obj.optString("date",   "");
-                            if (file.length() > 0) tracks.add(new TrackRequest(file, parent, title, artist, date));
+                            if (file.length() > 0) tracks.add(new TrackRequest(file, path, title, artist, date));
                         }
                         if (!tracks.isEmpty()) listener.onQueueRequestsReceived(tracks);
                     }

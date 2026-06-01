@@ -1436,7 +1436,7 @@ public class FileBrowserQueueActivity extends Activity {
 
     private void applyFilenameYearsInPlace() {
         for (FileEntry entry : fileEntries) {
-            if (entry.isDirectory || entry.sortDateState == TagState.RESOLVED) {
+            if (entry.isDirectory || isPlaylistFile(entry.name) || entry.sortDateState == TagState.RESOLVED) {
                 continue;
             }
             String filenameYear = MetadataExtractor.extractYearFromFileName(entry.name);

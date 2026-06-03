@@ -2268,6 +2268,26 @@ public class FileBrowserQueueActivity extends Activity {
         QueueStore.save(this, persisted);
     }
 
+    /** Translates the swiped row for one direction and fires {@code action} once it is
+     *  dragged past half its width. Returns true if the touch was consumed as a swipe. */
+    private boolean applySwipeMove(ListView list, SwipeState s, float dx, float slop,
+                                   boolean toLeft, SwipeAction action) {
+        if (s.swipingView == null || action == null) return false;
+        if (toLeft ? dx >= -slop : dx <= slop) return false;
+        s.swiping = true;
+        float eff = toLeft ? dx + slop : dx - slop;
+        int w = s.contentView.getWidth();
+        s.contentView.setTranslationX(toLeft ? Math.max(eff, -w) : Math.min(eff, w));
+        list.getParent().requestDisallowInterceptTouchEvent(true);
+        if (w > 0 && Math.abs(eff) >= w / 2f) {
+            s.handled = true;
+            int pos = s.startPosition;
+            s.resetView();
+            action.onSwipe(pos);
+        }
+        return true;
+    }
+
     private void installQueueGestureHandler(ListView list) {
         SwipeState swipeState = new SwipeState();
         DragState dragState = new DragState();
@@ -2386,28 +2406,11 @@ public class FileBrowserQueueActivity extends Activity {
                         swipeState.startPosition = -1;
                         return false;
                     }
-                    if (dx < -horizontalSlop && swipeState.swipingView != null) {
-                        swipeState.swiping = true;
-                        float effectiveDx = dx + horizontalSlop;
-                        swipeState.contentView.setTranslationX(Math.max(effectiveDx, -swipeState.contentView.getWidth()));
-                        list.getParent().requestDisallowInterceptTouchEvent(true);
-                        if (swipeState.contentView.getWidth() > 0 && Math.abs(effectiveDx) >= swipeState.contentView.getWidth() / 2f) {
-                            swipeState.handled = true;
-                            swipeState.resetView();
-                            removeQueueAt(swipeState.startPosition);
-                        }
+                    if (applySwipeMove(list, swipeState, dx, horizontalSlop, true, this::removeQueueAt)) {
                         return true;
-                    } else if (dx > horizontalSlop && swipeState.swipingView != null && localQueueShownInRemoteMode) {
-                        swipeState.swiping = true;
-                        float effectiveDx = dx - horizontalSlop;
-                        swipeState.contentView.setTranslationX(Math.min(effectiveDx, swipeState.contentView.getWidth()));
-                        list.getParent().requestDisallowInterceptTouchEvent(true);
-                        if (swipeState.contentView.getWidth() > 0 && effectiveDx >= swipeState.contentView.getWidth() / 2f) {
-                            swipeState.handled = true;
-                            int pos = swipeState.startPosition;
-                            swipeState.resetView();
-                            sendQueueEntryToRemote(pos);
-                        }
+                    }
+                    if (localQueueShownInRemoteMode
+                            && applySwipeMove(list, swipeState, dx, horizontalSlop, false, this::sendQueueEntryToRemote)) {
                         return true;
                     }
                     return false;
@@ -2493,28 +2496,10 @@ public class FileBrowserQueueActivity extends Activity {
                         state.startPosition = -1;
                         return false;
                     }
-                    if (dx > horizontalSlop && state.swipingView != null) {
-                        state.swiping = true;
-                        float effectiveDx = dx - horizontalSlop;
-                        state.contentView.setTranslationX(Math.min(effectiveDx, state.contentView.getWidth()));
-                        list.getParent().requestDisallowInterceptTouchEvent(true);
-                        if (state.contentView.getWidth() > 0 && effectiveDx >= state.contentView.getWidth() / 2f) {
-                            state.handled = true;
-                            state.resetView();
-                            onRightSwipe.onSwipe(state.startPosition);
-                        }
+                    if (applySwipeMove(list, state, dx, horizontalSlop, false, onRightSwipe)) {
                         return true;
                     }
-                    if (dx < -horizontalSlop && onLeftSwipe != null && state.swipingView != null) {
-                        state.swiping = true;
-                        float effectiveDx = dx + horizontalSlop;
-                        state.contentView.setTranslationX(Math.max(effectiveDx, -state.contentView.getWidth()));
-                        list.getParent().requestDisallowInterceptTouchEvent(true);
-                        if (state.contentView.getWidth() > 0 && Math.abs(effectiveDx) >= state.contentView.getWidth() / 2f) {
-                            state.handled = true;
-                            state.resetView();
-                            onLeftSwipe.onSwipe(state.startPosition);
-                        }
+                    if (applySwipeMove(list, state, dx, horizontalSlop, true, onLeftSwipe)) {
                         return true;
                     }
                     return false;

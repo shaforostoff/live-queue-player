@@ -1312,7 +1312,7 @@ public class FileBrowserQueueActivity extends Activity {
 
     private void resolveTagMetadataForVisibleFolderAsync() {
         final int versionAtStart = fileEntriesVersion;
-        final ArrayList<FileEntry> pendingEntries = new ArrayList<>();
+        final ArrayList<FileEntry> pendingEntries = new ArrayList<>(fileEntries.size());
         boolean cacheApplied = false;
         for (FileEntry entry : fileEntries) {
             if (entry.isDirectory || isPlaylistFile(entry.name) ||
@@ -1614,7 +1614,7 @@ public class FileBrowserQueueActivity extends Activity {
             List<String> lines = readPlaylistLines(playlistEntry);
 
             // Resolve each entry using same-directory logic (exact + different extension).
-            ArrayList<QueueEntry> resolvedEntries = new ArrayList<>();
+            ArrayList<QueueEntry> resolvedEntries = new ArrayList<>(lines.size());
             ArrayList<String> missingNamesToToast = new ArrayList<>();
             int missingCount = 0;
             for (String line : lines) {
@@ -1893,12 +1893,17 @@ public class FileBrowserQueueActivity extends Activity {
     }
 
     private void ensureQueueTagsCachedAsync() {
-        List<QueueEntry> uncached = new ArrayList<>();
+        int uncachedCount = 0;
+        for (QueueEntry entry : queueEntries) {
+            if (!entry.tagsCached && entry.uri != null)
+                uncachedCount++;
+        }
+        if (uncachedCount == 0) return;
+        List<QueueEntry> uncached = new ArrayList<>(uncachedCount);
         for (QueueEntry entry : queueEntries) {
             if (!entry.tagsCached && entry.uri != null)
                 uncached.add(entry);
         }
-        if (uncached.isEmpty()) return;
         MetadataExtractor.TagEntry[] results = new MetadataExtractor.TagEntry[uncached.size()];
         runParallelTagReads(uncached.size(),
                 idx -> results[idx] = metadataExtractor.readSortTags(uncached.get(idx).uri),
@@ -2708,7 +2713,7 @@ public class FileBrowserQueueActivity extends Activity {
             }
         }
         if (currentPos < 0) return;
-        ArrayList<Uri> uris = new ArrayList<>();
+        ArrayList<Uri> uris = new ArrayList<>(filteredFileEntries.size() - currentPos - 1);
         for (int i = currentPos + 1; i < filteredFileEntries.size(); i++) {
             FileEntry e = filteredFileEntries.get(i);
             if (!e.isDirectory && !isPlaylistFile(e.name)) {
@@ -2784,7 +2789,7 @@ public class FileBrowserQueueActivity extends Activity {
                 }
             }
 
-            List<QueueEntry> toAdd = new ArrayList<>();
+            List<QueueEntry> toAdd = new ArrayList<>(tracks.size());
             List<String> notFound = new ArrayList<>();
             for (int i = 0; i < tracks.size(); i++) {
                 Uri uri = foundUris.get(i);
@@ -2928,7 +2933,7 @@ public class FileBrowserQueueActivity extends Activity {
                     ? storageBrowser.collectAllAudioUrisFromDocumentTree(rootDocUri, treeUri)
                     : storageBrowser.collectAllAudioUrisFromFileDirectory(fileRoot);
             if (allUris.isEmpty()) return;
-            List<Uri> toScan = new ArrayList<>();
+            List<Uri> toScan = new ArrayList<>(allUris.size());
             for (Uri uri : allUris) {
                 if (!metadataExtractor.isAllTagsCached(uri)) toScan.add(uri);
             }

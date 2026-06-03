@@ -7,7 +7,6 @@ import android.content.BroadcastReceiver;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.pm.PackageManager;
-import android.content.SharedPreferences;
 import android.content.UriPermission;
 import android.database.Cursor;
 import android.media.AudioManager;
@@ -18,8 +17,6 @@ import android.os.Bundle;
 import android.os.Environment;
 import android.os.Handler;
 import android.os.SystemClock;
-import android.os.storage.StorageManager;
-import android.os.storage.StorageVolume;
 import android.view.KeyEvent;
 import android.text.Editable;
 import android.text.TextWatcher;
@@ -57,7 +54,6 @@ import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.io.OutputStreamWriter;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -137,9 +133,7 @@ public class FileBrowserQueueActivity extends Activity {
     private static final int PERMISSION_REQUEST_CODE = 2001;
     private static final int TREE_REQUEST_CODE = 2002;
     private static final String ACTION_SEND_MULTIPLE_COMPAT = "android.intent.action.SEND_MULTIPLE";
-    private static final String MUSIC_DIRECTORY_NAME = "Music";
     private static final String BROWSER_PREFS = "browser_prefs";
-    private static final String PREF_LAST_TREE_URI = "last_tree_uri";
     private static final String PREF_SORT_MODE = "sort_mode";
     private static final long PLAYBACK_SYNC_INTERVAL_MS = 1_000L;
     private static final int PROGRESS_LEVEL_MAX = 10_000;
@@ -153,11 +147,6 @@ public class FileBrowserQueueActivity extends Activity {
             ".m4a", ".mp3", ".mp4", ".aac", ".ogg", ".flac", ".aiff", ".aif",
             ".wav", ".opus", ".wma", ".3gp", ".m3u", ".m3u8"
     };
-    private static final String[] AUDIO_EXTENSIONS_NO_PLAYLIST = {
-            ".m4a", ".mp3", ".mp4", ".aac", ".ogg", ".flac", ".aiff", ".aif",
-            ".wav", ".opus", ".wma", ".3gp"
-    };
-
     // -- file browser state -------------------------------------------------
     private final List<FileEntry> fileEntries = new ArrayList<>();
     private final List<FileEntry> filteredFileEntries = new ArrayList<>();
@@ -180,7 +169,6 @@ public class FileBrowserQueueActivity extends Activity {
     private ListView queueList;
     private TextView queueEmptyHint;
     private boolean queueTransitionActive;
-    private boolean browsingDocumentTree;
     private int currentPlayingQueueIndex = -1;
     private int draggingQueueIndex = -1;
     // set when a swipe gesture starts so the ListView's item-click (fired on finger
@@ -299,10 +287,7 @@ public class FileBrowserQueueActivity extends Activity {
             }
         }
     };
-    private Uri currentTreeUri;
-    private final ArrayList<Uri> documentUriStack = new ArrayList<>();
-    private File currentFileDirectory;
-    private File currentFileRootDirectory;
+    private StorageBrowser storageBrowser;
 
     // ---------------------------------------------------------------------
     @Override
@@ -342,6 +327,7 @@ public class FileBrowserQueueActivity extends Activity {
         saveButton = findViewById(R.id.btn_save_queue);
         stopButton = findViewById(R.id.btn_stop_queue);
         metadataExtractor = ((App) getApplication()).getMetadataExtractor();
+        storageBrowser = new StorageBrowser(this);
         btController = new BluetoothController(this, new BluetoothController.Callback() {
             @Override
             public void onModeSelected() {
@@ -546,7 +532,7 @@ public class FileBrowserQueueActivity extends Activity {
         } catch (SecurityException | IllegalArgumentException ignored) {
         }
 
-        rememberLastTreeUri(treeUri);
+        storageBrowser.rememberLastTreeUri(treeUri);
         metadataExtractor.clearCache();
 
 
@@ -580,9 +566,9 @@ public class FileBrowserQueueActivity extends Activity {
     }
 
     private boolean restorePersistedDocumentTree() {
-        Uri rememberedTreeUri = getRememberedTreeUri();
+        Uri rememberedTreeUri = storageBrowser.getRememberedTreeUri();
         if (rememberedTreeUri != null
-                && hasReadPermissionForUri(rememberedTreeUri)
+                && storageBrowser.hasReadPermissionForUri(rememberedTreeUri)
                 && openDocumentTree(rememberedTreeUri)) {
             return true;
         }
@@ -590,7 +576,7 @@ public class FileBrowserQueueActivity extends Activity {
         for (UriPermission permission : getContentResolver().getPersistedUriPermissions()) {
             Uri uri = permission.getUri();
             if (permission.isReadPermission() && openDocumentTree(uri)) {
-                rememberLastTreeUri(uri);
+                storageBrowser.rememberLastTreeUri(uri);
                 return true;
             }
         }
@@ -629,20 +615,17 @@ public class FileBrowserQueueActivity extends Activity {
     // -- browsing helpers ----------------------------------------------------
 
     private void startBrowsing() {
-        clearDocumentBrowsingState();
+        storageBrowser.clearBrowsingState();
 
         // Prefer the Music folder, fall back to root of external storage
-        File musicDir   = getMusicDirectoryCompat();
+        File musicDir   = StorageBrowser.getMusicDirectoryCompat();
         File storageDir = Environment.getExternalStorageDirectory();
 
         if (musicDir != null && musicDir.exists() && musicDir.canRead()) {
-            currentFileRootDirectory = musicDir;
             navigateTo(musicDir);
         } else if (storageDir != null && storageDir.exists() && storageDir.canRead()) {
-            currentFileRootDirectory = storageDir;
             navigateTo(storageDir);
         } else {
-            currentFileRootDirectory = null;
             // Last resort: use MediaStore to list all audio and show as flat list
             loadFromMediaStore();
         }
@@ -658,31 +641,30 @@ public class FileBrowserQueueActivity extends Activity {
 
     private boolean canNavigateUpFromCurrentFolder() {
         if (currentBrowsePlaylistEntry != null) return true;
-        if (browsingDocumentTree) {
-            return documentUriStack.size() > 1;
+        if (storageBrowser.isBrowsingDocumentTree()) {
+            return storageBrowser.canPopDocument();
         }
-        if (currentFileDirectory == null || currentFileRootDirectory == null) {
-            return false;
-        }
-        return !sameFileLocation(currentFileDirectory, currentFileRootDirectory);
+        return storageBrowser.canNavigateUpInFiles();
     }
 
     private void navigateUpFromCurrentFolder() {
         if (currentBrowsePlaylistEntry != null) { exitPlaylistBrowseFolder(); return; }
         clearFileFilterInput();
-        if (browsingDocumentTree) {
+        if (storageBrowser.isBrowsingDocumentTree()) {
             navigateDocumentUp();
             return;
         }
-        if (currentFileDirectory == null || currentFileRootDirectory == null) {
+        File dir  = storageBrowser.getCurrentFileDirectory();
+        File root = storageBrowser.getCurrentFileRootDirectory();
+        if (dir == null || root == null) {
             return;
         }
-        if (sameFileLocation(currentFileDirectory, currentFileRootDirectory)) {
+        if (StorageBrowser.sameFileLocation(dir, root)) {
             return;
         }
-        File parent = currentFileDirectory.getParentFile();
+        File parent = dir.getParentFile();
         if (parent != null) {
-            pendingBackScrollUri = Uri.fromFile(currentFileDirectory);
+            pendingBackScrollUri = Uri.fromFile(dir);
             navigateTo(parent);
         }
     }
@@ -692,40 +674,9 @@ public class FileBrowserQueueActivity extends Activity {
         currentBrowsePlaylistEntry = null;
         resetFileBrowserPreview();
         clearFileFilterInput();
-        browsingDocumentTree = false;
-        currentFileDirectory = dir;
-        if (currentFileRootDirectory == null) {
-            currentFileRootDirectory = dir;
-        }
         fileEntriesVersion++;
         fileEntries.clear();
-
-        File[] files = dir.listFiles();
-        if (files == null || files.length == 0) {
-            applyFileFilter();
-            scrollToHighlightedFileEntry();
-            return;
-        }
-
-        // Directories first, playlists second, then other files; all sorted alphabetically
-        Arrays.sort(files, (a, b) -> {
-            if (a.isDirectory() != b.isDirectory())
-                return a.isDirectory() ? -1 : 1;
-            boolean aPlaylist = isPlaylistFile(a.getName());
-            boolean bPlaylist = isPlaylistFile(b.getName());
-            if (aPlaylist != bPlaylist)
-                return aPlaylist ? -1 : 1;
-            return a.getName().compareToIgnoreCase(b.getName());
-        });
-
-        for (File f : files) {
-            if (f.getName().startsWith(".")) continue; // skip hidden
-            if (f.isDirectory()) {
-                fileEntries.add(new FileEntry(f, f.getName(), true));
-            } else if (isAudioFile(f.getName())) {
-                fileEntries.add(new FileEntry(f, f.getName(), false));
-            }
-        }
+        fileEntries.addAll(storageBrowser.listFolder(dir));
         sortFileEntriesInPlace();
         applyFileFilter();
         scrollToHighlightedFileEntry();
@@ -736,59 +687,17 @@ public class FileBrowserQueueActivity extends Activity {
         intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
         intent.addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
         intent.addFlags(Intent.FLAG_GRANT_PREFIX_URI_PERMISSION);
-        Uri initialTreeUri = getRememberedTreeUri();
-        if (initialTreeUri != null && hasReadPermissionForUri(initialTreeUri)) {
+        Uri initialTreeUri = storageBrowser.getRememberedTreeUri();
+        if (initialTreeUri != null && storageBrowser.hasReadPermissionForUri(initialTreeUri)) {
             intent.putExtra(DocumentsContract.EXTRA_INITIAL_URI, initialTreeUri);
         } else {
             // First use: point picker at SD card so the user can find it easily.
-            Uri sdCardUri = findSdCardDocumentUri();
+            Uri sdCardUri = storageBrowser.findSdCardDocumentUri();
             if (sdCardUri != null) {
                 intent.putExtra(DocumentsContract.EXTRA_INITIAL_URI, sdCardUri);
             }
         }
         startActivityForResult(intent, TREE_REQUEST_CODE);
-    }
-
-    private Uri findSdCardDocumentUri() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return null;
-        StorageManager sm = getSystemService(StorageManager.class);
-        if (sm == null) return null;
-        for (StorageVolume vol : sm.getStorageVolumes()) {
-            if (!vol.isRemovable()) continue;
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                try {
-                    Intent volIntent = vol.createOpenDocumentTreeIntent();
-                    return volIntent.getParcelableExtra(DocumentsContract.EXTRA_INITIAL_URI);
-                } catch (Exception ignored) {}
-            } else {
-                String uuid = vol.getUuid();
-                if (uuid != null) {
-                    return Uri.parse("content://com.android.externalstorage.documents/tree/"
-                            + Uri.encode(uuid + ":"));
-                }
-            }
-        }
-        return null;
-    }
-
-    private boolean hasReadPermissionForUri(Uri treeUri) {
-        if (treeUri == null) {
-            return false;
-        }
-        for (UriPermission permission : getContentResolver().getPersistedUriPermissions()) {
-            if (permission.isReadPermission() && treeUri.equals(permission.getUri())) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private void rememberLastTreeUri(Uri treeUri) {
-        if (treeUri == null) {
-            return;
-        }
-        SharedPreferences prefs = getSharedPreferences(BROWSER_PREFS, MODE_PRIVATE);
-        prefs.edit().putString(PREF_LAST_TREE_URI, treeUri.toString()).apply();
     }
 
     private void clearBrowseState() {
@@ -798,63 +707,38 @@ public class FileBrowserQueueActivity extends Activity {
         browseNextUri = null;
     }
 
-    private Uri getRememberedTreeUri() {
-        SharedPreferences prefs = getSharedPreferences(BROWSER_PREFS, MODE_PRIVATE);
-        String uriString = prefs.getString(PREF_LAST_TREE_URI, null);
-        if (uriString == null || uriString.isEmpty()) {
-            return null;
-        }
-        try {
-            return Uri.parse(uriString);
-        } catch (Exception ignored) {
-            return null;
-        }
-    }
-
     private boolean openDocumentTree(Uri treeUri) {
-        if (treeUri == null) {
+        if (!storageBrowser.openDocumentTree(treeUri)) {
             return false;
         }
-
-        try {
-            Uri rootDocumentUri = DocumentsContract.buildDocumentUriUsingTree(
-                    treeUri, DocumentsContract.getTreeDocumentId(treeUri));
-            clearDocumentBrowsingState();
-            currentTreeUri = treeUri;
-            browsingDocumentTree = true;
-            documentUriStack.add(rootDocumentUri);
-            return browseCurrentDocumentDirectory();
-        } catch (Exception ignored) {
-            clearDocumentBrowsingState();
-            return false;
-        }
+        return browseCurrentDocumentDirectory();
     }
 
     private void navigateToDocumentEntry(Uri documentUri, String documentName) {
-        if (!browsingDocumentTree || documentUri == null) {
+        if (!storageBrowser.isBrowsingDocumentTree() || documentUri == null) {
             return;
         }
 
         stopBrowsePlaybackForFolderSwitch();
         resetFileBrowserPreview();
         clearFileFilterInput();
-        documentUriStack.add(documentUri);
+        storageBrowser.pushDocument(documentUri);
         if (!browseCurrentDocumentDirectory()) {
-            documentUriStack.remove(documentUriStack.size() - 1);
+            storageBrowser.popDocument();
         }
     }
 
     private void navigateDocumentUp() {
-        if (!browsingDocumentTree) {
+        if (!storageBrowser.isBrowsingDocumentTree()) {
             return;
         }
 
         stopBrowsePlaybackForFolderSwitch();
         resetFileBrowserPreview();
         clearFileFilterInput();
-        if (documentUriStack.size() > 1) {
-            pendingBackScrollUri = documentUriStack.get(documentUriStack.size() - 1);
-            documentUriStack.remove(documentUriStack.size() - 1);
+        if (storageBrowser.canPopDocument()) {
+            pendingBackScrollUri = storageBrowser.getCurrentDocumentUri();
+            storageBrowser.popDocument();
             browseCurrentDocumentDirectory();
         } else {
             requestPermissionsAndBrowse();
@@ -874,76 +758,24 @@ public class FileBrowserQueueActivity extends Activity {
 
     private boolean browseCurrentDocumentDirectory() {
         currentBrowsePlaylistEntry = null;
-        if (currentTreeUri == null || documentUriStack.isEmpty()) {
+        if (!storageBrowser.hasDocumentLocation()) {
             return false;
         }
 
         fileEntriesVersion++;
         fileEntries.clear();
 
-        Uri currentDocumentUri = documentUriStack.get(documentUriStack.size() - 1);
-        String documentId = DocumentsContract.getDocumentId(currentDocumentUri);
-        Uri childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(currentTreeUri, documentId);
-        String[] projection = {
-                DocumentsContract.Document.COLUMN_DOCUMENT_ID,
-                DocumentsContract.Document.COLUMN_DISPLAY_NAME,
-                DocumentsContract.Document.COLUMN_MIME_TYPE
-        };
-
-        try (Cursor cursor = getContentResolver().query(childrenUri, projection, null, null, null)) {
-            if (cursor == null) {
-                applyFileFilter();
-                return true;
-            }
-
-            while (cursor.moveToNext()) {
-                String childDocumentId = cursor.getString(0);
-                String childName = cursor.getString(1);
-                String mimeType = cursor.getString(2);
-                if (childName == null || childName.startsWith(".")) {
-                    continue;
-                }
-
-                boolean isDirectory = DocumentsContract.Document.MIME_TYPE_DIR.equals(mimeType);
-                if (!isDirectory && !isAudioDocument(childName, mimeType)) {
-                    continue;
-                }
-
-                Uri childDocumentUri = DocumentsContract.buildDocumentUriUsingTree(currentTreeUri, childDocumentId);
-                fileEntries.add(new FileEntry(childDocumentUri, childName, isDirectory));
-            }
-
-            sortFileEntriesInPlace();
-            applyFileFilter();
-            scrollToHighlightedFileEntry();
-            return true;
-        } catch (Exception ignored) {
-            fileEntries.clear();
+        List<FileEntry> listed = storageBrowser.readCurrentDocumentDirectory();
+        if (listed == null) {
             applyFileFilter();
             return false;
         }
-    }
 
-    private boolean isAudioDocument(String name, String mimeType) {
-        if (mimeType != null) {
-            if (mimeType.startsWith("audio/")) {
-                return true;
-            }
-            if ("application/vnd.apple.mpegurl".equals(mimeType)
-                    || "audio/x-mpegurl".equals(mimeType)
-                    || "application/x-mpegurl".equals(mimeType)) {
-                return true;
-            }
-        }
-        return isAudioFile(name);
-    }
-
-    private void clearDocumentBrowsingState() {
-        browsingDocumentTree = false;
-        currentTreeUri = null;
-        documentUriStack.clear();
-        currentFileDirectory = null;
-        currentFileRootDirectory = null;
+        fileEntries.addAll(listed);
+        sortFileEntriesInPlace();
+        applyFileFilter();
+        scrollToHighlightedFileEntry();
+        return true;
     }
 
     private void updateStorageButtonState() {
@@ -1008,10 +840,7 @@ public class FileBrowserQueueActivity extends Activity {
     }
 
     private boolean hasCurrentFolder() {
-        if (browsingDocumentTree) {
-            return !documentUriStack.isEmpty() && currentTreeUri != null;
-        }
-        return currentFileDirectory != null;
+        return storageBrowser.hasCurrentFolder();
     }
 
     private void promptSaveDestinationThenSave(String rawName) {
@@ -1021,11 +850,8 @@ public class FileBrowserQueueActivity extends Activity {
             return;
         }
 
-        if (browsingDocumentTree) {
-            List<Uri> destinations = new ArrayList<>();
-            for (int i = documentUriStack.size() - 1; i >= 0; i--) {
-                destinations.add(documentUriStack.get(i));
-            }
+        if (storageBrowser.isBrowsingDocumentTree()) {
+            List<Uri> destinations = storageBrowser.getDocumentAncestry();
             if (destinations.size() == 1) {
                 saveQueueToDocUri(fileName, destinations.get(0));
                 return;
@@ -1044,10 +870,11 @@ public class FileBrowserQueueActivity extends Activity {
                     .show();
         } else {
             List<File> destinations = new ArrayList<>();
-            File dir = currentFileDirectory;
+            File dir = storageBrowser.getCurrentFileDirectory();
+            File root = storageBrowser.getCurrentFileRootDirectory();
             while (dir != null) {
                 destinations.add(dir);
-                if (sameFileLocation(dir, currentFileRootDirectory)) break;
+                if (StorageBrowser.sameFileLocation(dir, root)) break;
                 dir = dir.getParentFile();
             }
             if (destinations.size() == 1) {
@@ -1112,7 +939,8 @@ public class FileBrowserQueueActivity extends Activity {
             return;
         }
         boolean saved = writePlaylistToFileDir(fileName, content, destDir);
-        if (saved && currentFileDirectory != null && sameFileLocation(destDir, currentFileDirectory)) {
+        File currentDir = storageBrowser.getCurrentFileDirectory();
+        if (saved && currentDir != null && StorageBrowser.sameFileLocation(destDir, currentDir)) {
             refreshCurrentFolderListing();
         }
         onQueueSaveResult(saved, fileName);
@@ -1127,20 +955,20 @@ public class FileBrowserQueueActivity extends Activity {
             return;
         }
         boolean saved = writePlaylistToDocumentFolder(fileName, content, destDocUri);
-        if (saved && !documentUriStack.isEmpty()
-                && destDocUri.equals(documentUriStack.get(documentUriStack.size() - 1))) {
+        if (saved && destDocUri.equals(storageBrowser.getCurrentDocumentUri())) {
             refreshCurrentFolderListing();
         }
         onQueueSaveResult(saved, fileName);
     }
 
     private void refreshCurrentFolderListing() {
-        if (browsingDocumentTree) {
+        if (storageBrowser.isBrowsingDocumentTree()) {
             browseCurrentDocumentDirectory();
             return;
         }
-        if (currentFileDirectory != null) {
-            navigateTo(currentFileDirectory);
+        File dir = storageBrowser.getCurrentFileDirectory();
+        if (dir != null) {
+            navigateTo(dir);
         }
     }
 
@@ -1174,11 +1002,11 @@ public class FileBrowserQueueActivity extends Activity {
     }
 
     private boolean writePlaylistToDocumentFolder(String fileName, String content, Uri destDocUri) {
-        if (currentTreeUri == null || destDocUri == null) {
+        if (storageBrowser.getCurrentTreeUri() == null || destDocUri == null) {
             return false;
         }
 
-        Uri targetUri = findDocumentChildByName(destDocUri, fileName);
+        Uri targetUri = storageBrowser.findDocumentChildByName(destDocUri, fileName);
         if (targetUri == null) {
             try {
                 targetUri = DocumentsContract.createDocument(
@@ -1208,35 +1036,6 @@ public class FileBrowserQueueActivity extends Activity {
         }
     }
 
-    private Uri findDocumentChildByName(Uri parentDocumentUri, String childName) {
-        if (currentTreeUri == null) {
-            return null;
-        }
-
-        try {
-            String parentDocumentId = DocumentsContract.getDocumentId(parentDocumentUri);
-            Uri childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(currentTreeUri, parentDocumentId);
-            String[] projection = {
-                    DocumentsContract.Document.COLUMN_DOCUMENT_ID,
-                    DocumentsContract.Document.COLUMN_DISPLAY_NAME
-            };
-            try (Cursor cursor = getContentResolver().query(childrenUri, projection, null, null, null)) {
-                if (cursor == null) {
-                    return null;
-                }
-                while (cursor.moveToNext()) {
-                    String documentId = cursor.getString(0);
-                    String displayName = cursor.getString(1);
-                    if (displayName != null && displayName.equals(childName)) {
-                        return DocumentsContract.buildDocumentUriUsingTree(currentTreeUri, documentId);
-                    }
-                }
-            }
-        } catch (Exception ignored) {
-            return null;
-        }
-        return null;
-    }
 
     private String resolveRelativeFilePath(Uri entryUri, File baseDir) {
         if (baseDir == null) {
@@ -1285,7 +1084,7 @@ public class FileBrowserQueueActivity extends Activity {
     }
 
     private String resolveRelativeDocumentPath(Uri entryUri, Uri baseDocUri) {
-        if (baseDocUri == null || currentTreeUri == null) {
+        if (baseDocUri == null || storageBrowser.getCurrentTreeUri() == null) {
             return null;
         }
 
@@ -1315,14 +1114,6 @@ public class FileBrowserQueueActivity extends Activity {
             return computeRelativePath(currentPath, entryPath);
         } catch (Exception ignored) {
             return null;
-        }
-    }
-
-    private boolean sameFileLocation(File left, File right) {
-        try {
-            return left.getCanonicalFile().equals(right.getCanonicalFile());
-        } catch (Exception ignored) {
-            return left.getAbsolutePath().equals(right.getAbsolutePath());
         }
     }
 
@@ -1786,7 +1577,7 @@ public class FileBrowserQueueActivity extends Activity {
         return false;
     }
 
-    private static boolean isAudioFile(String name) {
+    static boolean isAudioFile(String name) {
         String lower = name.toLowerCase();
         for (String ext : AUDIO_EXTENSIONS) {
             if (lower.endsWith(ext)) return true;
@@ -1794,7 +1585,7 @@ public class FileBrowserQueueActivity extends Activity {
         return false;
     }
 
-    private static boolean isPlaylistFile(String name) {
+    static boolean isPlaylistFile(String name) {
         String lower = name.toLowerCase();
         return lower.endsWith(".m3u") || lower.endsWith(".m3u8");
     }
@@ -1884,7 +1675,7 @@ public class FileBrowserQueueActivity extends Activity {
             if (target.exists() && target.isFile()) {
                 return Uri.fromFile(target);
             }
-            File fallback = findFileWithDifferentExtension(target);
+            File fallback = StorageBrowser.findFileWithDifferentExtension(target);
             return fallback != null ? Uri.fromFile(fallback) : null;
         }
 
@@ -1892,7 +1683,7 @@ public class FileBrowserQueueActivity extends Activity {
     }
 
     private Uri resolveDocumentPlaylistTargetUri(Uri playlistUri, String pathValue) {
-        if (currentTreeUri == null || playlistUri == null) {
+        if (storageBrowser.getCurrentTreeUri() == null || playlistUri == null) {
             return null;
         }
 
@@ -1921,11 +1712,11 @@ public class FileBrowserQueueActivity extends Activity {
             }
 
             String targetDocumentId = volume + ":" + normalizedPath;
-            Uri targetUri = DocumentsContract.buildDocumentUriUsingTree(currentTreeUri, targetDocumentId);
-            if (documentExists(targetUri)) {
+            Uri targetUri = DocumentsContract.buildDocumentUriUsingTree(storageBrowser.getCurrentTreeUri(), targetDocumentId);
+            if (storageBrowser.documentExists(targetUri)) {
                 return targetUri;
             }
-            return findDocumentWithDifferentExtension(volume, normalizedPath);
+            return storageBrowser.findDocumentWithDifferentExtension(volume, normalizedPath);
         } catch (Exception ignored) {
             return null;
         }
@@ -2044,7 +1835,7 @@ public class FileBrowserQueueActivity extends Activity {
                 int dot = docId.lastIndexOf('.');
                 String baseDocId = dot >= 0 ? docId.substring(0, dot) : docId;
                 String originalExt = dot >= 0 ? docId.substring(dot) : "";
-                for (String ext : AUDIO_EXTENSIONS_NO_PLAYLIST) {
+                for (String ext : StorageBrowser.AUDIO_EXTENSIONS_NO_PLAYLIST) {
                     if (ext.equals(originalExt)) continue;
                     String candidate = baseDocId + ext;
                     if (siblings.contains(candidate)) {
@@ -2056,45 +1847,6 @@ public class FileBrowserQueueActivity extends Activity {
         }
 
         return result;
-    }
-
-    private static File findFileWithDifferentExtension(File file) {
-        File dir = file.getParentFile();
-        if (dir == null) return null;
-        String name = file.getName();
-        int dot = name.lastIndexOf('.');
-        String base = dot >= 0 ? name.substring(0, dot) : name;
-        String originalExt = dot >= 0 ? name.substring(dot) : "";
-        for (String ext : AUDIO_EXTENSIONS_NO_PLAYLIST) {
-            if (ext.equals(originalExt)) continue;
-            File candidate = new File(dir, base + ext);
-            if (candidate.isFile()) return candidate;
-        }
-        return null;
-    }
-
-    private Uri findDocumentWithDifferentExtension(String volume, String normalizedPath) {
-        int dot = normalizedPath.lastIndexOf('.');
-        String basePath = dot >= 0 ? normalizedPath.substring(0, dot) : normalizedPath;
-        String originalExt = dot >= 0 ? normalizedPath.substring(dot) : "";
-        for (String ext : AUDIO_EXTENSIONS_NO_PLAYLIST) {
-            if (ext.equals(originalExt)) continue;
-            String candidateDocId = volume + ":" + basePath + ext;
-            Uri candidateUri = DocumentsContract.buildDocumentUriUsingTree(currentTreeUri, candidateDocId);
-            if (documentExists(candidateUri)) {
-                return candidateUri;
-            }
-        }
-        return null;
-    }
-
-    private boolean documentExists(Uri documentUri) {
-        String[] projection = {DocumentsContract.Document.COLUMN_DOCUMENT_ID};
-        try (Cursor cursor = getContentResolver().query(documentUri, projection, null, null, null)) {
-            return cursor != null && cursor.moveToFirst();
-        } catch (Exception ignored) {
-            return false;
-        }
     }
 
     private String getDisplayNameForPlaylistItem(String playlistValue, Uri resolvedUri) {
@@ -2562,7 +2314,7 @@ public class FileBrowserQueueActivity extends Activity {
         updateStorageButtonState();
 
         final int versionAtStart = fileEntriesVersion;
-        final Uri treeUri = currentTreeUri;
+        final Uri treeUri = storageBrowser.getCurrentTreeUri();
         tagReadExecutor.submit(() -> {
             List<String> lines = readPlaylistLines(playlistEntry);
             List<FileEntry> tracks = new ArrayList<>(lines.size());
@@ -2603,10 +2355,13 @@ public class FileBrowserQueueActivity extends Activity {
         fileFilterInput.setText("");
         pendingBackScrollUri = currentBrowsePlaylistEntry.uri;
         currentBrowsePlaylistEntry = null;
-        if (browsingDocumentTree) {
+        if (storageBrowser.isBrowsingDocumentTree()) {
             browseCurrentDocumentDirectory();
-        } else if (currentFileDirectory != null) {
-            navigateTo(currentFileDirectory);
+        } else {
+            File dir = storageBrowser.getCurrentFileDirectory();
+            if (dir != null) {
+                navigateTo(dir);
+            }
         }
     }
 
@@ -3122,9 +2877,9 @@ public class FileBrowserQueueActivity extends Activity {
 
     private List<Uri> findRequestedAudioUris(List<BluetoothQueueBridge.TrackRequest> requests) {
         int n = requests.size();
-        boolean isDocTree = browsingDocumentTree && !documentUriStack.isEmpty() && currentTreeUri != null;
-        Uri rootDocUri = isDocTree ? documentUriStack.get(0) : null;
-        File fileRoot = currentFileRootDirectory;
+        boolean isDocTree = storageBrowser.isBrowsingDocumentTree() && storageBrowser.hasDocumentLocation();
+        Uri rootDocUri = isDocTree ? storageBrowser.getDocumentRootUri() : null;
+        File fileRoot = storageBrowser.getCurrentFileRootDirectory();
 
         // Fast path: when the music folders are identical on both devices the full path sent by
         // the peer resolves directly, so we can skip the expensive recursive tree scan entirely.
@@ -3133,8 +2888,8 @@ public class FileBrowserQueueActivity extends Activity {
         for (int i = 0; i < n; i++) {
             String relPath = requests.get(i).path;
             if (relPath.isEmpty()) continue;
-            Uri hit = isDocTree ? resolveDirectDocumentPath(rootDocUri, relPath)
-                                : resolveDirectFilePath(fileRoot, relPath);
+            Uri hit = isDocTree ? storageBrowser.resolveDirectDocumentPath(rootDocUri, relPath)
+                                : storageBrowser.resolveDirectFilePath(fileRoot, relPath);
             if (hit != null) {
                 direct[i] = hit;
                 resolved++;
@@ -3162,47 +2917,16 @@ public class FileBrowserQueueActivity extends Activity {
         return results;
     }
 
-    /** Resolves a root-relative path directly against a file-based root folder, or null if absent. */
-    private Uri resolveDirectFilePath(File root, String relPath) {
-        if (root == null) return null;
-        File target = new File(root, relPath);
-        return target.isFile() ? Uri.fromFile(target) : null;
-    }
-
-    /** Resolves a root-relative path directly against a SAF document-tree root, or null if absent. */
-    private Uri resolveDirectDocumentPath(Uri rootDocUri, String relPath) {
-        if (rootDocUri == null || currentTreeUri == null) return null;
-        try {
-            String rootDocId = DocumentsContract.getDocumentId(rootDocUri);
-            if (rootDocId == null) return null;
-            String sep = (rootDocId.endsWith(":") || rootDocId.endsWith("/")) ? "" : "/";
-            String targetDocId = rootDocId + sep + relPath;
-            Uri target = DocumentsContract.buildDocumentUriUsingTree(currentTreeUri, targetDocId);
-            try (Cursor cursor = getContentResolver().query(
-                    target,
-                    new String[]{DocumentsContract.Document.COLUMN_DOCUMENT_ID,
-                                 DocumentsContract.Document.COLUMN_MIME_TYPE},
-                    null, null, null)) {
-                if (cursor != null && cursor.moveToFirst()
-                        && !DocumentsContract.Document.MIME_TYPE_DIR.equals(cursor.getString(1))) {
-                    return target;
-                }
-            }
-        } catch (Exception ignored) {
-        }
-        return null;
-    }
-
     private void startRecursiveTagScanAsync() {
-        final boolean isDocTree = browsingDocumentTree && !documentUriStack.isEmpty() && currentTreeUri != null;
-        final Uri rootDocUri = isDocTree ? documentUriStack.get(0) : null;
-        final Uri treeUri = currentTreeUri;
-        final File fileRoot = currentFileRootDirectory;
+        final boolean isDocTree = storageBrowser.isBrowsingDocumentTree() && storageBrowser.hasDocumentLocation();
+        final Uri rootDocUri = isDocTree ? storageBrowser.getDocumentRootUri() : null;
+        final Uri treeUri = storageBrowser.getCurrentTreeUri();
+        final File fileRoot = storageBrowser.getCurrentFileRootDirectory();
         if (!isDocTree && fileRoot == null) return;
         new Thread(() -> {
             List<Uri> allUris = isDocTree
-                    ? collectAllAudioUrisFromDocumentTree(rootDocUri, treeUri)
-                    : collectAllAudioUrisFromFileDirectory(fileRoot);
+                    ? storageBrowser.collectAllAudioUrisFromDocumentTree(rootDocUri, treeUri)
+                    : storageBrowser.collectAllAudioUrisFromFileDirectory(fileRoot);
             if (allUris.isEmpty()) return;
             List<Uri> toScan = new ArrayList<>();
             for (Uri uri : allUris) {
@@ -3212,60 +2936,6 @@ public class FileBrowserQueueActivity extends Activity {
             runParallelTagReads(toScan.size(),
                     idx -> metadataExtractor.readSortTags(toScan.get(idx)), null);
         }).start();
-    }
-
-    private List<Uri> collectAllAudioUrisFromDocumentTree(Uri rootDocUri, Uri treeUri) {
-        List<Uri> result = new ArrayList<>();
-        String rootDocId;
-        try {
-            rootDocId = DocumentsContract.getDocumentId(rootDocUri);
-        } catch (Exception e) {
-            return result;
-        }
-        String[] projection = {
-                DocumentsContract.Document.COLUMN_DOCUMENT_ID,
-                DocumentsContract.Document.COLUMN_DISPLAY_NAME,
-                DocumentsContract.Document.COLUMN_MIME_TYPE
-        };
-        ArrayList<String> stack = new ArrayList<>();
-        stack.add(rootDocId);
-        while (!stack.isEmpty()) {
-            String dirDocId = stack.remove(stack.size() - 1);
-            Uri childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, dirDocId);
-            try (Cursor cursor = getContentResolver().query(childrenUri, projection, null, null, null)) {
-                if (cursor == null) continue;
-                while (cursor.moveToNext()) {
-                    String childDocId = cursor.getString(0);
-                    String childName  = cursor.getString(1);
-                    String mimeType   = cursor.getString(2);
-                    if (childDocId == null || childName == null) continue;
-                    if (DocumentsContract.Document.MIME_TYPE_DIR.equals(mimeType)) {
-                        stack.add(childDocId);
-                    } else if (isAudioDocument(childName, mimeType)) {
-                        result.add(DocumentsContract.buildDocumentUriUsingTree(treeUri, childDocId));
-                    }
-                }
-            } catch (Exception ignored) {
-            }
-        }
-        return result;
-    }
-
-    private List<Uri> collectAllAudioUrisFromFileDirectory(File root) {
-        List<Uri> result = new ArrayList<>();
-        ArrayList<File> stack = new ArrayList<>();
-        stack.add(root);
-        while (!stack.isEmpty()) {
-            File dir = stack.remove(stack.size() - 1);
-            File[] children = dir.listFiles();
-            if (children == null) continue;
-            for (File child : children) {
-                if (child == null) continue;
-                if (child.isDirectory()) stack.add(child);
-                else if (isAudioFile(child.getName())) result.add(Uri.fromFile(child));
-            }
-        }
-        return result;
     }
 
     /**
@@ -3317,6 +2987,7 @@ public class FileBrowserQueueActivity extends Activity {
      */
     private List<Uri> findAllInDocumentTree(Uri rootDocumentUri, List<BluetoothQueueBridge.TrackRequest> requests) {
         int n = requests.size();
+        Uri treeUri = storageBrowser.getCurrentTreeUri();
         Uri[] hintMatches = new Uri[n];
         Uri[] nameMatches = new Uri[n];
         Uri[] extMatches  = new Uri[n];
@@ -3344,7 +3015,7 @@ public class FileBrowserQueueActivity extends Activity {
             String[] current = stack.remove(stack.size() - 1);
             String dirDocId = current[0];
             String dirName = current[1];
-            Uri childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(currentTreeUri, dirDocId);
+            Uri childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, dirDocId);
             try (Cursor cursor = getContentResolver().query(childrenUri, projection, null, null, null)) {
                 if (cursor == null) continue;
                 while (cursor.moveToNext()) {
@@ -3356,7 +3027,7 @@ public class FileBrowserQueueActivity extends Activity {
                         stack.add(new String[]{childDocId, childName});
                         continue;
                     }
-                    Uri childUri = DocumentsContract.buildDocumentUriUsingTree(currentTreeUri, childDocId);
+                    Uri childUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, childDocId);
                     for (int i = 0; i < n; i++) {
                         if (hintMatches[i] != null) continue;
                         if (!childName.equalsIgnoreCase(requests.get(i).file)) continue;
@@ -3487,11 +3158,12 @@ public class FileBrowserQueueActivity extends Activity {
     private String relativePathFromRoot(Uri uri) {
         if (uri == null) return "";
         String rel;
-        if (browsingDocumentTree) {
-            rel = documentUriStack.isEmpty() ? null
-                    : resolveRelativeDocumentPath(uri, documentUriStack.get(0));
+        if (storageBrowser.isBrowsingDocumentTree()) {
+            Uri rootDocUri = storageBrowser.getDocumentRootUri();
+            rel = rootDocUri == null ? null
+                    : resolveRelativeDocumentPath(uri, rootDocUri);
         } else {
-            rel = resolveRelativeFilePath(uri, currentFileRootDirectory);
+            rel = resolveRelativeFilePath(uri, storageBrowser.getCurrentFileRootDirectory());
         }
         return rel != null ? rel : "";
     }
@@ -3736,9 +3408,6 @@ public class FileBrowserQueueActivity extends Activity {
         return (candidate >= 0 && candidate < queueEntries.size()) ? candidate : -1;
     }
 
-    private File getMusicDirectoryCompat() {
-        return Environment.getExternalStoragePublicDirectory(MUSIC_DIRECTORY_NAME);
-    }
 
     @Override
     public void onBackPressed() {

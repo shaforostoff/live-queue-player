@@ -1331,21 +1331,6 @@ public class FileBrowserQueueActivity extends Activity {
      * Used as a disambiguation hint when the fast full-path lookup misses and we fall back
      * to a recursive tree scan.
      */
-    private static String[] parentHints(List<BluetoothQueueBridge.TrackRequest> requests) {
-        String[] hints = new String[requests.size()];
-        for (int i = 0; i < hints.length; i++) hints[i] = parentFolderFromPath(requests.get(i).path);
-        return hints;
-    }
-
-    /** Returns the immediate parent folder name from a '/'-separated path, or "" if none. */
-    private static String parentFolderFromPath(String path) {
-        int lastSlash = path.lastIndexOf('/');
-        if (lastSlash <= 0) return "";
-        int prevSlash = path.lastIndexOf('/', lastSlash - 1);
-        return prevSlash >= 0 ? path.substring(prevSlash + 1, lastSlash)
-                              : path.substring(0, lastSlash);
-    }
-
     private String parentPath(String path) {
         if (path == null) {
             return null;
@@ -3024,21 +3009,20 @@ public class FileBrowserQueueActivity extends Activity {
             if (nameCount < tracks.size()) {
                 List<Map.Entry<String, MetadataExtractor.TagEntry>> cacheSnapshot =
                         metadataExtractor.snapshotCacheEntries();
-                int[] matchKind = new int[1];
-                String[] matchedTitle = new String[1];
                 for (int i = 0; i < tracks.size(); i++) {
                     if (foundUris.get(i) != null) continue;
                     BluetoothQueueBridge.TrackRequest req = tracks.get(i);
                     if (!req.title.isEmpty()) {
-                        Uri found = findInTagCacheByTitleAndArtist(req.title, req.artist, cacheSnapshot, matchKind, matchedTitle);
-                        if (found != null) {
-                            foundUris.set(i, found);
-                            if (matchKind[0] == TAG_MATCH_EXACT) {
+                        TrackMatcher.TagMatch match =
+                                TrackMatcher.findInTagCacheByTitleAndArtist(req.title, req.artist, cacheSnapshot);
+                        if (match != null) {
+                            foundUris.set(i, match.uri);
+                            if (match.exact) {
                                 tagCount++;
-                                tagMatchedTitle = matchedTitle[0];
+                                tagMatchedTitle = match.label;
                             } else {
                                 fuzzyCount++;
-                                fuzzyMatchedTitle = matchedTitle[0];
+                                fuzzyMatchedTitle = match.label;
                             }
                         }
                     }
@@ -3294,7 +3278,7 @@ public class FileBrowserQueueActivity extends Activity {
         Uri[] hintMatches = new Uri[n];
         Uri[] nameMatches = new Uri[n];
         Uri[] extMatches  = new Uri[n];
-        String[] hints = parentHints(requests);
+        String[] hints = TrackMatcher.parentHints(requests);
 
         ArrayList<File> stack = new ArrayList<>();
         stack.add(root);
@@ -3319,11 +3303,11 @@ public class FileBrowserQueueActivity extends Activity {
                         }
                     }
                 }
-                applyExtFallbackMatch(stripExtension(childName), childUri, requests, hintMatches, nameMatches, extMatches);
+                TrackMatcher.applyExtFallbackMatch(TrackMatcher.stripExtension(childName), childUri, requests, hintMatches, nameMatches, extMatches);
             }
         }
 
-        return mergeMatchResults(hintMatches, nameMatches, extMatches);
+        return TrackMatcher.mergeMatchResults(hintMatches, nameMatches, extMatches);
     }
 
     /**
@@ -3336,7 +3320,7 @@ public class FileBrowserQueueActivity extends Activity {
         Uri[] hintMatches = new Uri[n];
         Uri[] nameMatches = new Uri[n];
         Uri[] extMatches  = new Uri[n];
-        String[] hints = parentHints(requests);
+        String[] hints = TrackMatcher.parentHints(requests);
 
         String rootDocId;
         try {
@@ -3383,13 +3367,13 @@ public class FileBrowserQueueActivity extends Activity {
                             nameMatches[i] = childUri;
                         }
                     }
-                    applyExtFallbackMatch(stripExtension(childName), childUri, requests, hintMatches, nameMatches, extMatches);
+                    TrackMatcher.applyExtFallbackMatch(TrackMatcher.stripExtension(childName), childUri, requests, hintMatches, nameMatches, extMatches);
                 }
             } catch (Exception ignored) {
             }
         }
 
-        return mergeMatchResults(hintMatches, nameMatches, extMatches);
+        return TrackMatcher.mergeMatchResults(hintMatches, nameMatches, extMatches);
     }
 
     private boolean isPlaybackActiveOrFading() {
@@ -3528,89 +3512,6 @@ public class FileBrowserQueueActivity extends Activity {
         if (btController.sendQueueRequests(requests)) {
             Toast.makeText(this, getString(R.string.sent_tracks, requests.size()), Toast.LENGTH_SHORT).show();
         }
-    }
-
-    private static String stripExtension(String name) {
-        int dot = name.lastIndexOf('.');
-        return dot > 0 ? name.substring(0, dot) : name;
-    }
-
-    private static void applyExtFallbackMatch(String childNoExt, Uri childUri,
-            List<BluetoothQueueBridge.TrackRequest> requests, Uri[] hintMatches, Uri[] nameMatches, Uri[] extMatches) {
-        for (int i = 0; i < requests.size(); i++) {
-            if (hintMatches[i] != null || nameMatches[i] != null || extMatches[i] != null) continue;
-            if (childNoExt.equalsIgnoreCase(stripExtension(requests.get(i).file))) {
-                extMatches[i] = childUri;
-            }
-        }
-    }
-
-    private static List<Uri> mergeMatchResults(Uri[] hintMatches, Uri[] nameMatches, Uri[] extMatches) {
-        List<Uri> results = new ArrayList<>(hintMatches.length);
-        for (int i = 0; i < hintMatches.length; i++) {
-            Uri r = hintMatches[i];
-            if (r == null) r = nameMatches[i];
-            if (r == null) r = extMatches[i];
-            results.add(r);
-        }
-        return results;
-    }
-
-    private static final float FUZZY_TITLE_THRESHOLD = 0.8f;
-    private static final int TAG_MATCH_EXACT = 1;
-    private static final int TAG_MATCH_FUZZY = 2;
-
-    private static Uri findInTagCacheByTitleAndArtist(String title, String artist,
-            List<Map.Entry<String, MetadataExtractor.TagEntry>> snapshot,
-            int[] matchKind, String[] matchedTitle) {
-        // Pass 1: exact title match (case-insensitive), pick candidate with best fuzzy artist score
-        Uri bestExact = null;
-        MetadataExtractor.TagEntry bestExactTag = null;
-        float bestExactArtist = -1f;
-        for (Map.Entry<String, MetadataExtractor.TagEntry> e : snapshot) {
-            MetadataExtractor.TagEntry tag = e.getValue();
-            if (tag.title == null || !tag.title.equalsIgnoreCase(title)) continue;
-            float a = FuzzySearch.matchFuzzy(tag.artist, artist);
-            if (bestExact == null || a > bestExactArtist) {
-                bestExact = Uri.parse(e.getKey());
-                bestExactTag = tag;
-                bestExactArtist = a;
-            }
-        }
-        if (bestExact != null) {
-            matchKind[0] = TAG_MATCH_EXACT;
-            matchedTitle[0] = formatTagLabel(bestExactTag);
-            return bestExact;
-        }
-
-        // Pass 2: fuzzy title match, pick candidate with highest combined score
-        Uri bestFuzzy = null;
-        MetadataExtractor.TagEntry bestFuzzyTag = null;
-        float bestScore = 0f;
-        for (Map.Entry<String, MetadataExtractor.TagEntry> e : snapshot) {
-            MetadataExtractor.TagEntry tag = e.getValue();
-            if (tag.title == null) continue;
-            float t = FuzzySearch.matchFuzzy(tag.title, title);
-            if (t < FUZZY_TITLE_THRESHOLD) continue;
-            float combined = t * 0.7f + FuzzySearch.matchFuzzy(tag.artist, artist) * 0.3f;
-            if (combined > bestScore) {
-                bestScore = combined;
-                bestFuzzy = Uri.parse(e.getKey());
-                bestFuzzyTag = tag;
-            }
-        }
-        if (bestFuzzy != null) {
-            matchKind[0] = TAG_MATCH_FUZZY;
-            matchedTitle[0] = formatTagLabel(bestFuzzyTag);
-        }
-        return bestFuzzy;
-    }
-
-    private static String formatTagLabel(MetadataExtractor.TagEntry tag) {
-        StringBuilder sb = new StringBuilder(tag.title);
-        if (tag.artist != null && !tag.artist.isEmpty()) sb.append(" · ").append(tag.artist);
-        if (tag.date   != null && !tag.date.isEmpty())   sb.append(" · ").append(tag.date);
-        return sb.toString();
     }
 
     /**

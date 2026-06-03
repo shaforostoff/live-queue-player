@@ -104,6 +104,7 @@ public class FileBrowserQueueActivity extends Activity {
         float downX, downY;
         int startPosition = -1;
         boolean handled;
+        boolean swiping;
         View swipingView;
         View contentView;
 
@@ -113,6 +114,7 @@ public class FileBrowserQueueActivity extends Activity {
                 contentView = null;
             }
             swipingView = null;
+            swiping = false;
         }
     }
 
@@ -181,6 +183,9 @@ public class FileBrowserQueueActivity extends Activity {
     private boolean browsingDocumentTree;
     private int currentPlayingQueueIndex = -1;
     private int draggingQueueIndex = -1;
+    // set when a swipe gesture starts so the ListView's item-click (fired on finger
+    // release) is ignored, even if the swipe didn't move far enough to trigger its action
+    private boolean suppressItemClick;
     private int servicePlaybackOffset = 0;
     private Button stopButton;
     private Button browserStopButton;
@@ -397,6 +402,7 @@ public class FileBrowserQueueActivity extends Activity {
 
         // -- file browser: tap to preview (when secondary output active) or add
         fileBrowserList.setOnItemClickListener((parent, view, position, id) -> {
+            if (suppressItemClick) { suppressItemClick = false; return; }
             FileEntry entry = filteredFileEntries.get(position);
             if (entry.isDirectory) {
                 if (entry.file != null) navigateTo(entry.file);
@@ -429,6 +435,7 @@ public class FileBrowserQueueActivity extends Activity {
 
         // -- queue: tap item to play when stopped ----------------------------
         queueList.setOnItemClickListener((parent, view, position, id) -> {
+            if (suppressItemClick) { suppressItemClick = false; return; }
             if (localQueueShownInRemoteMode && position == currentPlayingQueueIndex && isPlaybackActiveOrFading()) {
                 showLyricsOverlayForQueueEntry(queueEntries.get(position));
                 return;
@@ -2275,8 +2282,10 @@ public class FileBrowserQueueActivity extends Activity {
                     swipeState.downY = event.getY();
                     swipeState.startPosition = list.pointToPosition((int) event.getX(), (int) event.getY());
                     swipeState.handled = false;
+                    swipeState.swiping = false;
                     swipeState.swipingView = null;
                     swipeState.contentView = null;
+                    suppressItemClick = false;
                     dragState.reset();
                     if (longPressRunnable[0] != null) {
                         uiHandler.removeCallbacks(longPressRunnable[0]);
@@ -2378,6 +2387,7 @@ public class FileBrowserQueueActivity extends Activity {
                         return false;
                     }
                     if (dx < -horizontalSlop && swipeState.swipingView != null) {
+                        swipeState.swiping = true;
                         float effectiveDx = dx + horizontalSlop;
                         swipeState.contentView.setTranslationX(Math.max(effectiveDx, -swipeState.contentView.getWidth()));
                         list.getParent().requestDisallowInterceptTouchEvent(true);
@@ -2388,6 +2398,7 @@ public class FileBrowserQueueActivity extends Activity {
                         }
                         return true;
                     } else if (dx > horizontalSlop && swipeState.swipingView != null && localQueueShownInRemoteMode) {
+                        swipeState.swiping = true;
                         float effectiveDx = dx - horizontalSlop;
                         swipeState.contentView.setTranslationX(Math.min(effectiveDx, swipeState.contentView.getWidth()));
                         list.getParent().requestDisallowInterceptTouchEvent(true);
@@ -2421,6 +2432,7 @@ public class FileBrowserQueueActivity extends Activity {
                         }
                         return true;
                     }
+                    if (swipeState.swiping) suppressItemClick = true;
                     if (!swipeState.handled) v.performClick();
                     swipeState.resetView();
                     boolean handled = swipeState.handled;
@@ -2448,8 +2460,10 @@ public class FileBrowserQueueActivity extends Activity {
                     state.downY = event.getY();
                     state.startPosition = list.pointToPosition((int) event.getX(), (int) event.getY());
                     state.handled = false;
+                    state.swiping = false;
                     state.swipingView = null;
                     state.contentView = null;
+                    suppressItemClick = false;
                     if (state.startPosition >= 0) {
                         int firstVisible = list.getFirstVisiblePosition();
                         int childIndex = state.startPosition - firstVisible;
@@ -2480,6 +2494,7 @@ public class FileBrowserQueueActivity extends Activity {
                         return false;
                     }
                     if (dx > horizontalSlop && state.swipingView != null) {
+                        state.swiping = true;
                         float effectiveDx = dx - horizontalSlop;
                         state.contentView.setTranslationX(Math.min(effectiveDx, state.contentView.getWidth()));
                         list.getParent().requestDisallowInterceptTouchEvent(true);
@@ -2491,6 +2506,7 @@ public class FileBrowserQueueActivity extends Activity {
                         return true;
                     }
                     if (dx < -horizontalSlop && onLeftSwipe != null && state.swipingView != null) {
+                        state.swiping = true;
                         float effectiveDx = dx + horizontalSlop;
                         state.contentView.setTranslationX(Math.max(effectiveDx, -state.contentView.getWidth()));
                         list.getParent().requestDisallowInterceptTouchEvent(true);
@@ -2505,6 +2521,7 @@ public class FileBrowserQueueActivity extends Activity {
 
                 case MotionEvent.ACTION_UP:
                 case MotionEvent.ACTION_CANCEL:
+                    if (state.swiping) suppressItemClick = true;
                     if (!state.handled) v.performClick();
                     state.resetView();
                     boolean handled = state.handled;

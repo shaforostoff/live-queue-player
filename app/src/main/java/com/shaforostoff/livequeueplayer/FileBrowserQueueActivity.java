@@ -174,6 +174,9 @@ public class FileBrowserQueueActivity extends Activity {
     // set when a swipe gesture starts so the ListView's item-click (fired on finger
     // release) is ignored, even if the swipe didn't move far enough to trigger its action
     private boolean suppressItemClick;
+    // Active swipe state for the queue list. Held as a field (not a local in the gesture handler)
+    // so per-row refreshes can skip the row currently being swiped instead of clobbering it.
+    private final SwipeState queueSwipeState = new SwipeState();
     // swipe slop thresholds (px), resolved once from display density
     private float swipeVerticalSlop;
     private float swipeHorizontalSlop;
@@ -213,6 +216,7 @@ public class FileBrowserQueueActivity extends Activity {
         public void onReceive(android.content.Context context, Intent intent) {
             if (!Service.ACTION_PLAYBACK_STATE.equals(intent.getAction())) return;
 
+            int prevPlayingIndex = currentPlayingQueueIndex;
             boolean isPlaying = intent.getBooleanExtra(Service.EXTRA_IS_PLAYING, false);
             int serviceIndex = intent.getIntExtra(Service.EXTRA_CURRENT_INDEX, -1);
             int entryId = intent.getIntExtra(Service.EXTRA_CURRENT_ENTRY_ID, -1);
@@ -257,16 +261,13 @@ public class FileBrowserQueueActivity extends Activity {
                 }
             } else {
                 queueTransitionActive = false;
-                int prevIndex = currentPlayingQueueIndex;
                 currentPlayingQueueIndex = resolvePlayingQueueIndex(entryId, serviceIndex, currentUri);
-                if (currentPlayingQueueIndex >= 0 && currentPlayingQueueIndex != prevIndex) {
+                if (currentPlayingQueueIndex >= 0 && currentPlayingQueueIndex != prevPlayingIndex) {
                     scrollTo(queueList, currentPlayingQueueIndex);
                 }
             }
 
-            if (queueAdapter != null) {
-                queueAdapter.notifyDataSetChanged();
-            }
+            refreshQueuePlaybackRows(prevPlayingIndex);
             maybeQueueNextBrowseTrack();
             if (mode == Mode.REMOTE_RECEIVE && btController != null) {
                 String key = playStateKey();
@@ -2073,8 +2074,32 @@ public class FileBrowserQueueActivity extends Activity {
         return true;
     }
 
+    /**
+     * Re-binds a single visible queue row in place via the adapter's getView, leaving every other
+     * row — and any in-progress swipe translation on it — untouched. No-op if the row is off-screen
+     * or is the one currently being swiped (so a swipe is never clobbered).
+     */
+    private void rebindQueueRow(int position) {
+        if (queueAdapter == null || queueList == null || position < 0) return;
+        if (queueSwipeState.swiping && position == queueSwipeState.startPosition) return;
+        int child = position - queueList.getFirstVisiblePosition();
+        if (child < 0 || child >= queueList.getChildCount()) return;
+        queueAdapter.getView(position, queueList.getChildAt(child), queueList);
+    }
+
+    /**
+     * Refreshes only the rows a playback-state update can change: the row that just lost the
+     * "now playing" highlight ({@code prevIndex}) and the current playing row (progress fill +
+     * remaining time). Avoids a whole-list notifyDataSetChanged so an in-progress swipe on any
+     * other row keeps its offset.
+     */
+    private void refreshQueuePlaybackRows(int prevIndex) {
+        if (prevIndex != currentPlayingQueueIndex) rebindQueueRow(prevIndex);
+        rebindQueueRow(currentPlayingQueueIndex);
+    }
+
     private void installQueueGestureHandler(ListView list) {
-        SwipeState swipeState = new SwipeState();
+        SwipeState swipeState = queueSwipeState;
         DragState dragState = new DragState();
         Runnable[] longPressRunnable = {null};
 
@@ -3276,6 +3301,7 @@ public class FileBrowserQueueActivity extends Activity {
     }
 
     private void syncWithServiceState() {
+        int prevPlayingIndex = currentPlayingQueueIndex;
         int serviceIndex = Service.sCurrentIndex;
         int entryId = Service.sCurrentEntryId;
         Uri serviceUri = Service.sCurrentUri;
@@ -3317,7 +3343,7 @@ public class FileBrowserQueueActivity extends Activity {
                 currentPlayingQueueIndex = resolvePlayingQueueIndex(entryId, serviceIndex, serviceUri);
             }
         }
-        if (queueAdapter != null) queueAdapter.notifyDataSetChanged();
+        refreshQueuePlaybackRows(prevPlayingIndex);
         if (fileAdapter != null && (fileBrowserPreviewingUri != null || Service.sBrowseMode)) fileAdapter.notifyDataSetChanged();
         maybeQueueNextBrowseTrack();
     }

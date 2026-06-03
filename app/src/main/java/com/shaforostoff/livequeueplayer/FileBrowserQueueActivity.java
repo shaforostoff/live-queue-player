@@ -186,6 +186,13 @@ public class FileBrowserQueueActivity extends Activity {
     // set when a swipe gesture starts so the ListView's item-click (fired on finger
     // release) is ignored, even if the swipe didn't move far enough to trigger its action
     private boolean suppressItemClick;
+    // swipe slop thresholds (px), resolved once from display density
+    private float swipeVerticalSlop;
+    private float swipeHorizontalSlop;
+    // row colours shared by the file-browser and queue adapters, resolved once
+    private int themeBackgroundColor;
+    private int progressTrackColor;
+    private int progressFillColor;
     private int servicePlaybackOffset = 0;
     private Button stopButton;
     private Button browserStopButton;
@@ -302,6 +309,15 @@ public class FileBrowserQueueActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_file_browser_queue);
+
+        // -- resolve shared metrics & colours once --------------------------
+        swipeVerticalSlop = dp(40f);
+        swipeHorizontalSlop = dp(20f);
+        TypedValue bg = new TypedValue();
+        getTheme().resolveAttribute(android.R.attr.colorBackground, bg, true);
+        themeBackgroundColor = bg.data;
+        progressTrackColor = getColor(R.color.queueProgressBackground);
+        progressFillColor = getColor(R.color.queueProgressFill);
 
         // -- initialize drag preview manager --------------------------------
         audioPreviewManager = new PreviewManager(this);
@@ -1703,7 +1719,7 @@ public class FileBrowserQueueActivity extends Activity {
         }
 
         ScrollView scrollView = new ScrollView(this);
-        int pad = (int) (16 * getResources().getDisplayMetrics().density);
+        int pad = (int) dp(16f);
         scrollView.setPadding(pad, pad, pad, pad);
 
         TextView lyricsView = new TextView(this);
@@ -2268,6 +2284,11 @@ public class FileBrowserQueueActivity extends Activity {
         QueueStore.save(this, persisted);
     }
 
+    /** Converts density-independent pixels to px using the current display density. */
+    private float dp(float dips) {
+        return dips * getResources().getDisplayMetrics().density;
+    }
+
     /** Initialises a swipe gesture on ACTION_DOWN: records the touch origin, resets the
      *  swipe state, and resolves the touched row + its swipe-content view (left null when
      *  the row is absent or {@code canSwipe} rejects it). */
@@ -2313,8 +2334,6 @@ public class FileBrowserQueueActivity extends Activity {
     private void installQueueGestureHandler(ListView list) {
         SwipeState swipeState = new SwipeState();
         DragState dragState = new DragState();
-        float verticalSlop = 40f * getResources().getDisplayMetrics().density;
-        float horizontalSlop = 20f * getResources().getDisplayMetrics().density;
         Runnable[] longPressRunnable = {null};
 
         list.setOnTouchListener((v, event) -> {
@@ -2353,7 +2372,7 @@ public class FileBrowserQueueActivity extends Activity {
                                     ImageView ghost = new ImageView(FileBrowserQueueActivity.this);
                                     ghost.setImageBitmap(bmp);
                                     ghost.setAlpha(0.85f);
-                                    ghost.setElevation(8f * getResources().getDisplayMetrics().density);
+                                    ghost.setElevation(dp(8f));
                                     ViewGroup decor = (ViewGroup) getWindow().getDecorView();
                                     int[] decorPos = new int[2];
                                     decor.getLocationOnScreen(decorPos);
@@ -2405,22 +2424,22 @@ public class FileBrowserQueueActivity extends Activity {
                     float dx = event.getX() - swipeState.downX;
                     float dy = event.getY() - swipeState.downY;
 
-                    if (Math.abs(dx) > horizontalSlop || Math.abs(dy) > verticalSlop) {
+                    if (Math.abs(dx) > swipeHorizontalSlop || Math.abs(dy) > swipeVerticalSlop) {
                         if (longPressRunnable[0] != null) {
                             uiHandler.removeCallbacks(longPressRunnable[0]);
                             longPressRunnable[0] = null;
                         }
                     }
-                    if (Math.abs(dy) > verticalSlop && Math.abs(dy) > Math.abs(dx)) {
+                    if (Math.abs(dy) > swipeVerticalSlop && Math.abs(dy) > Math.abs(dx)) {
                         swipeState.resetView();
                         swipeState.startPosition = -1;
                         return false;
                     }
-                    if (applySwipeMove(list, swipeState, dx, horizontalSlop, true, this::removeQueueAt)) {
+                    if (applySwipeMove(list, swipeState, dx, swipeHorizontalSlop, true, this::removeQueueAt)) {
                         return true;
                     }
                     if (localQueueShownInRemoteMode
-                            && applySwipeMove(list, swipeState, dx, horizontalSlop, false, this::sendQueueEntryToRemote)) {
+                            && applySwipeMove(list, swipeState, dx, swipeHorizontalSlop, false, this::sendQueueEntryToRemote)) {
                         return true;
                     }
                     return false;
@@ -2464,8 +2483,6 @@ public class FileBrowserQueueActivity extends Activity {
                                       String rightHint, String leftHint,
                                       SwipeAction onRightSwipe, SwipeAction onLeftSwipe) {
         SwipeState state = new SwipeState();
-        float verticalSlop = 40f * getResources().getDisplayMetrics().density;
-        float horizontalSlop = 20f * getResources().getDisplayMetrics().density;
         list.setOnTouchListener((v, event) -> {
             switch (event.getAction()) {
                 case MotionEvent.ACTION_DOWN:
@@ -2486,15 +2503,15 @@ public class FileBrowserQueueActivity extends Activity {
                     if (state.handled || state.startPosition < 0) return state.handled;
                     float dx = event.getX() - state.downX;
                     float dy = event.getY() - state.downY;
-                    if (Math.abs(dy) > verticalSlop && Math.abs(dy) > Math.abs(dx)) {
+                    if (Math.abs(dy) > swipeVerticalSlop && Math.abs(dy) > Math.abs(dx)) {
                         state.resetView();
                         state.startPosition = -1;
                         return false;
                     }
-                    if (applySwipeMove(list, state, dx, horizontalSlop, false, onRightSwipe)) {
+                    if (applySwipeMove(list, state, dx, swipeHorizontalSlop, false, onRightSwipe)) {
                         return true;
                     }
-                    if (applySwipeMove(list, state, dx, horizontalSlop, true, onLeftSwipe)) {
+                    if (applySwipeMove(list, state, dx, swipeHorizontalSlop, true, onLeftSwipe)) {
                         return true;
                     }
                     return false;
@@ -3978,17 +3995,6 @@ public class FileBrowserQueueActivity extends Activity {
 
     private final class FileAdapter extends BaseAdapter {
         private final LayoutInflater inflater = LayoutInflater.from(FileBrowserQueueActivity.this);
-        private final int colorBackground;
-        private final int colorPreviewBase;
-        private final int colorPreviewFill;
-
-        FileAdapter() {
-            TypedValue out = new TypedValue();
-            getTheme().resolveAttribute(android.R.attr.colorBackground, out, true);
-            colorBackground = out.data;
-            colorPreviewBase = getColor(R.color.queueProgressBackground);
-            colorPreviewFill = getColor(R.color.queueProgressFill);
-        }
 
         @Override public int  getCount()              { return filteredFileEntries.size(); }
         @Override public FileEntry getItem(int pos)   { return filteredFileEntries.get(pos); }
@@ -4048,7 +4054,7 @@ public class FileBrowserQueueActivity extends Activity {
                     progress = Math.min(1f, Math.max(0f,
                             currentTrackPositionMs / (float) currentTrackDurationMs));
                 }
-                applyProgressBackground(vh.content, progress, colorPreviewBase, colorPreviewFill);
+                applyProgressBackground(vh.content, progress, progressTrackColor, progressFillColor);
             } else if (isPreviewEntry) {
                 float progress = 0f;
                 if (hasProgress) {
@@ -4058,9 +4064,9 @@ public class FileBrowserQueueActivity extends Activity {
                                 SilenceStreamer.previewPositionMs / (float) dur));
                     }
                 }
-                applyProgressBackground(vh.content, progress, colorPreviewBase, colorPreviewFill);
+                applyProgressBackground(vh.content, progress, progressTrackColor, progressFillColor);
             } else {
-                vh.content.setBackgroundColor(colorBackground);
+                vh.content.setBackgroundColor(themeBackgroundColor);
             }
 
             return convertView;
@@ -4069,17 +4075,6 @@ public class FileBrowserQueueActivity extends Activity {
 
     private final class QueueAdapter extends BaseAdapter {
         private final LayoutInflater inflater = LayoutInflater.from(FileBrowserQueueActivity.this);
-        private final int colorBackground;
-        private final int colorQueueBase;
-        private final int colorQueueFill;
-
-        QueueAdapter() {
-            TypedValue out = new TypedValue();
-            getTheme().resolveAttribute(android.R.attr.colorBackground, out, true);
-            colorBackground = out.data;
-            colorQueueBase = getColor(R.color.queueProgressBackground);
-            colorQueueFill = getColor(R.color.queueProgressFill);
-        }
 
         @Override public int  getCount()              { return queueEntries.size(); }
         @Override public QueueEntry getItem(int pos)  { return queueEntries.get(pos); }
@@ -4108,9 +4103,9 @@ public class FileBrowserQueueActivity extends Activity {
                     progress = Math.min(1f,
                             Math.max(0f, currentTrackPositionMs / (float) currentTrackDurationMs));
                 }
-                applyProgressBackground(vh.content, progress, colorQueueBase, colorQueueFill);
+                applyProgressBackground(vh.content, progress, progressTrackColor, progressFillColor);
             } else {
-                vh.content.setBackgroundColor(colorBackground);
+                vh.content.setBackgroundColor(themeBackgroundColor);
             }
             if (isCurrentTrack && currentTrackDurationMs > 0) {
                 vh.remainingTime.setText(formatRemainingMs(currentTrackPositionMs, currentTrackDurationMs));

@@ -2268,6 +2268,28 @@ public class FileBrowserQueueActivity extends Activity {
         QueueStore.save(this, persisted);
     }
 
+    /** Initialises a swipe gesture on ACTION_DOWN: records the touch origin, resets the
+     *  swipe state, and resolves the touched row + its swipe-content view (left null when
+     *  the row is absent or {@code canSwipe} rejects it). */
+    private void beginSwipeGesture(ListView list, SwipeState s, MotionEvent e, SwipePredicate canSwipe) {
+        s.downX = e.getX();
+        s.downY = e.getY();
+        s.startPosition = list.pointToPosition((int) e.getX(), (int) e.getY());
+        s.handled = false;
+        s.swiping = false;
+        s.swipingView = null;
+        s.contentView = null;
+        suppressItemClick = false;
+        if (s.startPosition < 0) return;
+        int childIndex = s.startPosition - list.getFirstVisiblePosition();
+        if (childIndex >= 0 && childIndex < list.getChildCount()
+                && (canSwipe == null || canSwipe.test(s.startPosition))) {
+            s.swipingView = list.getChildAt(childIndex);
+            s.contentView = s.swipingView.findViewById(R.id.swipe_content);
+            if (s.contentView == null) s.contentView = s.swipingView;
+        }
+    }
+
     /** Translates the swiped row for one direction and fires {@code action} once it is
      *  dragged past half its width. Returns true if the touch was consumed as a swipe. */
     private boolean applySwipeMove(ListView list, SwipeState s, float dx, float slop,
@@ -2298,27 +2320,15 @@ public class FileBrowserQueueActivity extends Activity {
         list.setOnTouchListener((v, event) -> {
             switch (event.getAction()) {
                 case MotionEvent.ACTION_DOWN: {
-                    swipeState.downX = event.getX();
-                    swipeState.downY = event.getY();
-                    swipeState.startPosition = list.pointToPosition((int) event.getX(), (int) event.getY());
-                    swipeState.handled = false;
-                    swipeState.swiping = false;
-                    swipeState.swipingView = null;
-                    swipeState.contentView = null;
-                    suppressItemClick = false;
                     dragState.reset();
                     if (longPressRunnable[0] != null) {
                         uiHandler.removeCallbacks(longPressRunnable[0]);
                         longPressRunnable[0] = null;
                     }
+                    beginSwipeGesture(list, swipeState, event,
+                            pos -> pos != currentPlayingQueueIndex || localQueueShownInRemoteMode);
                     if (swipeState.startPosition >= 0) {
-                        int firstVisible = list.getFirstVisiblePosition();
-                        int childIndex = swipeState.startPosition - firstVisible;
-                        if (childIndex >= 0 && childIndex < list.getChildCount()
-                                && (swipeState.startPosition != currentPlayingQueueIndex || localQueueShownInRemoteMode)) {
-                            swipeState.swipingView = list.getChildAt(childIndex);
-                            swipeState.contentView = swipeState.swipingView.findViewById(R.id.swipe_content);
-                            if (swipeState.contentView == null) swipeState.contentView = swipeState.swipingView;
+                        if (swipeState.swipingView != null) {
                             TextView qHintStart = swipeState.swipingView.findViewById(R.id.swipe_hint_start);
                             if (qHintStart != null) {
                                 if (localQueueShownInRemoteMode) qHintStart.setText(R.string.swipe_hint_send);
@@ -2459,30 +2469,15 @@ public class FileBrowserQueueActivity extends Activity {
         list.setOnTouchListener((v, event) -> {
             switch (event.getAction()) {
                 case MotionEvent.ACTION_DOWN:
-                    state.downX = event.getX();
-                    state.downY = event.getY();
-                    state.startPosition = list.pointToPosition((int) event.getX(), (int) event.getY());
-                    state.handled = false;
-                    state.swiping = false;
-                    state.swipingView = null;
-                    state.contentView = null;
-                    suppressItemClick = false;
-                    if (state.startPosition >= 0) {
-                        int firstVisible = list.getFirstVisiblePosition();
-                        int childIndex = state.startPosition - firstVisible;
-                        if (childIndex >= 0 && childIndex < list.getChildCount()
-                                && (canSwipe == null || canSwipe.test(state.startPosition))) {
-                            state.swipingView = list.getChildAt(childIndex);
-                            state.contentView = state.swipingView.findViewById(R.id.swipe_content);
-                            if (state.contentView == null) state.contentView = state.swipingView;
-                            if (rightHint != null) {
-                                TextView tv = state.swipingView.findViewById(R.id.swipe_hint_start);
-                                if (tv != null) tv.setText(rightHint);
-                            }
-                            if (leftHint != null) {
-                                TextView tv = state.swipingView.findViewById(R.id.swipe_hint_end);
-                                if (tv != null) tv.setText(leftHint);
-                            }
+                    beginSwipeGesture(list, state, event, canSwipe);
+                    if (state.swipingView != null) {
+                        if (rightHint != null) {
+                            TextView tv = state.swipingView.findViewById(R.id.swipe_hint_start);
+                            if (tv != null) tv.setText(rightHint);
+                        }
+                        if (leftHint != null) {
+                            TextView tv = state.swipingView.findViewById(R.id.swipe_hint_end);
+                            if (tv != null) tv.setText(leftHint);
                         }
                     }
                     return false;

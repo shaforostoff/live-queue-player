@@ -56,7 +56,7 @@ public class Service extends android.app.Service implements MediaPlayerStateList
     // (framework releases its setWakeMode lock) and the new MediaPlayer's prepare()+start().
     private PowerManager.WakeLock playbackWakeLock;
 
-    private Playlist playlist;
+    private ServicePlaylist playlist;
     /** Index of the next entry to play in {@link #playlist}. */
     private int playlistPosition = 0;
     // Tracks which playlist index has already been retried once, to avoid infinite retry loops.
@@ -94,7 +94,7 @@ public class Service extends android.app.Service implements MediaPlayerStateList
         super.onCreate();
         hwListener = new HWListener(this);
         notifications = new Notifications(this);
-        playlist = new Playlist(this);
+        playlist = new ServicePlaylist(this);
         PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
         playbackWakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "LittleMusicPlayer:Playback");
         playbackWakeLock.setReferenceCounted(false);
@@ -215,7 +215,7 @@ public class Service extends android.app.Service implements MediaPlayerStateList
             ArrayList<QueueStore.Entry> newEntries = new ArrayList<>();
             newEntries.ensureCapacity(playlist.size());
             for (int i = sizeBefore; i < playlist.size(); i++) {
-                Playlist.Entry e = playlist.get(i);
+                ServicePlaylist.Entry e = playlist.get(i);
                 newEntries.add(new QueueStore.Entry(e.title, e.location));
             }
             if (audioPlayer == null) {
@@ -414,7 +414,7 @@ public class Service extends android.app.Service implements MediaPlayerStateList
         playlistPosition = 0;
         for (int i = offset; i < persisted.size(); i++) {
             QueueStore.Entry e = persisted.get(i);
-            Playlist.Entry pe = new Playlist.Entry();
+            ServicePlaylist.Entry pe = new ServicePlaylist.Entry();
             pe.title = e.name != null ? e.name : "";
             pe.location = e.uri;
             pe.queueEntryId = e.id;

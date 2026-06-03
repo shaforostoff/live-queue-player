@@ -5,13 +5,13 @@ import android.net.Uri;
 
 import java.util.ArrayList;
 
-final class Playlist extends ArrayList<Playlist.Entry> {
+final class ServicePlaylist extends ArrayList<ServicePlaylist.Entry> {
 
     private static final long serialVersionUID = 1L;
-    private transient final PlaylistGenerator generator;
+    private transient final ServicePlaylistGenerator generator;
 
-    Playlist(Context context) {
-        generator = new PlaylistGenerator(context, this);
+    ServicePlaylist(Context context) {
+        generator = new ServicePlaylistGenerator(context, this);
     }
 
     void generate(ArrayList<Uri> locations) {

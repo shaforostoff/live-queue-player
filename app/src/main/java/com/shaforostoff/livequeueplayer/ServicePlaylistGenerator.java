@@ -7,13 +7,13 @@ import java.io.FileNotFoundException;
 import java.util.Locale;
 import java.util.Scanner;
 
-final class PlaylistGenerator {
+final class ServicePlaylistGenerator {
 
     private final Context context;
-    private final Playlist playlist;
+    private final ServicePlaylist playlist;
     private final M3UParser m3UParser;
 
-    PlaylistGenerator(Context context, Playlist playlist) {
+    ServicePlaylistGenerator(Context context, ServicePlaylist playlist) {
         this.context = context;
         this.playlist = playlist;
         this.m3UParser = new M3UParser(context, this);
@@ -55,7 +55,7 @@ final class PlaylistGenerator {
             return;
         }
 
-        var entry = new Playlist.Entry();
+        var entry = new ServicePlaylist.Entry();
         entry.title = title;
         entry.location = location;
         playlist.add(entry);
@@ -64,9 +64,9 @@ final class PlaylistGenerator {
     public static final class M3UParser {
 
         private final Context context;
-        private final PlaylistGenerator generator;
+        private final ServicePlaylistGenerator generator;
 
-        M3UParser(Context context, PlaylistGenerator generator) {
+        M3UParser(Context context, ServicePlaylistGenerator generator) {
             this.context = context;
             this.generator = generator;
         }
@@ -97,7 +97,7 @@ final class PlaylistGenerator {
                 var line = input.nextLine().trim();
                 if (line.length() == 0)
                     continue;
-                var entry = new Playlist.Entry();
+                var entry = new ServicePlaylist.Entry();
                 if (line.startsWith("#EXTINF:")) {
                     var infoAndName = line.split(",");
                     entry.title = infoAndName[infoAndName.length - 1];

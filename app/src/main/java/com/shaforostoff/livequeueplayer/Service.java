@@ -96,7 +96,7 @@ public class Service extends android.app.Service implements MediaPlayerStateList
         notifications = new Notifications(this);
         playlist = new ServicePlaylist(this);
         PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
-        playbackWakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "LittleMusicPlayer:Playback");
+        playbackWakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "LiveQueuePlayer:Playback");
         playbackWakeLock.setReferenceCounted(false);
         hwListener.create();
         notifications.create();

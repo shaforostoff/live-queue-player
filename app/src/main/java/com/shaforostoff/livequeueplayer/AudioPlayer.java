@@ -67,13 +67,16 @@ class AudioPlayer extends Thread implements MediaPlayer.OnCompletionListener, Me
     // Bridge the gap between reset() releasing the old wake lock and start() acquiring the new
     // one. Without this, prepare() (blocking I/O) can stall indefinitely when the CPU sleeps.
     PowerManager pm = (PowerManager) service.getSystemService(android.content.Context.POWER_SERVICE);
-    transitionWakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "LittleMusicPlayer:TrackTransition");
+    transitionWakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "LiveQueuePlayer:TrackTransition");
     transitionWakeLock.setReferenceCounted(false);
     transitionWakeLock.acquire(30_000); // released after prepare()+start(); 30 s safety timeout
 
     /* setup player variables */
     if (AiffConverter.isAiff(service, location)) {
       mediaPlayer.setDataSource(new AiffMediaDataSource(service, location));
+    } else if (AlacMediaDataSource.shouldUseFor(service, location)) {
+      // ALAC isn't decoded by MediaPlayer; decode to PCM/WAV in memory and feed that instead.
+      mediaPlayer.setDataSource(new AlacMediaDataSource(service, location));
     } else {
       mediaPlayer.setDataSource(service, location);
     }
@@ -145,17 +148,25 @@ class AudioPlayer extends Thread implements MediaPlayer.OnCompletionListener, Me
 
   @Override
   public void setState(boolean playing) {
-    if (playing) {
-      if (pausedForFocusLoss) {
-        // Re-request focus lost to another app; this call comes from the main thread so the
-        // Looper requirement for AudioFocusRequest.Builder is satisfied.
-        pausedForFocusLoss = false;
-        requestAudioFocus();
+    if (released) return;
+    try {
+      if (playing) {
+        if (pausedForFocusLoss) {
+          // Re-request focus lost to another app; this call comes from the main thread so the
+          // Looper requirement for AudioFocusRequest.Builder is satisfied.
+          pausedForFocusLoss = false;
+          requestAudioFocus();
+        }
+        mediaPlayer.start();
+      } else {
+        pausedForFocusLoss = false; // explicit user pause should not auto-resume on focus gain
+        mediaPlayer.pause();
       }
-      mediaPlayer.start();
-    } else {
-      pausedForFocusLoss = false; // explicit user pause should not auto-resume on focus gain
-      mediaPlayer.pause();
+    } catch (IllegalStateException ignored) {
+      // A transport command (PLAY/PAUSE) can arrive before prepare() finishes — the window is wide
+      // for ALAC, whose decode runs inside prepare() — or after an undecodable file left the player
+      // in an error state. run() issues the authoritative start() once prepare() succeeds, so
+      // swallowing this premature/invalid call prevents crashing the service.
     }
   }
 

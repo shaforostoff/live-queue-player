@@ -8,10 +8,14 @@ import android.media.AudioManager;
 import android.media.MediaPlayer;
 import android.net.Uri;
 import android.os.Build;
+import android.os.Handler;
+import android.os.Looper;
 import android.os.PowerManager;
 import android.os.SystemClock;
+import android.util.Log;
 
 import java.io.IOException;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -32,6 +36,17 @@ class AudioPlayer extends Thread implements MediaPlayer.OnCompletionListener, Me
   private final float baseGain;
   private PowerManager.WakeLock transitionWakeLock;
   private EqualizerController equalizer;
+  // Set true once prepare() returns. Until then any start()/pause() would post an async
+  // MEDIA_ERROR (-38, "called in state PREPARING") instead of throwing, so transport commands
+  // that race prepare() must be deferred, not applied immediately.
+  private volatile boolean prepared;
+  // Latest transport command (play=TRUE / pause=FALSE) received before prepare() finished, applied
+  // by run() once the player is ready. null means none arrived.
+  private volatile Boolean pendingPlayState;
+  // A track fails at most once: the prepare()-failure path (worker thread) and the async error
+  // callback (main thread) can both fire, and each calls back into the service. Without this guard
+  // they race and drive the service's playlist position negative (IndexOutOfBounds on get(-1)).
+  private final AtomicBoolean failureReported = new AtomicBoolean();
 
   /**
    * Initiate an audio player, throws exceptions if failed.
@@ -94,6 +109,7 @@ class AudioPlayer extends Thread implements MediaPlayer.OnCompletionListener, Me
 
     /* setup listeners for further logics */
     mediaPlayer.setOnCompletionListener(this);
+    mediaPlayer.setOnErrorListener(this::onMediaPlayerError);
 
     if (audioManager != null) {
       audioManager.registerAudioDeviceCallback(audioDeviceCallback, null);
@@ -105,6 +121,8 @@ class AudioPlayer extends Thread implements MediaPlayer.OnCompletionListener, Me
     /* get ready for playback */
     try {
       mediaPlayer.prepare();
+      // Mark ready BEFORE any start()/pause(): from here on transport commands are safe to apply.
+      prepared = true;
       mediaPlayer.setVolume(baseGain, baseGain);
       // Attach the equalizer to this session and apply persisted settings. Guarded internally,
       // so an unsupported device just skips EQ rather than failing playback. Skip it entirely when
@@ -116,17 +134,34 @@ class AudioPlayer extends Thread implements MediaPlayer.OnCompletionListener, Me
       // Request audio focus with GAIN priority for main playback
       // This ensures preview (with TRANSIENT_MAY_DUCK) won't interrupt us
       requestAudioFocus();
-      service.setState(true);
+      // Apply whatever transport command (if any) arrived while we were preparing; default to
+      // playing. This is the authoritative start() — issuing it here, after prepare(), is what
+      // keeps start() out of the PREPARING state that produces error (-38).
+      Boolean pending = pendingPlayState;
+      service.setState(pending == null || pending);
       releaseTransitionWakeLock(); // MediaPlayer now holds its own PARTIAL_WAKE_LOCK via setWakeMode
     } catch (IllegalStateException e) {
       releaseTransitionWakeLock();
-      Exceptions.throwError(service, Exceptions.IllegalState);
-      service.playOrDestroy();
+      reportFailure(Exceptions.IllegalState);
     } catch (IOException e) {
       releaseTransitionWakeLock();
-      Exceptions.throwError(service, Exceptions.IO);
-      service.playOrDestroy();
+      reportFailure(Exceptions.IO);
     }
+  }
+
+  /**
+   * Report a single, terminal playback failure for this player and let the service retry or
+   * advance. Runs the service callback on the main thread (serialising it with the MediaPlayer
+   * error/completion callbacks) and fires at most once, so the worker thread and the async error
+   * callback can't both drive the playlist position and crash on a negative index.
+   */
+  private void reportFailure(String message) {
+    if (released || !failureReported.compareAndSet(false, true)) return;
+    new Handler(Looper.getMainLooper()).post(() -> {
+      if (released) return;
+      Exceptions.throwError(service, message);
+      service.playOrDestroy();
+    });
   }
 
   private void releaseTransitionWakeLock() {
@@ -153,6 +188,15 @@ class AudioPlayer extends Thread implements MediaPlayer.OnCompletionListener, Me
   @Override
   public void setState(boolean playing) {
     if (released) return;
+    if (!prepared) {
+      // A transport command (PLAY/PAUSE) arrived before prepare() finished — the window is wide
+      // for ALAC, whose decode runs inside prepare(). Calling start()/pause() now does NOT throw;
+      // it posts an async error (-38, "called in state PREPARING") that the framework routes to
+      // onError, which is exactly what made every queued track skip with no sound. Defer instead:
+      // run() applies the latest desired state once prepare() completes.
+      pendingPlayState = playing;
+      return;
+    }
     try {
       if (playing) {
         if (pausedForFocusLoss) {
@@ -167,10 +211,8 @@ class AudioPlayer extends Thread implements MediaPlayer.OnCompletionListener, Me
         mediaPlayer.pause();
       }
     } catch (IllegalStateException ignored) {
-      // A transport command (PLAY/PAUSE) can arrive before prepare() finishes — the window is wide
-      // for ALAC, whose decode runs inside prepare() — or after an undecodable file left the player
-      // in an error state. run() issues the authoritative start() once prepare() succeeds, so
-      // swallowing this premature/invalid call prevents crashing the service.
+      // Player left in an error state by an undecodable file; swallow rather than crash the
+      // service. (Commands that race prepare() are handled by the !prepared guard above.)
     }
   }
 
@@ -179,6 +221,11 @@ class AudioPlayer extends Thread implements MediaPlayer.OnCompletionListener, Me
 
     fadeToken.incrementAndGet();
     fadeOutInProgress = false;
+    if (!prepared) {
+      // Resume request raced prepare(); let run() start playback when ready (avoids error -38).
+      pendingPlayState = true;
+      return;
+    }
     try {
       mediaPlayer.setVolume(baseGain, baseGain);
       if (!mediaPlayer.isPlaying()) {
@@ -210,6 +257,23 @@ class AudioPlayer extends Thread implements MediaPlayer.OnCompletionListener, Me
   @Override
   public void onCompletion(MediaPlayer mp) {
     service.onMediaPlayerComplete();
+  }
+
+  /**
+   * Handle an asynchronous MediaPlayer error (bad codec, output-path failure, server death, …).
+   *
+   * <p>Without an error listener the framework silently routes playback errors to
+   * {@link #onCompletion}, so a track that fails to render looks exactly like one that finished and
+   * the service auto-advances — producing a "every track plays a few silent seconds then skips"
+   * march through the whole queue. Consuming the error here (returning {@code true}) prevents that
+   * masquerade and routes the failure through the same retry/abort path as a prepare() failure. The
+   * logged {@code what}/{@code extra} codes are the only way to pin the device-specific cause.
+   */
+  private boolean onMediaPlayerError(MediaPlayer mp, int what, int extra) {
+    Log.e("LiveQueuePlayer", "MediaPlayer error: what=" + what + " extra=" + extra);
+    // Single-shot, main-thread retry/advance shared with the prepare()-failure path.
+    reportFailure(Exceptions.FormatNotSupported);
+    return true; // consumed — do NOT let the framework fall through to onCompletion()
   }
 
   @Override

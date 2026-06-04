@@ -238,6 +238,12 @@ public class Service extends android.app.Service implements MediaPlayerStateList
         // upcoming prepare() (blocking I/O). For auto-advance this is already held from the
         // previous track; for the first track this is where it first becomes held.
         acquirePlaybackWakeLock();
+        // Guard against a position that drifted out of range (e.g. racing failure callbacks):
+        // there is nothing to play, so stop cleanly rather than crash on an invalid index.
+        if (playlistPosition < 0 || playlistPosition >= playlist.size()) {
+            onMediaPlayerDestroy();
+            return;
+        }
         var entry = playlist.get(playlistPosition);
         playlistPosition++;
         int currentIndex = playlistPosition - 1;
@@ -284,7 +290,7 @@ public class Service extends android.app.Service implements MediaPlayerStateList
     }
 
     public void playOrDestroy() {
-        int failedPosition = playlistPosition - 1;
+        int failedPosition = Math.max(0, playlistPosition - 1);
         if (retriedAtPosition != failedPosition) {
             // First failure at this position — retry once before giving up.
             retriedAtPosition = failedPosition;

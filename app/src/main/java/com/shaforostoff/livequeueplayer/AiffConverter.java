@@ -39,7 +39,7 @@ final class AiffConverter {
     static byte[] convert(InputStream in) throws IOException {
         // Cap the read so we never OOM on huge files; headers are tiny (<1 KB).
         long readLimit = MAX_BYTES + 4096;
-        ByteArrayOutputStream buf = new ByteArrayOutputStream();
+        ExposedByteArrayOutputStream buf = new ExposedByteArrayOutputStream();
         byte[] tmp = new byte[65536];
         int n;
         long total = 0;
@@ -48,13 +48,22 @@ final class AiffConverter {
             total += n;
             if (total >= readLimit) break;
         }
-        return convertBytes(buf.toByteArray());
+        // Parse straight over the stream's backing array — skipping a defensive toByteArray() copy,
+        // which for an (uncompressed) AIFF would transiently duplicate the ~100 MB raw payload.
+        return convertBytes(buf.buffer(), buf.size());
+    }
+
+    /** Subclass purely to expose the backing buffer, so the parser can read it without a copy. */
+    private static final class ExposedByteArrayOutputStream extends ByteArrayOutputStream {
+        byte[] buffer() { return buf; }
     }
 
     // -------------------------------------------------------------------------
 
-    private static byte[] convertBytes(byte[] src) throws IOException {
-        if (src.length < 12) throw new IOException("AIFF: file too small");
+    // {@code src} may be over-allocated (it is a ByteArrayOutputStream's backing array); only the
+    // first {@code len} bytes are valid, so bounds checks use {@code len}, never {@code src.length}.
+    private static byte[] convertBytes(byte[] src, int len) throws IOException {
+        if (len < 12) throw new IOException("AIFF: file too small");
 
         // FORM chunk header
         if (src[0] != 'F' || src[1] != 'O' || src[2] != 'R' || src[3] != 'M')
@@ -78,7 +87,7 @@ final class AiffConverter {
         boolean littleEndian = false; // sowt
 
         int pos = 12;
-        while (pos + 8 <= src.length) {
+        while (pos + 8 <= len) {
             String id = new String(src, pos, 4);
             int chunkSize = readInt32BE(src, pos + 4);
             int dataStart = pos + 8;
@@ -90,7 +99,7 @@ final class AiffConverter {
                 sampleRate = (int) readExtended80(src, dataStart + 8);
                 if (isAifc) {
                     // compression type is a 4-byte OSType at dataStart+18
-                    if (dataStart + 22 <= src.length) {
+                    if (dataStart + 22 <= len) {
                         String comprType = new String(src, dataStart + 18, 4);
                         switch (comprType) {
                             case "NONE":
@@ -128,7 +137,7 @@ final class AiffConverter {
         // align to frame boundary
         maxPcm = (maxPcm / frameSize) * frameSize;
 
-        int available = src.length - ssndStart;
+        int available = len - ssndStart;
         int pcmLength = (int) Math.min(Math.min(ssndSize, available), Math.min(maxPcm, Integer.MAX_VALUE));
         if (pcmLength < 0) pcmLength = 0;
 

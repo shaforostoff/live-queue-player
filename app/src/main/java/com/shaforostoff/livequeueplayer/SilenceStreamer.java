@@ -8,6 +8,7 @@ import android.media.AudioTrack;
 import android.net.Uri;
 import android.os.Build;
 
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 final class SilenceStreamer {
@@ -29,6 +30,8 @@ final class SilenceStreamer {
     private volatile boolean fadingOut;
     private volatile boolean pendingFlush;
     private final AtomicReference<PcmDecoder> previewDecoder = new AtomicReference<>();
+    /** Bumped on every start/stop so a slow background decode can detect it was superseded. */
+    private final AtomicInteger previewGen = new AtomicInteger();
 
     void start() {
         if (running) return;
@@ -206,20 +209,44 @@ final class SilenceStreamer {
     }
 
     private void doStartPreview(Context context, Uri uri) {
-        doStopPreview();
-        try {
-            PcmDecoder decoder = new PcmDecoder(context, uri);
-            AudioTrack at = audioTrack;
-            if (at != null) {
-                try { at.setPlaybackRate(decoder.sampleRate); } catch (Exception ignored) {}
+        final int gen;
+        synchronized (this) {
+            clearPreviewLocked();
+            gen = previewGen.incrementAndGet();
+        }
+        // Build the decoder off the calling (UI) thread: software ALAC decodes the whole track to
+        // PCM up front (see AlacMediaDataSource), which would otherwise freeze the file browser.
+        Thread init = new Thread(() -> {
+            PcmDecoder decoder;
+            try {
+                decoder = new PcmDecoder(context, uri);
+            } catch (Exception ignored) {
+                return;
             }
-            previewPositionMs = 0;
-            previewDurationMs = decoder.durationUs / 1000;
-            previewDecoder.set(decoder);
-        } catch (Exception ignored) {}
+            synchronized (this) {
+                if (gen != previewGen.get()) {
+                    decoder.close(); // a newer start/stop superseded us while decoding
+                    return;
+                }
+                AudioTrack at = audioTrack;
+                if (at != null) {
+                    try { at.setPlaybackRate(decoder.sampleRate); } catch (Exception ignored) {}
+                }
+                previewPositionMs = 0;
+                previewDurationMs = decoder.durationUs / 1000;
+                previewDecoder.set(decoder);
+            }
+        }, "PreviewDecoderInit");
+        init.setDaemon(true);
+        init.start();
     }
 
-    private void doStopPreview() {
+    private synchronized void doStopPreview() {
+        clearPreviewLocked();
+        previewGen.incrementAndGet();
+    }
+
+    private void clearPreviewLocked() {
         PcmDecoder old = previewDecoder.getAndSet(null);
         if (old != null) {
             old.close();

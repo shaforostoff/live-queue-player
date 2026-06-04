@@ -5,8 +5,6 @@ import android.content.Context;
 import android.media.audiofx.DynamicsProcessing;
 import android.os.Build;
 
-import java.util.Arrays;
-
 /**
  * Parametric equalizer backend for API 28+, built on {@link DynamicsProcessing}. Uses the pre-EQ
  * stage with a fixed number of bands; each band's center frequency and gain come from
@@ -54,22 +52,18 @@ final class DynamicsEqController implements EqController {
       // while disabled.
       effect.setEnabled(ParametricEqSettings.isEnabled(context));
 
+      // A DynamicsProcessing EqBand's cutoff is the *upper* edge of a contiguous region carrying its
+      // gain, running up from the previous band's cutoff. Bands are kept in ascending frequency
+      // order by ParametricEqSettings, so the logical band index is also the cutoff order. The
+      // shared edge helpers place each edge at the geometric mean of adjacent center frequencies (so
+      // a slider sits in the middle of its band), drop the first band's lower edge to 0 Hz, and pin
+      // the last band's upper edge to the ceiling so it reaches the top of the spectrum.
       int n = ParametricEqSettings.NUM_BANDS;
-      // DynamicsProcessing expects bands in ascending cutoff order; logical bands stay stable in
-      // storage/UI, so sort the (freq, gain) pairs here before assigning them to band slots.
-      long[] sorted = new long[n];
-      for (int b = 0; b < n; b++) {
-        int freqHz = ParametricEqSettings.getFreqHz(context, b);
-        int gainMb = ParametricEqSettings.getGainMillibels(context, b);
-        // Pack freq in the high bits so the natural sort is by ascending frequency.
-        sorted[b] = ((long) freqHz << 32) | (gainMb & 0xFFFFFFFFL);
-      }
-      Arrays.sort(sorted);
       for (int i = 0; i < n; i++) {
-        int freqHz = (int) (sorted[i] >> 32);
-        int gainMb = (int) sorted[i];
+        int cutoffHz = ParametricEqSettings.upperEdgeHz(context, i);
+        int gainMb = ParametricEqSettings.getGainMillibels(context, i);
         DynamicsProcessing.EqBand band =
-            new DynamicsProcessing.EqBand(true, freqHz, gainMb / 100f);
+            new DynamicsProcessing.EqBand(true, cutoffHz, gainMb / 100f);
         effect.setPreEqBandAllChannelsTo(i, band);
       }
     } catch (RuntimeException ignored) {

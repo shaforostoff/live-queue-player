@@ -18,10 +18,10 @@ final class ParametricEqSettings {
   private static final String KEY_FREQ_PREFIX = "peq_freq_";   // int, Hz
   private static final String KEY_GAIN_PREFIX = "peq_gain_";   // int, millibels
 
-  static final int NUM_BANDS = 4;
+  static final int NUM_BANDS = 6;
 
   /** Default center frequencies (Hz), log-spaced across the audible range. */
-  private static final int[] DEFAULT_FREQS = {80, 300, 2000, 10000};
+  private static final int[] DEFAULT_FREQS = {80, 400, 1000, 2000, 5000, 12000};
 
   /** Gain limits in millibels (100 mB = 1 dB); shared step with the graphic path. */
   static final int GAIN_MIN_MILLIBELS = -1500;
@@ -31,8 +31,17 @@ final class ParametricEqSettings {
   static final int FREQ_MIN_HZ = 30;
   static final int FREQ_MAX_HZ = 16000;
 
+  /** Upper edge pinned to the top band so it reaches the top of the spectrum. Kept at/below the
+   *  Nyquist frequency of common sample rates (44.1/48 kHz) to avoid clamping surprises, and above
+   *  the audible range so nothing audible is left flat. */
+  static final int TOP_EDGE_HZ = 20000;
+
   /** One frequency nudge moves a third of an octave. */
   private static final double FREQ_STEP_RATIO = 1.2599; // 2^(1/3)
+
+  /** Minimum spacing between adjacent bands, as a frequency ratio: a half octave, comfortably
+   *  wider than one {@link #FREQ_STEP_RATIO} step so bands keep a visible gap. */
+  private static final double MIN_NEIGHBOUR_RATIO = 1.4142; // 2^(1/2)
 
   private ParametricEqSettings() {
   }
@@ -62,18 +71,51 @@ final class ParametricEqSettings {
     prefs(context).edit().putInt(KEY_FREQ_PREFIX + band, hz).apply();
   }
 
-  /** Lowest frequency this band may take: kept above its lower neighbour (or the global floor for
-   *  the first band) so bands never cross or share a frequency. */
+  /** Lowest frequency this band may take: kept at least {@link #MIN_NEIGHBOUR_RATIO} above its lower
+   *  neighbour (or the global floor for the first band) so adjacent bands keep a clear gap. */
   static int minFreqHz(Context context, int band) {
-    int floor = band == 0 ? FREQ_MIN_HZ : getFreqHz(context, band - 1) + 1;
+    int floor = band == 0 ? FREQ_MIN_HZ : gapAbove(getFreqHz(context, band - 1));
     return Math.max(FREQ_MIN_HZ, floor);
   }
 
-  /** Highest frequency this band may take: kept below its upper neighbour (or the global ceiling for
-   *  the last band). */
+  /** Highest frequency this band may take: kept at least {@link #MIN_NEIGHBOUR_RATIO} below its upper
+   *  neighbour (or the global ceiling for the last band). */
   static int maxFreqHz(Context context, int band) {
-    int ceil = band == NUM_BANDS - 1 ? FREQ_MAX_HZ : getFreqHz(context, band + 1) - 1;
+    int ceil = band == NUM_BANDS - 1 ? FREQ_MAX_HZ : gapBelow(getFreqHz(context, band + 1));
     return Math.max(minFreqHz(context, band), Math.min(FREQ_MAX_HZ, ceil));
+  }
+
+  /** Smallest frequency that stays a full {@link #MIN_NEIGHBOUR_RATIO} above {@code lowerNeighbourHz}. */
+  static int gapAbove(int lowerNeighbourHz) {
+    return (int) Math.ceil(lowerNeighbourHz * MIN_NEIGHBOUR_RATIO);
+  }
+
+  /** Largest frequency that stays a full {@link #MIN_NEIGHBOUR_RATIO} below {@code upperNeighbourHz}. */
+  static int gapBelow(int upperNeighbourHz) {
+    return (int) Math.floor(upperNeighbourHz / MIN_NEIGHBOUR_RATIO);
+  }
+
+  /**
+   * Lower edge of a band's contiguous region: the geometric mean with its lower neighbour, or 0 for
+   * the first band so it reaches the bottom of the spectrum. Equals the upper edge of the band below.
+   */
+  static int lowerEdgeHz(Context context, int band) {
+    if (band <= 0) return 0;
+    return geometricMean(getFreqHz(context, band - 1), getFreqHz(context, band));
+  }
+
+  /**
+   * Upper edge of a band's contiguous region: the geometric mean with its upper neighbour, or
+   * {@link #TOP_EDGE_HZ} for the last band so it reaches the top of the spectrum.
+   */
+  static int upperEdgeHz(Context context, int band) {
+    if (band >= NUM_BANDS - 1) return TOP_EDGE_HZ;
+    return geometricMean(getFreqHz(context, band), getFreqHz(context, band + 1));
+  }
+
+  /** Geometric mean of two frequencies — the natural midpoint on a log-frequency axis. */
+  static int geometricMean(int aHz, int bHz) {
+    return (int) Math.round(Math.sqrt((double) aHz * bHz));
   }
 
   static int getGainMillibels(Context context, int band) {

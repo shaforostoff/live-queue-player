@@ -37,6 +37,10 @@ final class EqualizerDialog {
     /** Move a band's center frequency one step up ({@code direction > 0}) or down. No-op when
      *  {@link #freqAdjustable()} is false. */
     void nudgeFreq(int band, int direction);
+    /** Lower edge of the band's affected range, milliHz. Only shown when {@link #freqAdjustable()}. */
+    int lowerEdgeMilliHz(int band);
+    /** Upper edge of the band's affected range, milliHz. Only shown when {@link #freqAdjustable()}. */
+    int upperEdgeMilliHz(int band);
   }
 
   /** Live handle to a shown dialog so callers can refresh values or dismiss it. */
@@ -131,8 +135,28 @@ final class EqualizerDialog {
     enableSwitch.setOnCheckedChangeListener((b, checked) -> sink.setEnabled(checked));
     for (int b = 0; b < n; b++) {
       bandValues[b].setText(formatDb(activity, sink.bandLevel(b)));
-      if (bandFreqs[b] != null) bandFreqs[b].setText(formatFreq(activity, sink.centerFreqMilliHz(b)));
     }
+    updateFreqLabels();
+  }
+
+  /** Refresh every band's frequency label. A parametric band's edges are derived from its
+   *  neighbours, so moving one band shifts the displayed range of its neighbours too. */
+  private void updateFreqLabels() {
+    for (int b = 0; b < bandFreqs.length; b++) {
+      if (bandFreqs[b] != null) bandFreqs[b].setText(formatBandFreq(b));
+    }
+  }
+
+  /** Parametric bands show their affected range (lower – upper edge); graphic bands show their
+   *  fixed center frequency. */
+  private CharSequence formatBandFreq(int b) {
+    if (sink.freqAdjustable()) {
+      // Stacked over two lines: the lower edge above, the upper edge below — the full range rarely
+      // fits on one line at the dialog's width.
+      return formatFreq(activity, sink.lowerEdgeMilliHz(b))
+          + "\n– " + formatFreq(activity, sink.upperEdgeMilliHz(b));
+    }
+    return formatFreq(activity, sink.centerFreqMilliHz(b));
   }
 
   private void buildRows(int n) {
@@ -142,7 +166,7 @@ final class EqualizerDialog {
     boolean freqAdjustable = sink.freqAdjustable();
     int vpad = (int) (4 * density);
     int valueWidth = (int) (64 * density);
-    int freqWidth = (int) (56 * density);
+    int freqWidth = (int) (72 * density);
     for (int b = 0; b < n; b++) {
       final int band = b;
       LinearLayout row = new LinearLayout(activity);
@@ -151,13 +175,14 @@ final class EqualizerDialog {
       row.setPadding(0, vpad, 0, vpad);
 
       TextView freq = new TextView(activity);
-      freq.setText(formatFreq(activity, sink.centerFreqMilliHz(b)));
+      freq.setText(formatBandFreq(b));
       freq.setTextSize(14f);
       bandFreqs[b] = freq;
 
       if (freqAdjustable) {
-        // Parametric path: the center frequency gets its own ▼/▲ around a fixed-width label, then
-        // the gain controls follow. The frequency group takes the flexible (weighted) space.
+        // Parametric path: ▼/▲ move the band's center, and the label shows the resulting affected
+        // range (edges are shared with neighbours, so update all labels on a change). The gain
+        // controls follow. The frequency group takes the flexible (weighted) space.
         freq.setGravity(Gravity.CENTER);
         freq.setMinWidth(freqWidth);
         Button freqDown = new Button(activity);
@@ -166,11 +191,11 @@ final class EqualizerDialog {
         freqUp.setText("▲");
         freqDown.setOnClickListener(v -> {
           sink.nudgeFreq(band, -1);
-          freq.setText(formatFreq(activity, sink.centerFreqMilliHz(band)));
+          updateFreqLabels();
         });
         freqUp.setOnClickListener(v -> {
           sink.nudgeFreq(band, 1);
-          freq.setText(formatFreq(activity, sink.centerFreqMilliHz(band)));
+          updateFreqLabels();
         });
         LinearLayout freqGroup = new LinearLayout(activity);
         freqGroup.setOrientation(LinearLayout.HORIZONTAL);

@@ -295,10 +295,12 @@ final class RemoteQueueController {
         @Override public void nudgeFreq(int band, int direction) {
             if (!eqParametric || band < 0 || band >= eqFreqs.length) return;
             int curHz = eqFreqs[band] / 1000;
-            // Keep the band strictly between its neighbours, matching the host's clamp; the
+            // Keep a half-octave gap from each neighbour, matching the host's clamp; the
             // authoritative eq_state echo corrects any drift anyway.
-            int loHz = band == 0 ? eqFreqMinHz : eqFreqs[band - 1] / 1000 + 1;
-            int hiHz = band == eqFreqs.length - 1 ? eqFreqMaxHz : eqFreqs[band + 1] / 1000 - 1;
+            int loHz = band == 0 ? eqFreqMinHz
+                    : ParametricEqSettings.gapAbove(eqFreqs[band - 1] / 1000);
+            int hiHz = band == eqFreqs.length - 1 ? eqFreqMaxHz
+                    : ParametricEqSettings.gapBelow(eqFreqs[band + 1] / 1000);
             if (hiHz < loHz) hiHz = loHz;
             int newHz = Math.max(loHz, Math.min(hiHz, ParametricEqSettings.stepFreqHz(curHz, direction)));
             eqFreqs[band] = newHz * 1000;
@@ -309,6 +311,19 @@ final class RemoteQueueController {
                 cmd.put("freq", newHz);
                 btController.sendRaw(cmd.toString());
             } catch (Exception ignored) {}
+        }
+
+        // Edges derived from neighbours, mirroring the host (eqFreqs holds milliHz, so geometricMean
+        // operates on milliHz directly). First band falls to 0; last band reaches the ceiling.
+        @Override public int lowerEdgeMilliHz(int band) {
+            if (band <= 0 || band >= eqFreqs.length) return 0;
+            return ParametricEqSettings.geometricMean(eqFreqs[band - 1], eqFreqs[band]);
+        }
+
+        @Override public int upperEdgeMilliHz(int band) {
+            if (band < 0 || band >= eqFreqs.length) return 0;
+            if (band == eqFreqs.length - 1) return ParametricEqSettings.TOP_EDGE_HZ * 1000;
+            return ParametricEqSettings.geometricMean(eqFreqs[band], eqFreqs[band + 1]);
         }
     }
 

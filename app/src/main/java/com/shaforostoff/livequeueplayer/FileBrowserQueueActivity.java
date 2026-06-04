@@ -2703,6 +2703,11 @@ public class FileBrowserQueueActivity extends Activity {
         @Override public boolean freqAdjustable() { return false; }
 
         @Override public void nudgeFreq(int band, int direction) { /* graphic bands are fixed */ }
+
+        // Edges are unused for graphic bands (freqAdjustable() is false); report the center.
+        @Override public int lowerEdgeMilliHz(int band) { return centerFreqMilliHz(band); }
+
+        @Override public int upperEdgeMilliHz(int band) { return centerFreqMilliHz(band); }
     }
 
     /** Local-playback parametric equalizer (API 28+, {@link DynamicsEqController}): per-band center
@@ -2750,6 +2755,14 @@ public class FileBrowserQueueActivity extends Activity {
             int cur = ParametricEqSettings.getFreqHz(context, band);
             ParametricEqSettings.setFreqHz(context, band, ParametricEqSettings.stepFreqHz(cur, direction));
             activity.applyEqToService();
+        }
+
+        @Override public int lowerEdgeMilliHz(int band) {
+            return ParametricEqSettings.lowerEdgeHz(context, band) * 1000;
+        }
+
+        @Override public int upperEdgeMilliHz(int band) {
+            return ParametricEqSettings.upperEdgeHz(context, band) * 1000;
         }
     }
 

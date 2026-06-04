@@ -126,10 +126,34 @@ final class AlacMediaDataSource extends MediaDataSource {
         int bytesPerSample = AlacUtils.AlacGetBytesPerSample(ac);
         int bitsPerSample  = AlacUtils.AlacGetBitsPerSample(ac);
 
-        ByteArrayOutputStream pcm = new ByteArrayOutputStream();
         int[] dest = new int[1024 * 24 * 3]; // one ALAC frame, max 24bps (matches upstream demo)
-        long cap = AiffConverter.MAX_BYTES - 44; // leave room for the WAV header
-        while (pcm.size() < cap) {
+        long pcmCap = AiffConverter.MAX_BYTES - 44; // leave room for the WAV header
+
+        // The decoded size is known up front from the stream's frame count, so allocate the final
+        // WAV buffer once and decode straight into it — no growing buffer and no extra copies, which
+        // is what kept peak heap at ~3x the PCM size and OOM-ed low-RAM devices mid-track.
+        int totalFrames = AlacUtils.AlacGetNumSamples(ac);
+        if (totalFrames > 0) {
+          int capacity = (int) Math.min((long) totalFrames * channels * bytesPerSample, pcmCap);
+          byte[] wav = new byte[44 + capacity];
+          int pos = 44;
+          while (pos - 44 < capacity) {
+            int bytes = AlacUtils.AlacUnpackSamples(ac, dest);
+            if (bytes <= 0) break; // end of stream
+            int room = capacity - (pos - 44);
+            pos = writePcm(wav, pos, bytesPerSample, dest, Math.min(bytes, room));
+          }
+          int pcmLen = pos - 44;
+          // The frame count is authoritative, so pcmLen normally equals capacity; trim only if the
+          // stream ended short of it.
+          if (pcmLen != capacity) wav = java.util.Arrays.copyOf(wav, pos);
+          writeWavHeader(wav, sampleRate, channels, bitsPerSample, pcmLen);
+          return wav;
+        }
+
+        // Frame count unavailable (corrupt sample index): fall back to a growing buffer.
+        ByteArrayOutputStream pcm = new ByteArrayOutputStream();
+        while (pcm.size() < pcmCap) {
           int bytes = AlacUtils.AlacUnpackSamples(ac, dest);
           if (bytes <= 0) break; // end of stream
           appendLittleEndian(pcm, bytesPerSample, dest, bytes);
@@ -179,12 +203,44 @@ final class AlacMediaDataSource extends MediaDataSource {
     }
   }
 
+  /**
+   * Same encoding as {@link #appendLittleEndian}, but writes straight into {@code out} starting at
+   * {@code pos} and returns the new position — used by the pre-sized decode path that knows the
+   * final buffer size up front and so needs no intermediate stream.
+   */
+  private static int writePcm(byte[] out, int pos, int bytesPerSample, int[] src, int count) {
+    switch (bytesPerSample) {
+      case 2: { // 16-bit
+        for (int i = 0, s = 0; i < count; i += 2, s++) {
+          int v = src[s];
+          out[pos++] = (byte) (v & 0xFF);
+          out[pos++] = (byte) ((v >>> 8) & 0xFF);
+        }
+        break;
+      }
+      case 1: // 8-bit (decoder emits signed; WAV 8-bit is unsigned)
+        for (int i = 0; i < count; i++) out[pos++] = (byte) ((src[i] + 128) & 0xFF);
+        break;
+      default: // 24-bit (and any other): one byte per int
+        for (int i = 0; i < count; i++) out[pos++] = (byte) (src[i] & 0xFF);
+        break;
+    }
+    return pos;
+  }
+
   /** Prepends a 44-byte little-endian PCM WAV header to {@code pcm}. */
   private static byte[] wrapPcmAsWav(byte[] pcm, int sampleRate, int channels, int bitsPerSample) {
-    int bytesPerSample = bitsPerSample / 8;
     byte[] wav = new byte[44 + pcm.length];
+    writeWavHeader(wav, sampleRate, channels, bitsPerSample, pcm.length);
+    System.arraycopy(pcm, 0, wav, 44, pcm.length);
+    return wav;
+  }
+
+  /** Writes the 44-byte little-endian PCM WAV header into the first 44 bytes of {@code wav}. */
+  private static void writeWavHeader(byte[] wav, int sampleRate, int channels, int bitsPerSample, int pcmLen) {
+    int bytesPerSample = bitsPerSample / 8;
     writeAscii(wav, 0, "RIFF");
-    writeInt32LE(wav, 4, 36 + pcm.length);
+    writeInt32LE(wav, 4, 36 + pcmLen);
     writeAscii(wav, 8, "WAVE");
     writeAscii(wav, 12, "fmt ");
     writeInt32LE(wav, 16, 16);
@@ -195,9 +251,7 @@ final class AlacMediaDataSource extends MediaDataSource {
     writeInt16LE(wav, 32, channels * bytesPerSample);              // block align
     writeInt16LE(wav, 34, bitsPerSample);
     writeAscii(wav, 36, "data");
-    writeInt32LE(wav, 40, pcm.length);
-    System.arraycopy(pcm, 0, wav, 44, pcm.length);
-    return wav;
+    writeInt32LE(wav, 40, pcmLen);
   }
 
   @Override

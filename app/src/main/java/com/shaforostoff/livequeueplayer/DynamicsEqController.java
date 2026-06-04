@@ -48,9 +48,12 @@ final class DynamicsEqController implements EqController {
     DynamicsProcessing effect = dp;
     if (effect == null) return;
     try {
-      // Enable before setting bands: mirrors the graphic path, where some devices drop values set
-      // while disabled.
-      effect.setEnabled(ParametricEqSettings.isEnabled(context));
+      // Keep the effect engaged at all times and express "disabled" as flat 0 dB gains. Toggling
+      // DynamicsProcessing.setEnabled() inserts/removes the effect from the audio chain, which
+      // causes an audible hiccup on every on/off; leaving it always enabled and just zeroing the
+      // bands makes the switch seamless.
+      effect.setEnabled(true);
+      boolean on = ParametricEqSettings.isEnabled(context);
 
       // A DynamicsProcessing EqBand's cutoff is the *upper* edge of a contiguous region carrying its
       // gain, running up from the previous band's cutoff. Bands are kept in ascending frequency
@@ -61,7 +64,7 @@ final class DynamicsEqController implements EqController {
       int n = ParametricEqSettings.NUM_BANDS;
       for (int i = 0; i < n; i++) {
         int cutoffHz = ParametricEqSettings.upperEdgeHz(context, i);
-        int gainMb = ParametricEqSettings.getGainMillibels(context, i);
+        int gainMb = on ? ParametricEqSettings.getGainMillibels(context, i) : 0;
         DynamicsProcessing.EqBand band =
             new DynamicsProcessing.EqBand(true, cutoffHz, gainMb / 100f);
         effect.setPreEqBandAllChannelsTo(i, band);

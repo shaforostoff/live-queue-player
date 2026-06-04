@@ -28,6 +28,9 @@ final class PcmDecoder {
     PcmDecoder(Context context, Uri uri) throws IOException {
         if (AiffConverter.isAiff(context, uri)) {
             extractor.setDataSource(new AiffMediaDataSource(context, uri));
+        } else if (AlacMediaDataSource.shouldUseFor(context, uri)) {
+            // ALAC has no platform decoder here; present it as in-memory PCM/WAV, like AudioPlayer does.
+            extractor.setDataSource(new AlacMediaDataSource(context, uri));
         } else {
             extractor.setDataSource(context, uri, null);
         }

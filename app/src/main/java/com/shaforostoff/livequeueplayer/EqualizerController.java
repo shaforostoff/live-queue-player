@@ -10,7 +10,7 @@ import android.media.audiofx.Equalizer;
  * torn-down session degrades to a silent no-op rather than crashing playback, matching the
  * defensive style of {@link AudioPlayer}.
  */
-final class EqualizerController {
+final class EqualizerController implements EqController {
 
   private Equalizer equalizer;
 
@@ -27,7 +27,8 @@ final class EqualizerController {
   }
 
   /** Re-read persisted settings and push them to the live effect. */
-  void applySettings(Context context) {
+  @Override
+  public void applySettings(Context context) {
     Equalizer eq = equalizer;
     if (eq == null) return;
     try {
@@ -45,7 +46,8 @@ final class EqualizerController {
     }
   }
 
-  void release() {
+  @Override
+  public void release() {
     Equalizer eq = equalizer;
     equalizer = null;
     if (eq != null) {

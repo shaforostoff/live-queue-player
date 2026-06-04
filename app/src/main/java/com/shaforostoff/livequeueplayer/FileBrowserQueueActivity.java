@@ -330,7 +330,10 @@ public class FileBrowserQueueActivity extends Activity {
         saveButton = findViewById(R.id.btn_save_queue);
         stopButton = findViewById(R.id.btn_stop_queue);
         eqButton = findViewById(R.id.btn_eq);
-        eqButton.setOnClickListener(v -> EqualizerDialog.show(this, new LocalEqSink(this)));
+        eqButton.setOnClickListener(v -> EqualizerDialog.show(this,
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.P
+                        ? new ParametricLocalEqSink(this)
+                        : new LocalEqSink(this)));
         metadataExtractor = ((App) getApplication()).getMetadataExtractor();
         storageBrowser = new StorageBrowser(this);
         btController = new BluetoothController(this, new BluetoothController.Callback() {
@@ -2555,17 +2558,38 @@ public class FileBrowserQueueActivity extends Activity {
         }
     }
 
-    /** Apply an equalizer change requested by the remote sender, then echo the new state back. */
+    /** Apply an equalizer change requested by the remote sender, then echo the new state back. The
+     *  host's active backend (parametric on API 28+, graphic below) decides which settings store the
+     *  command is routed to. */
     private void handleRemoteSetEq(JSONObject obj) {
-        EqualizerSettings.Caps caps = EqualizerSettings.queryCapabilities(this);
-        if (obj.has("enabled")) {
-            EqualizerSettings.setEnabled(this, obj.optBoolean("enabled", EqualizerSettings.isEnabled(this)));
-        }
-        if (caps != null && obj.has("band") && obj.has("value")) {
-            int band = obj.optInt("band", -1);
-            if (band >= 0 && band < caps.numBands) {
-                int value = Math.max(caps.minLevel, Math.min(caps.maxLevel, obj.optInt("value", 0)));
-                EqualizerSettings.setBandLevel(this, band, value);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            if (obj.has("enabled")) {
+                ParametricEqSettings.setEnabled(this,
+                        obj.optBoolean("enabled", ParametricEqSettings.isEnabled(this)));
+            }
+            if (obj.has("band")) {
+                int band = obj.optInt("band", -1);
+                if (band >= 0 && band < ParametricEqSettings.numBands()) {
+                    if (obj.has("value")) {
+                        ParametricEqSettings.setGainMillibels(this, band, obj.optInt("value", 0));
+                    }
+                    if (obj.has("freq")) {
+                        ParametricEqSettings.setFreqHz(this, band,
+                                obj.optInt("freq", ParametricEqSettings.getFreqHz(this, band)));
+                    }
+                }
+            }
+        } else {
+            EqualizerSettings.Caps caps = EqualizerSettings.queryCapabilities(this);
+            if (obj.has("enabled")) {
+                EqualizerSettings.setEnabled(this, obj.optBoolean("enabled", EqualizerSettings.isEnabled(this)));
+            }
+            if (caps != null && obj.has("band") && obj.has("value")) {
+                int band = obj.optInt("band", -1);
+                if (band >= 0 && band < caps.numBands) {
+                    int value = Math.max(caps.minLevel, Math.min(caps.maxLevel, obj.optInt("value", 0)));
+                    EqualizerSettings.setBandLevel(this, band, value);
+                }
             }
         }
         applyEqToService();
@@ -2574,24 +2598,47 @@ public class FileBrowserQueueActivity extends Activity {
 
     private void pushEqState() {
         try {
-            EqualizerSettings.Caps caps = EqualizerSettings.queryCapabilities(this);
             JSONObject msg = new JSONObject();
-            msg.put("type",    "eq_state");
-            msg.put("enabled", EqualizerSettings.isEnabled(this));
-            if (caps == null) {
-                msg.put("num_bands", 0);
-            } else {
-                msg.put("num_bands", caps.numBands);
-                msg.put("min", caps.minLevel);
-                msg.put("max", caps.maxLevel);
-                JSONArray freqs  = new JSONArray();
-                JSONArray levels = new JSONArray();
-                for (int b = 0; b < caps.numBands; b++) {
-                    freqs.put(caps.centerFreq[b]);
-                    levels.put((int) EqualizerSettings.getBandLevel(this, b));
+            msg.put("type", "eq_state");
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                // Parametric (DynamicsProcessing) host: per-band freq (Hz) + gain (millibels), with
+                // app-defined ranges. The remote renders adjustable-frequency rows from this.
+                int n = ParametricEqSettings.numBands();
+                msg.put("mode", "parametric");
+                msg.put("enabled", ParametricEqSettings.isEnabled(this));
+                msg.put("num_bands", n);
+                msg.put("gain_min", ParametricEqSettings.GAIN_MIN_MILLIBELS);
+                msg.put("gain_max", ParametricEqSettings.GAIN_MAX_MILLIBELS);
+                msg.put("freq_min", ParametricEqSettings.FREQ_MIN_HZ);
+                msg.put("freq_max", ParametricEqSettings.FREQ_MAX_HZ);
+                JSONArray freqs = new JSONArray(); // Hz
+                JSONArray gains = new JSONArray(); // millibels
+                for (int b = 0; b < n; b++) {
+                    freqs.put(ParametricEqSettings.getFreqHz(this, b));
+                    gains.put(ParametricEqSettings.getGainMillibels(this, b));
                 }
-                msg.put("freqs",  freqs);
-                msg.put("levels", levels);
+                msg.put("freqs", freqs);
+                msg.put("gains", gains);
+            } else {
+                // Graphic (Equalizer) host: fixed bands, gain only.
+                EqualizerSettings.Caps caps = EqualizerSettings.queryCapabilities(this);
+                msg.put("mode", "graphic");
+                msg.put("enabled", EqualizerSettings.isEnabled(this));
+                if (caps == null) {
+                    msg.put("num_bands", 0);
+                } else {
+                    msg.put("num_bands", caps.numBands);
+                    msg.put("min", caps.minLevel);
+                    msg.put("max", caps.maxLevel);
+                    JSONArray freqs  = new JSONArray();
+                    JSONArray levels = new JSONArray();
+                    for (int b = 0; b < caps.numBands; b++) {
+                        freqs.put(caps.centerFreq[b]);
+                        levels.put((int) EqualizerSettings.getBandLevel(this, b));
+                    }
+                    msg.put("freqs",  freqs);
+                    msg.put("levels", levels);
+                }
             }
             btController.sendRaw(msg.toString());
         } catch (Exception ignored) {
@@ -2651,6 +2698,58 @@ public class FileBrowserQueueActivity extends Activity {
 
         @Override public CharSequence statusText() {
             return caps() == null ? context.getString(R.string.eq_unavailable) : null;
+        }
+
+        @Override public boolean freqAdjustable() { return false; }
+
+        @Override public void nudgeFreq(int band, int direction) { /* graphic bands are fixed */ }
+    }
+
+    /** Local-playback parametric equalizer (API 28+, {@link DynamicsEqController}): per-band center
+     *  frequency and gain are both adjustable. Persists to {@link ParametricEqSettings} and nudges
+     *  the running Service to re-apply. */
+    private static final class ParametricLocalEqSink implements EqualizerDialog.EqSink {
+        private final FileBrowserQueueActivity activity;
+        private final Context context;
+
+        ParametricLocalEqSink(FileBrowserQueueActivity activity) {
+            this.activity = activity;
+            this.context = activity.getApplicationContext();
+        }
+
+        @Override public boolean isEnabled() { return ParametricEqSettings.isEnabled(context); }
+
+        @Override public void setEnabled(boolean enabled) {
+            ParametricEqSettings.setEnabled(context, enabled);
+            activity.applyEqToService();
+        }
+
+        @Override public int numBands() { return ParametricEqSettings.numBands(); }
+
+        @Override public int centerFreqMilliHz(int band) {
+            return ParametricEqSettings.getFreqHz(context, band) * 1000;
+        }
+
+        @Override public short bandLevel(int band) {
+            return (short) ParametricEqSettings.getGainMillibels(context, band);
+        }
+
+        @Override public void nudgeBand(int band, int deltaMillibels) {
+            if (band < 0 || band >= ParametricEqSettings.numBands()) return;
+            int level = ParametricEqSettings.getGainMillibels(context, band) + deltaMillibels;
+            ParametricEqSettings.setGainMillibels(context, band, level);
+            activity.applyEqToService();
+        }
+
+        @Override public CharSequence statusText() { return null; }
+
+        @Override public boolean freqAdjustable() { return true; }
+
+        @Override public void nudgeFreq(int band, int direction) {
+            if (band < 0 || band >= ParametricEqSettings.numBands()) return;
+            int cur = ParametricEqSettings.getFreqHz(context, band);
+            ParametricEqSettings.setFreqHz(context, band, ParametricEqSettings.stepFreqHz(cur, direction));
+            activity.applyEqToService();
         }
     }
 

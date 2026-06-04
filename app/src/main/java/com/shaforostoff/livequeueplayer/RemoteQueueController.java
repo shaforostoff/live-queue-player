@@ -99,10 +99,12 @@ final class RemoteQueueController {
 
     private EqualizerDialog.Handle eqDialog;
     private boolean eqDeterminate;            // true once any eq_state has arrived
+    private boolean eqParametric;             // true when the host runs the DynamicsProcessing path
     private int     eqNumBands;
-    private short   eqMin = -1500, eqMax = 1500;
-    private int[]   eqFreqs  = new int[0];
-    private short[] eqLevels = new short[0];
+    private short   eqMin = -1500, eqMax = 1500;          // gain range, millibels
+    private int     eqFreqMinHz = 30, eqFreqMaxHz = 16000; // adjustable freq range (parametric)
+    private int[]   eqFreqs  = new int[0];    // milliHz, for display
+    private short[] eqLevels = new short[0];  // gain, millibels
     private boolean eqEnabled;
 
     RemoteQueueController(Activity activity,
@@ -208,18 +210,39 @@ final class RemoteQueueController {
 
     void onEqStateReceived(JSONObject obj) {
         eqDeterminate = true;
+        eqParametric = "parametric".equals(obj.optString("mode", "graphic"));
         eqNumBands = obj.optInt("num_bands", 0);
-        eqMin = (short) obj.optInt("min", eqMin);
-        eqMax = (short) obj.optInt("max", eqMax);
         eqEnabled = obj.optBoolean("enabled", eqEnabled);
-        if (eqNumBands > 0) {
-            JSONArray freqs  = obj.optJSONArray("freqs");
-            JSONArray levels = obj.optJSONArray("levels");
-            eqFreqs  = new int[eqNumBands];
-            eqLevels = new short[eqNumBands];
-            for (int i = 0; i < eqNumBands; i++) {
-                eqFreqs[i]  = freqs  != null ? freqs.optInt(i, 0)  : 0;
-                eqLevels[i] = (short) (levels != null ? levels.optInt(i, 0) : 0);
+        if (eqParametric) {
+            // Host sends freqs in Hz + gains in millibels with explicit ranges.
+            eqMin = (short) obj.optInt("gain_min", eqMin);
+            eqMax = (short) obj.optInt("gain_max", eqMax);
+            eqFreqMinHz = obj.optInt("freq_min", eqFreqMinHz);
+            eqFreqMaxHz = obj.optInt("freq_max", eqFreqMaxHz);
+            if (eqNumBands > 0) {
+                JSONArray freqs = obj.optJSONArray("freqs"); // Hz
+                JSONArray gains = obj.optJSONArray("gains"); // millibels
+                eqFreqs  = new int[eqNumBands];
+                eqLevels = new short[eqNumBands];
+                for (int i = 0; i < eqNumBands; i++) {
+                    int hz = freqs != null ? freqs.optInt(i, 0) : 0;
+                    eqFreqs[i]  = hz * 1000; // store milliHz for display
+                    eqLevels[i] = (short) (gains != null ? gains.optInt(i, 0) : 0);
+                }
+            }
+        } else {
+            // Graphic host: freqs in milliHz + levels in millibels.
+            eqMin = (short) obj.optInt("min", eqMin);
+            eqMax = (short) obj.optInt("max", eqMax);
+            if (eqNumBands > 0) {
+                JSONArray freqs  = obj.optJSONArray("freqs");
+                JSONArray levels = obj.optJSONArray("levels");
+                eqFreqs  = new int[eqNumBands];
+                eqLevels = new short[eqNumBands];
+                for (int i = 0; i < eqNumBands; i++) {
+                    eqFreqs[i]  = freqs  != null ? freqs.optInt(i, 0)  : 0;
+                    eqLevels[i] = (short) (levels != null ? levels.optInt(i, 0) : 0);
+                }
             }
         }
         if (eqDialog != null) eqDialog.refresh();
@@ -265,6 +288,27 @@ final class RemoteQueueController {
         @Override public CharSequence statusText() {
             if (eqNumBands > 0) return null;
             return activity.getString(eqDeterminate ? R.string.eq_unavailable : R.string.eq_loading);
+        }
+
+        @Override public boolean freqAdjustable() { return eqParametric; }
+
+        @Override public void nudgeFreq(int band, int direction) {
+            if (!eqParametric || band < 0 || band >= eqFreqs.length) return;
+            int curHz = eqFreqs[band] / 1000;
+            // Keep the band strictly between its neighbours, matching the host's clamp; the
+            // authoritative eq_state echo corrects any drift anyway.
+            int loHz = band == 0 ? eqFreqMinHz : eqFreqs[band - 1] / 1000 + 1;
+            int hiHz = band == eqFreqs.length - 1 ? eqFreqMaxHz : eqFreqs[band + 1] / 1000 - 1;
+            if (hiHz < loHz) hiHz = loHz;
+            int newHz = Math.max(loHz, Math.min(hiHz, ParametricEqSettings.stepFreqHz(curHz, direction)));
+            eqFreqs[band] = newHz * 1000;
+            try {
+                JSONObject cmd = new JSONObject();
+                cmd.put("type", "set_eq");
+                cmd.put("band", band);
+                cmd.put("freq", newHz);
+                btController.sendRaw(cmd.toString());
+            } catch (Exception ignored) {}
         }
     }
 

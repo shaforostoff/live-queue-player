@@ -1,5 +1,6 @@
 package com.shaforostoff.livequeueplayer;
 
+import android.content.Context;
 import android.media.AudioAttributes;
 import android.media.AudioDeviceCallback;
 import android.media.AudioDeviceInfo;
@@ -31,7 +32,7 @@ class AudioPlayer extends Thread implements MediaPlayer.OnCompletionListener, Me
   private final AtomicInteger fadeToken = new AtomicInteger();
   private final float baseGain;
   private PowerManager.WakeLock transitionWakeLock;
-  private EqualizerController equalizer;
+  private EqController equalizer;
 
   /**
    * Initiate an audio player, throws exceptions if failed.
@@ -110,9 +111,14 @@ class AudioPlayer extends Thread implements MediaPlayer.OnCompletionListener, Me
       // so an unsupported device just skips EQ rather than failing playback. Skip it entirely when
       // a second output is available: the EQ is a single global effect that can't be confined to
       // the main output, so it must never touch audio while previewing is possible. The condition
-      // is snapshotted at track start so it stays fixed for the whole track.
+      // is snapshotted at track start so it stays fixed for the whole track. On API 28+ use the
+      // parametric DynamicsProcessing backend; older devices keep the graphic Equalizer.
       if (!AudioOutputRouter.sAudioPreviewAvailableAtTrackStart) {
-        equalizer = new EqualizerController(mediaPlayer.getAudioSessionId(), service.getApplicationContext());
+        int sessionId = mediaPlayer.getAudioSessionId();
+        Context ctx = service.getApplicationContext();
+        equalizer = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P
+            ? new DynamicsEqController(sessionId, ctx)
+            : new EqualizerController(sessionId, ctx);
       }
       // Request audio focus with GAIN priority for main playback
       // This ensures preview (with TRANSIENT_MAY_DUCK) won't interrupt us

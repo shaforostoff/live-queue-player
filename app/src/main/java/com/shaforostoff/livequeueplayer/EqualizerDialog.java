@@ -31,6 +31,12 @@ final class EqualizerDialog {
     short bandLevel(int band);
     void nudgeBand(int band, int deltaMillibels);
     CharSequence statusText();
+
+    /** True when each band's center frequency can be moved (parametric/DynamicsProcessing path). */
+    boolean freqAdjustable();
+    /** Move a band's center frequency one step up ({@code direction > 0}) or down. No-op when
+     *  {@link #freqAdjustable()} is false. */
+    void nudgeFreq(int band, int direction);
   }
 
   /** Live handle to a shown dialog so callers can refresh values or dismiss it. */
@@ -52,6 +58,7 @@ final class EqualizerDialog {
   private final TextView status;
   private final LinearLayout bandsContainer;
   private TextView[] bandValues = new TextView[0];
+  private TextView[] bandFreqs = new TextView[0];
 
   private EqualizerDialog(Activity activity, EqSink sink) {
     this.activity = activity;
@@ -124,14 +131,18 @@ final class EqualizerDialog {
     enableSwitch.setOnCheckedChangeListener((b, checked) -> sink.setEnabled(checked));
     for (int b = 0; b < n; b++) {
       bandValues[b].setText(formatDb(activity, sink.bandLevel(b)));
+      if (bandFreqs[b] != null) bandFreqs[b].setText(formatFreq(activity, sink.centerFreqMilliHz(b)));
     }
   }
 
   private void buildRows(int n) {
     bandsContainer.removeAllViews();
     bandValues = new TextView[n];
+    bandFreqs = new TextView[n];
+    boolean freqAdjustable = sink.freqAdjustable();
     int vpad = (int) (4 * density);
     int valueWidth = (int) (64 * density);
+    int freqWidth = (int) (56 * density);
     for (int b = 0; b < n; b++) {
       final int band = b;
       LinearLayout row = new LinearLayout(activity);
@@ -142,7 +153,35 @@ final class EqualizerDialog {
       TextView freq = new TextView(activity);
       freq.setText(formatFreq(activity, sink.centerFreqMilliHz(b)));
       freq.setTextSize(14f);
-      row.addView(freq, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+      bandFreqs[b] = freq;
+
+      if (freqAdjustable) {
+        // Parametric path: the center frequency gets its own ▼/▲ around a fixed-width label, then
+        // the gain controls follow. The frequency group takes the flexible (weighted) space.
+        freq.setGravity(Gravity.CENTER);
+        freq.setMinWidth(freqWidth);
+        Button freqDown = new Button(activity);
+        freqDown.setText("▼");
+        Button freqUp = new Button(activity);
+        freqUp.setText("▲");
+        freqDown.setOnClickListener(v -> {
+          sink.nudgeFreq(band, -1);
+          freq.setText(formatFreq(activity, sink.centerFreqMilliHz(band)));
+        });
+        freqUp.setOnClickListener(v -> {
+          sink.nudgeFreq(band, 1);
+          freq.setText(formatFreq(activity, sink.centerFreqMilliHz(band)));
+        });
+        LinearLayout freqGroup = new LinearLayout(activity);
+        freqGroup.setOrientation(LinearLayout.HORIZONTAL);
+        freqGroup.setGravity(Gravity.CENTER_VERTICAL);
+        freqGroup.addView(freqDown);
+        freqGroup.addView(freq);
+        freqGroup.addView(freqUp);
+        row.addView(freqGroup, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+      } else {
+        row.addView(freq, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+      }
 
       Button down = new Button(activity);
       down.setText("▼");

@@ -31,6 +31,7 @@ class AudioPlayer extends Thread implements MediaPlayer.OnCompletionListener, Me
   private final AtomicInteger fadeToken = new AtomicInteger();
   private final float baseGain;
   private PowerManager.WakeLock transitionWakeLock;
+  private EqualizerController equalizer;
 
   /**
    * Initiate an audio player, throws exceptions if failed.
@@ -102,6 +103,9 @@ class AudioPlayer extends Thread implements MediaPlayer.OnCompletionListener, Me
     try {
       mediaPlayer.prepare();
       mediaPlayer.setVolume(baseGain, baseGain);
+      // Attach the equalizer to this session and apply persisted settings. Guarded internally,
+      // so an unsupported device just skips EQ rather than failing playback.
+      equalizer = new EqualizerController(mediaPlayer.getAudioSessionId(), service.getApplicationContext());
       // Request audio focus with GAIN priority for main playback
       // This ensures preview (with TRANSIENT_MAY_DUCK) won't interrupt us
       requestAudioFocus();
@@ -178,6 +182,11 @@ class AudioPlayer extends Thread implements MediaPlayer.OnCompletionListener, Me
       try { mediaPlayer.seekTo(positionMs); }
       catch (IllegalStateException ignored) {}
     }
+  }
+
+  /** Re-read persisted equalizer settings and push them to the live effect. */
+  void applyEqualizerSettings() {
+    if (equalizer != null) equalizer.applySettings(service);
   }
 
   /**
@@ -271,6 +280,10 @@ class AudioPlayer extends Thread implements MediaPlayer.OnCompletionListener, Me
         audioManager.unregisterAudioDeviceCallback(audioDeviceCallback);
       }
       abandonAudioFocus();
+      if (equalizer != null) {
+        equalizer.release();
+        equalizer = null;
+      }
       mediaPlayer.release();
     }
   }

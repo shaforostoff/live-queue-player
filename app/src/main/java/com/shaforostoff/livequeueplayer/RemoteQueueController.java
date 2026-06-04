@@ -78,6 +78,7 @@ final class RemoteQueueController {
     private final View stopButton;
     private final View playButton;
     private final View volumeButton;
+    private final View eqButton;
 
     private final ArrayList<TrackEntry>   queueEntries = new ArrayList<>();
     private final SparseArray<TrackEntry> metaCache    = new SparseArray<>();
@@ -96,13 +97,22 @@ final class RemoteQueueController {
     private int         cachedVolumeMax   = 15;
     private int         cachedVolumeValue = -1;
 
+    private EqualizerDialog.Handle eqDialog;
+    private boolean eqDeterminate;            // true once any eq_state has arrived
+    private int     eqNumBands;
+    private short   eqMin = -1500, eqMax = 1500;
+    private int[]   eqFreqs  = new int[0];
+    private short[] eqLevels = new short[0];
+    private boolean eqEnabled;
+
     RemoteQueueController(Activity activity,
                           BluetoothController btController,
                           ListView queueList,
                           View refreshButton,
                           View stopButton,
                           View playButton,
-                          View volumeButton) {
+                          View volumeButton,
+                          View eqButton) {
         this.activity = activity;
         this.btController = btController;
         this.queueList = queueList;
@@ -110,6 +120,7 @@ final class RemoteQueueController {
         this.stopButton = stopButton;
         this.playButton = playButton;
         this.volumeButton = volumeButton;
+        this.eqButton = eqButton;
 
         adapter = new QueueAdapter();
         queueList.setAdapter(adapter);
@@ -129,6 +140,7 @@ final class RemoteQueueController {
         playButton.setOnClickListener(v -> btController.sendRaw("{\"type\":\"resume_playback\"}"));
         refreshButton.setOnClickListener(v -> requestQueue());
         volumeButton.setOnClickListener(v -> showVolumePopup());
+        eqButton.setOnClickListener(v -> showEqDialog());
 
         installGestureHandler(queueList);
         updatePlaybackButtons();
@@ -186,6 +198,74 @@ final class RemoteQueueController {
         if (value >= 0) cachedVolumeValue = value;
         if (volumeValueText == null) return;
         if (value >= 0) volumeValueText.setText(String.valueOf(value));
+    }
+
+    private void showEqDialog() {
+        if (eqDialog != null && eqDialog.isShowing()) return;
+        eqDialog = EqualizerDialog.show(activity, new RemoteEqSink());
+        btController.sendRaw("{\"type\":\"request_eq\"}");
+    }
+
+    void onEqStateReceived(JSONObject obj) {
+        eqDeterminate = true;
+        eqNumBands = obj.optInt("num_bands", 0);
+        eqMin = (short) obj.optInt("min", eqMin);
+        eqMax = (short) obj.optInt("max", eqMax);
+        eqEnabled = obj.optBoolean("enabled", eqEnabled);
+        if (eqNumBands > 0) {
+            JSONArray freqs  = obj.optJSONArray("freqs");
+            JSONArray levels = obj.optJSONArray("levels");
+            eqFreqs  = new int[eqNumBands];
+            eqLevels = new short[eqNumBands];
+            for (int i = 0; i < eqNumBands; i++) {
+                eqFreqs[i]  = freqs  != null ? freqs.optInt(i, 0)  : 0;
+                eqLevels[i] = (short) (levels != null ? levels.optInt(i, 0) : 0);
+            }
+        }
+        if (eqDialog != null) eqDialog.refresh();
+    }
+
+    /** Remote-playback equalizer: caches state pushed by the server and sends changes back. */
+    private final class RemoteEqSink implements EqualizerDialog.EqSink {
+        @Override public boolean isEnabled() { return eqEnabled; }
+
+        @Override public void setEnabled(boolean enabled) {
+            eqEnabled = enabled;
+            try {
+                JSONObject cmd = new JSONObject();
+                cmd.put("type", "set_eq");
+                cmd.put("enabled", enabled);
+                btController.sendRaw(cmd.toString());
+            } catch (Exception ignored) {}
+        }
+
+        @Override public int numBands() { return eqNumBands; }
+
+        @Override public int centerFreqMilliHz(int band) {
+            return band < eqFreqs.length ? eqFreqs[band] : 0;
+        }
+
+        @Override public short bandLevel(int band) {
+            return band < eqLevels.length ? eqLevels[band] : 0;
+        }
+
+        @Override public void nudgeBand(int band, int deltaMillibels) {
+            if (band < 0 || band >= eqLevels.length) return;
+            int level = Math.max(eqMin, Math.min(eqMax, eqLevels[band] + deltaMillibels));
+            eqLevels[band] = (short) level;
+            try {
+                JSONObject cmd = new JSONObject();
+                cmd.put("type", "set_eq");
+                cmd.put("band", band);
+                cmd.put("value", level);
+                btController.sendRaw(cmd.toString());
+            } catch (Exception ignored) {}
+        }
+
+        @Override public CharSequence statusText() {
+            if (eqNumBands > 0) return null;
+            return activity.getString(eqDeterminate ? R.string.eq_unavailable : R.string.eq_loading);
+        }
     }
 
     void refreshAndScrollToBottom() {
@@ -303,6 +383,9 @@ final class RemoteQueueController {
         }
         if (volumePopup != null && volumePopup.isShowing()) {
             volumePopup.dismiss();
+        }
+        if (eqDialog != null && eqDialog.isShowing()) {
+            eqDialog.dismiss();
         }
     }
 

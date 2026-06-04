@@ -87,6 +87,13 @@
   <string name="remote_queue_refresh">Refresh</string>
   <string name="remote_volume_button">Volume</string>
   <string name="remote_queue_resume">▶ Resume</string>
+  <string name="eq_button">Equalizer</string>
+  <string name="eq_dialog_title">Equalizer</string>
+  <string name="eq_unavailable">Equalizer is not available on this device.</string>
+  <string name="eq_loading">Loading…</string>
+  <string name="eq_band_db">%+d dB</string>
+  <string name="eq_freq_hz">%d Hz</string>
+  <string name="eq_freq_khz">%.1f kHz</string>
 </resources>
 
 

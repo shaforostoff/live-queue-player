@@ -184,6 +184,7 @@ public class Service extends android.app.Service implements MediaPlayerStateList
                     int seekToMs = intent.getIntExtra(EXTRA_SEEK_TO_MS, -1);
                     if (seekToMs >= 0 && audioPlayer != null) seekTo(seekToMs);
                 }
+                case Launcher.APPLY_EQ -> audioPlayer.applyEqualizerSettings();
                 /* cancel current playback but keep the service alive so a remote command can
                  * resume without starting a new foreground service from the background, which
                  * Android 14+ defers until unlock. */

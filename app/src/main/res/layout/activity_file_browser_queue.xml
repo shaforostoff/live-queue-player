@@ -107,6 +107,15 @@
           a:clickable="true"
           a:focusable="true" />
 
+        <ImageButton
+          a:id="@+id/btn_eq"
+          a:layout_width="wrap_content"
+          a:layout_height="wrap_content"
+          a:layout_margin="4dp"
+          a:src="@drawable/ic_equalizer"
+          a:background="?android:attr/selectableItemBackground"
+          a:contentDescription="@string/eq_button" />
+
         <Button
           a:id="@+id/btn_clear_queue"
           a:layout_width="wrap_content"

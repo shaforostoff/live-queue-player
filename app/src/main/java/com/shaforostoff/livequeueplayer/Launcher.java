@@ -38,6 +38,7 @@ public class Launcher extends Activity {
     public static final byte APPEND_QUEUE = 8;
     public static final byte CLEAR_QUEUE = 9;
     public static final byte SEEK = 10;
+    public static final byte APPLY_EQ = 11;
 
     private Button stopAfterCurrentButton;
     private BroadcastReceiver playbackStateReceiver;

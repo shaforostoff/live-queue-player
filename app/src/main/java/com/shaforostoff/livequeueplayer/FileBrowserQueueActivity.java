@@ -4,6 +4,7 @@ import android.Manifest;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.BroadcastReceiver;
+import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.pm.PackageManager;
@@ -327,6 +328,7 @@ public class FileBrowserQueueActivity extends Activity {
         sortButton = findViewById(R.id.btn_sort_files);
         saveButton = findViewById(R.id.btn_save_queue);
         stopButton = findViewById(R.id.btn_stop_queue);
+        findViewById(R.id.btn_eq).setOnClickListener(v -> EqualizerDialog.show(this, new LocalEqSink(this)));
         metadataExtractor = ((App) getApplication()).getMetadataExtractor();
         storageBrowser = new StorageBrowser(this);
         btController = new BluetoothController(this, new BluetoothController.Callback() {
@@ -359,6 +361,7 @@ public class FileBrowserQueueActivity extends Activity {
                     if ("queue_state".equals(type))        remoteQueueController.onQueueStateReceived(obj);
                     else if ("play_state".equals(type))    remoteQueueController.onPlaybackStateReceived(obj);
                     else if ("volume_state".equals(type))  remoteQueueController.onVolumeStateReceived(obj);
+                    else if ("eq_state".equals(type))      remoteQueueController.onEqStateReceived(obj);
                     return;
                 }
                 if (mode != Mode.REMOTE_RECEIVE) return;
@@ -371,6 +374,8 @@ public class FileBrowserQueueActivity extends Activity {
                     case "play_track":      handleRemotePlayTrack(obj);     break;
                     case "set_volume":      handleRemoteSetVolume(obj);     break;
                     case "request_volume":  pushVolumeState();              break;
+                    case "set_eq":          handleRemoteSetEq(obj);         break;
+                    case "request_eq":      pushEqState();                  break;
                 }
             }
             @Override
@@ -2548,6 +2553,105 @@ public class FileBrowserQueueActivity extends Activity {
         }
     }
 
+    /** Apply an equalizer change requested by the remote sender, then echo the new state back. */
+    private void handleRemoteSetEq(JSONObject obj) {
+        EqualizerSettings.Caps caps = EqualizerSettings.queryCapabilities(this);
+        if (obj.has("enabled")) {
+            EqualizerSettings.setEnabled(this, obj.optBoolean("enabled", EqualizerSettings.isEnabled(this)));
+        }
+        if (caps != null && obj.has("band") && obj.has("value")) {
+            int band = obj.optInt("band", -1);
+            if (band >= 0 && band < caps.numBands) {
+                int value = Math.max(caps.minLevel, Math.min(caps.maxLevel, obj.optInt("value", 0)));
+                EqualizerSettings.setBandLevel(this, band, value);
+            }
+        }
+        applyEqToService();
+        pushEqState();
+    }
+
+    private void pushEqState() {
+        try {
+            EqualizerSettings.Caps caps = EqualizerSettings.queryCapabilities(this);
+            JSONObject msg = new JSONObject();
+            msg.put("type",    "eq_state");
+            msg.put("enabled", EqualizerSettings.isEnabled(this));
+            if (caps == null) {
+                msg.put("num_bands", 0);
+            } else {
+                msg.put("num_bands", caps.numBands);
+                msg.put("min", caps.minLevel);
+                msg.put("max", caps.maxLevel);
+                JSONArray freqs  = new JSONArray();
+                JSONArray levels = new JSONArray();
+                for (int b = 0; b < caps.numBands; b++) {
+                    freqs.put(caps.centerFreq[b]);
+                    levels.put((int) EqualizerSettings.getBandLevel(this, b));
+                }
+                msg.put("freqs",  freqs);
+                msg.put("levels", levels);
+            }
+            btController.sendRaw(msg.toString());
+        } catch (Exception ignored) {
+        }
+    }
+
+    /** Push persisted EQ settings to the live player. Skipped when nothing is playing — the
+     *  settings are already stored and {@link EqualizerController} applies them on the next track. */
+    private void applyEqToService() {
+        if (!Service.sIsPlaying) return;
+        Intent intent = new Intent(this, Service.class);
+        intent.putExtra(Launcher.TYPE, Launcher.APPLY_EQ);
+        startService(intent);
+    }
+
+    /** Local-playback equalizer: persists settings and nudges the running Service to re-apply. */
+    private static final class LocalEqSink implements EqualizerDialog.EqSink {
+        private final FileBrowserQueueActivity activity;
+        private final Context context;
+
+        LocalEqSink(FileBrowserQueueActivity activity) {
+            this.activity = activity;
+            this.context = activity.getApplicationContext();
+        }
+
+        private EqualizerSettings.Caps caps() {
+            return EqualizerSettings.queryCapabilities(context);
+        }
+
+        @Override public boolean isEnabled() { return EqualizerSettings.isEnabled(context); }
+
+        @Override public void setEnabled(boolean enabled) {
+            EqualizerSettings.setEnabled(context, enabled);
+            activity.applyEqToService();
+        }
+
+        @Override public int numBands() {
+            EqualizerSettings.Caps c = caps();
+            return c == null ? 0 : c.numBands;
+        }
+
+        @Override public int centerFreqMilliHz(int band) {
+            EqualizerSettings.Caps c = caps();
+            return (c == null || band >= c.centerFreq.length) ? 0 : c.centerFreq[band];
+        }
+
+        @Override public short bandLevel(int band) { return EqualizerSettings.getBandLevel(context, band); }
+
+        @Override public void nudgeBand(int band, int deltaMillibels) {
+            EqualizerSettings.Caps c = caps();
+            if (c == null || band < 0 || band >= c.numBands) return;
+            int level = EqualizerSettings.getBandLevel(context, band) + deltaMillibels;
+            level = Math.max(c.minLevel, Math.min(c.maxLevel, level));
+            EqualizerSettings.setBandLevel(context, band, level);
+            activity.applyEqToService();
+        }
+
+        @Override public CharSequence statusText() {
+            return caps() == null ? context.getString(R.string.eq_unavailable) : null;
+        }
+    }
+
     private void handleRemoteRequestQueue(JSONObject obj) {
         int maxKnownId = obj.optInt("max_known_id", 0);
         int minKnownId = obj.optInt("min_known_id", 0);
@@ -3113,7 +3217,8 @@ public class FileBrowserQueueActivity extends Activity {
             View stop     = findViewById(R.id.btn_remote_stop);
             View play     = findViewById(R.id.btn_remote_play);
             View volume   = findViewById(R.id.btn_remote_volume);
-            remoteQueueController = new RemoteQueueController(this, btController, list, refresh, stop, play, volume);
+            View eq       = findViewById(R.id.btn_remote_eq);
+            remoteQueueController = new RemoteQueueController(this, btController, list, refresh, stop, play, volume, eq);
         }
         View remoteLabel = findViewById(R.id.remote_queue_label);
         if (remoteLabel != null) remoteLabel.setOnClickListener(v -> showLocalQueueInRemoteMode());

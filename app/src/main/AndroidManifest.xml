@@ -8,6 +8,7 @@
   <uses-permission a:name="android.permission.POST_NOTIFICATIONS"/>
   <uses-permission a:name="android.permission.FOREGROUND_SERVICE"/>
   <uses-permission a:name="android.permission.WAKE_LOCK"/>
+  <uses-permission a:name="android.permission.MODIFY_AUDIO_SETTINGS"/>
   <uses-permission a:name="android.permission.READ_EXTERNAL_STORAGE" a:maxSdkVersion="32"/>
   <uses-permission a:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"/>
   <uses-permission a:name="android.permission.READ_MEDIA_AUDIO"/>

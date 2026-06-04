@@ -107,8 +107,12 @@ class AudioPlayer extends Thread implements MediaPlayer.OnCompletionListener, Me
       mediaPlayer.prepare();
       mediaPlayer.setVolume(baseGain, baseGain);
       // Attach the equalizer to this session and apply persisted settings. Guarded internally,
-      // so an unsupported device just skips EQ rather than failing playback.
-      equalizer = new EqualizerController(mediaPlayer.getAudioSessionId(), service.getApplicationContext());
+      // so an unsupported device just skips EQ rather than failing playback. Skip it entirely when
+      // a second output is available: the EQ is a single global effect that can't be confined to
+      // the main output, so it must never touch audio while previewing is possible.
+      if (!AudioOutputRouter.canUseAudioPreview(service)) {
+        equalizer = new EqualizerController(mediaPlayer.getAudioSessionId(), service.getApplicationContext());
+      }
       // Request audio focus with GAIN priority for main playback
       // This ensures preview (with TRANSIENT_MAY_DUCK) won't interrupt us
       requestAudioFocus();

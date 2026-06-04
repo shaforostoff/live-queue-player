@@ -190,6 +190,7 @@ public class FileBrowserQueueActivity extends Activity {
     private Button browserStopButton;
     private Button sortButton;
     private Button openStorageButton;
+    private View eqButton;
     private Mode mode = Mode.DJ;
 
     private Uri browseFileUri;
@@ -328,7 +329,8 @@ public class FileBrowserQueueActivity extends Activity {
         sortButton = findViewById(R.id.btn_sort_files);
         saveButton = findViewById(R.id.btn_save_queue);
         stopButton = findViewById(R.id.btn_stop_queue);
-        findViewById(R.id.btn_eq).setOnClickListener(v -> EqualizerDialog.show(this, new LocalEqSink(this)));
+        eqButton = findViewById(R.id.btn_eq);
+        eqButton.setOnClickListener(v -> EqualizerDialog.show(this, new LocalEqSink(this)));
         metadataExtractor = ((App) getApplication()).getMetadataExtractor();
         storageBrowser = new StorageBrowser(this);
         btController = new BluetoothController(this, new BluetoothController.Callback() {
@@ -3194,6 +3196,16 @@ public class FileBrowserQueueActivity extends Activity {
             clearButton.setVisibility(hasBrowseBehavior() ? View.VISIBLE : View.GONE);
         }
         applySaveButtonModeState();
+        updateEqButtonVisibility();
+    }
+
+    /**
+     * Enabling the equalizer breaks audio routing, so {@link AudioPlayer} skips it whenever a
+     * second output is available for previewing. Hide the button in exactly that case.
+     */
+    private void updateEqButtonVisibility() {
+        if (eqButton == null) return;
+        eqButton.setVisibility(AudioOutputRouter.canUseAudioPreview(this) ? View.GONE : View.VISIBLE);
     }
 
     private void applySaveButtonModeState() {
@@ -3450,6 +3462,7 @@ public class FileBrowserQueueActivity extends Activity {
         }
         refreshQueuePlaybackRows(prevPlayingIndex);
         if (fileAdapter != null && (fileBrowserPreviewingUri != null || Service.sBrowseMode)) fileAdapter.notifyDataSetChanged();
+        updateEqButtonVisibility();
         maybeQueueNextBrowseTrack();
     }
 

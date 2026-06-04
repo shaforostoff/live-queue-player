@@ -23,6 +23,15 @@ final class AudioOutputRouter {
     static volatile AudioDeviceInfo sResolvedSecondary;
     static volatile boolean sResolvedSecondaryIsDefault;
 
+    /**
+     * Whether a second output was available when the current track started. The equalizer must stay
+     * disengaged whenever audio preview is possible, but re-evaluating that live would attach or
+     * detach the EQ mid-track and interrupt playback. So we snapshot the condition once per track
+     * (see {@link #snapshotAudioPreviewAvailability}) — exactly like the routing fields above — and
+     * let the EQ engagement and its button read this frozen value.
+     */
+    static volatile boolean sAudioPreviewAvailableAtTrackStart;
+
     private AudioOutputRouter() {
     }
 
@@ -110,6 +119,11 @@ final class AudioOutputRouter {
         if (device != null) {
             player.setPreferredDevice(device);
         }
+    }
+
+    /** Freeze {@link #sAudioPreviewAvailableAtTrackStart} for the track about to start. */
+    static void snapshotAudioPreviewAvailability(Context context) {
+        sAudioPreviewAvailableAtTrackStart = canUseAudioPreview(context);
     }
 
     static boolean canUseAudioPreview(Context context) {

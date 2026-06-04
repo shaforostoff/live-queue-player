@@ -244,6 +244,9 @@ public class Service extends android.app.Service implements MediaPlayerStateList
         try {
 
             AudioOutputRouter.resolve(this);
+            // Lock in whether the EQ may engage for this track; the decision must not change
+            // mid-track when outputs are plugged or unplugged.
+            AudioOutputRouter.snapshotAudioPreviewAvailability(this);
             /* get audio playback logic and start async */
             audioPlayer = new AudioPlayer(this, entry.location);
             audioPlayer.start();

@@ -11,12 +11,16 @@ import android.net.Uri;
 import com.beatofthedrum.alacdecoder.AlacContext;
 import com.beatofthedrum.alacdecoder.AlacUtils;
 
+import java.io.BufferedInputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.DataInputStream;
+import java.io.EOFException;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.Locale;
 
 /**
@@ -92,12 +96,99 @@ final class AlacMediaDataSource extends MediaDataSource {
         String mime = extractor.getTrackFormat(i).getString(MediaFormat.KEY_MIME);
         if (MIME_ALAC.equalsIgnoreCase(mime)) return true;
       }
-    } catch (Exception e) {
-      return false;
+    } catch (Exception ignored) {
+      // fall through to the structural probe below
     } finally {
       extractor.release();
     }
+    // Some extractors (notably MediaTek's) report ALAC tracks as audio/unknown, so the MIME probe
+    // above misses them and the file would wrongly be handed to the native player, which then fails
+    // with MEDIA_ERROR_UNSUPPORTED. Detect ALAC structurally instead, via the 'alac' sample entry.
+    return containsAlacBox(context, uri);
+  }
+
+  /**
+   * Structural ALAC detection: walks the MP4 box tree for an {@code alac} sample-entry box. Needed
+   * because some extractors (notably MediaTek's) report ALAC tracks as {@code audio/unknown}, so the
+   * MIME probe in {@link #isAlacTrack} misses them. Reads only the small {@code moov} container and
+   * never the large {@code mdat} payload. Returns false on any malformed or unreadable input.
+   */
+  private static boolean containsAlacBox(Context context, Uri uri) {
+    try (InputStream in = context.getContentResolver().openInputStream(uri)) {
+      if (in == null) return false;
+      return scanBoxesForAlac(new DataInputStream(new BufferedInputStream(in)), Long.MAX_VALUE);
+    } catch (Exception e) {
+      return false;
+    }
+  }
+
+  /**
+   * Reads ISO-BMFF boxes consuming up to {@code limit} bytes, recursing through the
+   * moov/trak/mdia/minf/stbl/stsd container path. Returns true as soon as an {@code alac} box is seen.
+   */
+  private static boolean scanBoxesForAlac(DataInputStream dis, long limit) throws IOException {
+    long consumed = 0;
+    while (consumed + 8 <= limit) {
+      long size;
+      try {
+        size = readU32(dis);
+      } catch (EOFException eof) {
+        return false;
+      }
+      byte[] fourcc = new byte[4];
+      dis.readFully(fourcc);
+      consumed += 8;
+      String type = new String(fourcc, StandardCharsets.US_ASCII);
+
+      long payload;
+      if (size == 1) {                 // 64-bit largesize follows the type
+        payload = readU64(dis) - 16;
+        consumed += 8;
+      } else if (size == 0) {          // box extends to the end of its parent
+        payload = limit - consumed;
+      } else {
+        payload = size - 8;
+      }
+      if (payload < 0) return false;
+
+      if ("alac".equals(type)) return true;
+      if ("moov".equals(type)) return scanBoxesForAlac(dis, payload); // codec boxes live only here
+      if (isAlacContainer(type)) {
+        if (scanBoxesForAlac(dis, payload)) return true;
+      } else if ("stsd".equals(type)) {
+        skipFully(dis, 8);             // FullBox header: version/flags (4) + entry_count (4)
+        if (scanBoxesForAlac(dis, payload - 8)) return true;
+      } else {
+        skipFully(dis, payload);       // ftyp, mdat, free, leaf boxes — skip
+      }
+      consumed += payload;
+    }
     return false;
+  }
+
+  private static boolean isAlacContainer(String type) {
+    return "trak".equals(type) || "mdia".equals(type) || "minf".equals(type) || "stbl".equals(type);
+  }
+
+  private static long readU32(DataInputStream dis) throws IOException {
+    return ((long) dis.readUnsignedByte() << 24) | (dis.readUnsignedByte() << 16)
+         | (dis.readUnsignedByte() << 8) | dis.readUnsignedByte();
+  }
+
+  private static long readU64(DataInputStream dis) throws IOException {
+    return (readU32(dis) << 32) | readU32(dis);
+  }
+
+  private static void skipFully(DataInputStream dis, long n) throws IOException {
+    while (n > 0) {
+      long skipped = dis.skip(n);
+      if (skipped <= 0) {
+        if (dis.read() < 0) throw new EOFException();
+        n -= 1;
+      } else {
+        n -= skipped;
+      }
+    }
   }
 
   private synchronized void ensureDecoded() {

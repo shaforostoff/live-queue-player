@@ -191,6 +191,10 @@ public class Service extends android.app.Service implements MediaPlayerStateList
                 case Launcher.KILL -> onPlaybackStoppedKeepAlive();
             }
         } else {
+            // Reached only via startForegroundService() (see FileBrowserQueueActivity
+            // .startPlaybackService), so satisfy its startForeground() deadline before any
+            // branch below can skip it or block on I/O.
+            ensureForeground();
             sBrowseMode = intent.getBooleanExtra(EXTRA_BROWSE_MODE, false);
             int sizeBefore = playlist.size();
             switch (intent.getAction()) {
@@ -231,6 +235,23 @@ public class Service extends android.app.Service implements MediaPlayerStateList
                 QueueStore.save(this, stored);
             }
         }
+    }
+
+    /**
+     * Promote to the foreground right away to satisfy the startForegroundService() contract.
+     * Android kills the process with ForegroundServiceDidNotStartInTimeException when a service
+     * started via startForegroundService() fails to call startForeground() within ~5s. The real
+     * call lives late inside playEntryFromPlaylist(), and several reachable paths never get there
+     * — the already-playing append branch, and the load-failure catch blocks — so we promote
+     * eagerly here, before any branching or blocking I/O. Idempotent: a successful
+     * playEntryFromPlaylist() re-posts the proper media-styled notification afterwards.
+     */
+    private void ensureForeground() {
+        notifications.ensurePlaceholder();
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
+            startForeground(Notifications.NOTIFICATION_ID, notifications.notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK);
+        else
+            startForeground(Notifications.NOTIFICATION_ID, notifications.notification);
     }
 
     private void playEntryFromPlaylist() {

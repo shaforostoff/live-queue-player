@@ -88,6 +88,20 @@ class Notifications implements MediaPlayerStateListener {
     update();
   }
 
+  /**
+   * Ensures a notification object exists so the Service can promote itself to the foreground
+   * immediately, before track metadata or the MediaSession token are ready. Builds a minimal
+   * placeholder (service category, "buffering" text) only if nothing has been built yet; once
+   * real playback starts, getNotification() replaces it with the media-styled notification.
+   * Safe to call repeatedly.
+   */
+  void ensurePlaceholder() {
+    if (notification == null) {
+      setupNotificationBuilder(service.getString(R.string.app_name));
+      buildNotification();
+    }
+  }
+
   private void update() {
     ((NotificationManager) service.getSystemService(Context.NOTIFICATION_SERVICE)).notify(NOTIFICATION_ID, notification);
   }

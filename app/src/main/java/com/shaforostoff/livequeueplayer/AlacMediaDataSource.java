@@ -114,8 +114,7 @@ final class AlacMediaDataSource extends MediaDataSource {
    * never the large {@code mdat} payload. Returns false on any malformed or unreadable input.
    */
   private static boolean containsAlacBox(Context context, Uri uri) {
-    try (InputStream in = context.getContentResolver().openInputStream(uri)) {
-      if (in == null) return false;
+    try (InputStream in = UriIo.open(context, uri)) {
       return scanBoxesForAlac(new DataInputStream(new BufferedInputStream(in)), Long.MAX_VALUE);
     } catch (Exception e) {
       return false;
@@ -260,9 +259,8 @@ final class AlacMediaDataSource extends MediaDataSource {
   }
 
   private static void copyToFile(Context context, Uri uri, File dest) throws IOException {
-    try (InputStream in = context.getContentResolver().openInputStream(uri);
+    try (InputStream in = UriIo.open(context, uri);
          OutputStream out = new FileOutputStream(dest)) {
-      if (in == null) throw new IOException("Cannot open: " + uri);
       byte[] buf = new byte[65536];
       int n;
       while ((n = in.read(buf)) != -1) out.write(buf, 0, n);

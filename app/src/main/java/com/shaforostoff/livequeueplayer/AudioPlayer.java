@@ -27,6 +27,8 @@ class AudioPlayer extends Thread implements MediaPlayer.OnCompletionListener, Me
   private final AudioDeviceCallback audioDeviceCallback;
   private AudioFocusRequest audioFocusRequest;
   private volatile boolean released;
+  private volatile boolean prepared;          // true once prepare() has returned successfully
+  private volatile Boolean pendingPlayIntent; // transport command that arrived before prepared
   private volatile boolean fadeOutInProgress;
   private volatile boolean pausedForFocusLoss;
   private final AtomicInteger fadeToken = new AtomicInteger();
@@ -120,10 +122,15 @@ class AudioPlayer extends Thread implements MediaPlayer.OnCompletionListener, Me
             ? new DynamicsEqController(sessionId, ctx)
             : new EqualizerController(sessionId, ctx);
       }
+      // prepare() has returned, so the native player is now in a valid state — transport commands
+      // may touch it from here on. Anything that arrived earlier was deferred (see setState).
+      prepared = true;
       // Request audio focus with GAIN priority for main playback
       // This ensures preview (with TRANSIENT_MAY_DUCK) won't interrupt us
       requestAudioFocus();
-      service.setState(true);
+      // Honor any PLAY/PAUSE that landed during the (long, for ALAC) prepare; default to play.
+      Boolean pending = pendingPlayIntent;
+      service.setState(pending == null || pending);
       releaseTransitionWakeLock(); // MediaPlayer now holds its own PARTIAL_WAKE_LOCK via setWakeMode
     } catch (IllegalStateException e) {
       releaseTransitionWakeLock();
@@ -160,6 +167,14 @@ class AudioPlayer extends Thread implements MediaPlayer.OnCompletionListener, Me
   @Override
   public void setState(boolean playing) {
     if (released) return;
+    if (!prepared) {
+      // prepare() is still running. For ALAC the decode happens *inside* prepare() on this player's
+      // background thread, so this window is seconds long; a PLAY/PAUSE forwarded to the native
+      // MediaPlayer now hits it mid-prepare ("start called in state 4 / error -38") and poisons the
+      // prepare, failing the track. Defer the intent — run() applies the latest one once prepared.
+      pendingPlayIntent = playing;
+      return;
+    }
     try {
       if (playing) {
         if (pausedForFocusLoss) {

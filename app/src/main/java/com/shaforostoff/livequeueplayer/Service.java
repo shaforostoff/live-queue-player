@@ -180,6 +180,7 @@ public class Service extends android.app.Service implements MediaPlayerStateList
                 }
                 case Launcher.APPEND_QUEUE -> appendQueueFromIntent(intent);
                 case Launcher.CLEAR_QUEUE -> clearPendingQueue();
+                case Launcher.CLEAR_PLAYED_QUEUE -> clearPlayedQueue();
                 case Launcher.SEEK -> {
                     int seekToMs = intent.getIntExtra(EXTRA_SEEK_TO_MS, -1);
                     if (seekToMs >= 0 && audioPlayer != null) seekTo(seekToMs);
@@ -393,6 +394,22 @@ public class Service extends android.app.Service implements MediaPlayerStateList
         sendPlaybackStateBroadcast();
         // Notify that pending queue was cleared
         sendBroadcast(new Intent(ACTION_PENDING_QUEUE_CLEARED));
+    }
+
+    /**
+     * Remove all already-played tracks queued before the currently playing one, so the current
+     * track becomes the first entry in the playlist.
+     */
+    private void clearPlayedQueue() {
+        int removeCount = sCurrentIndex; // tracks queued before the current one
+        if (removeCount <= 0) return;    // current track is already first
+        for (int i = 0; i < removeCount; i++) {
+            playlist.remove(0);
+        }
+        playlistPosition -= removeCount;
+        if (playlistPosition < 0) playlistPosition = 0;
+        // Current track is now index 0; rebroadcast so listeners (activity) realign.
+        notifyPlaybackState(sIsPlaying, sCurrentIndex - removeCount, sCurrentUri);
     }
 
     private void seekTo(int positionMs) {

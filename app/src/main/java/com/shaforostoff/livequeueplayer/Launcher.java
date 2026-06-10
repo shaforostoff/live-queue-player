@@ -39,6 +39,7 @@ public class Launcher extends Activity {
     public static final byte CLEAR_QUEUE = 9;
     public static final byte SEEK = 10;
     public static final byte APPLY_EQ = 11;
+    public static final byte CLEAR_PLAYED_QUEUE = 12;
 
     private Button stopAfterCurrentButton;
     private BroadcastReceiver playbackStateReceiver;
@@ -130,26 +131,29 @@ public class Launcher extends Activity {
                   Toast.makeText(this, R.string.stop_after_current_toast, Toast.LENGTH_SHORT).show();
               });
 
-             /* clear queued upcoming tracks in the running service */
+             /* clear queued tracks in the running service */
              findViewById(R.id.clear_queue).setOnClickListener(v -> {
-                 final Intent clearIntent = new Intent(this, Service.class);
-                 clearIntent.putExtra(Launcher.TYPE, Launcher.CLEAR_QUEUE);
-                 startService(clearIntent);
-                 
                  if (!Service.sIsPlaying) {
+                     final Intent clearIntent = new Intent(this, Service.class);
+                     clearIntent.putExtra(Launcher.TYPE, Launcher.CLEAR_QUEUE);
+                     startService(clearIntent);
                      QueueStore.clear(this);
                      Toast.makeText(this, R.string.queue_cleared_toast, Toast.LENGTH_SHORT).show();
-                 } else {
-                     // Trim the persistent queue so FileBrowserQueueActivity sees the same
-                     // state as the service: only entries up to and including the current track.
-                     int offset = QueueStore.loadPlaybackOffset(this);
-                     int keepUpTo = offset + Service.sCurrentIndex + 1;
-                     java.util.ArrayList<QueueStore.Entry> entries = QueueStore.load(this);
-                     if (keepUpTo < entries.size()) {
-                         QueueStore.save(this, entries.subList(0, keepUpTo));
-                     }
-                     Toast.makeText(this, R.string.upcoming_cleared_toast, Toast.LENGTH_SHORT).show();
+                     return;
                  }
+                 // A track is playing: ask which side of the current track to clear.
+                 final String[] options = {
+                         getString(R.string.clear_above_current),
+                         getString(R.string.clear_below_current)
+                 };
+                 new AlertDialog.Builder(this)
+                         .setTitle(R.string.clear_queue_dialog_title)
+                         .setItems(options, (d, which) -> {
+                             if (which == 0) clearAboveCurrent();
+                             else clearBelowCurrent();
+                         })
+                         .setNegativeButton(android.R.string.cancel, null)
+                         .show();
              });
 
              findViewById(R.id.show_license).setOnClickListener(v -> showLicenseDialog());
@@ -174,6 +178,44 @@ public class Launcher extends Activity {
             return;
         }
         onIntent(getIntent());
+    }
+
+    /**
+     * Clear the already-played tracks queued before the currently playing one. The current
+     * track becomes the first entry in the persisted queue (playback offset reset to 0).
+     */
+    private void clearAboveCurrent() {
+        final Intent clearIntent = new Intent(this, Service.class);
+        clearIntent.putExtra(Launcher.TYPE, Launcher.CLEAR_PLAYED_QUEUE);
+        startService(clearIntent);
+
+        int offset = QueueStore.loadPlaybackOffset(this);
+        int removeBefore = offset + Service.sCurrentIndex; // persisted index of current track
+        java.util.ArrayList<QueueStore.Entry> entries = QueueStore.load(this);
+        if (removeBefore > 0 && removeBefore < entries.size()) {
+            QueueStore.save(this, entries.subList(removeBefore, entries.size()));
+            QueueStore.savePlaybackOffset(this, 0);
+        }
+        Toast.makeText(this, R.string.played_cleared_toast, Toast.LENGTH_SHORT).show();
+    }
+
+    /**
+     * Clear the upcoming tracks queued after the currently playing one. Trims the persistent
+     * queue so FileBrowserQueueActivity sees the same state as the service: only entries up to
+     * and including the current track.
+     */
+    private void clearBelowCurrent() {
+        final Intent clearIntent = new Intent(this, Service.class);
+        clearIntent.putExtra(Launcher.TYPE, Launcher.CLEAR_QUEUE);
+        startService(clearIntent);
+
+        int offset = QueueStore.loadPlaybackOffset(this);
+        int keepUpTo = offset + Service.sCurrentIndex + 1;
+        java.util.ArrayList<QueueStore.Entry> entries = QueueStore.load(this);
+        if (keepUpTo < entries.size()) {
+            QueueStore.save(this, entries.subList(0, keepUpTo));
+        }
+        Toast.makeText(this, R.string.upcoming_cleared_toast, Toast.LENGTH_SHORT).show();
     }
 
     /**

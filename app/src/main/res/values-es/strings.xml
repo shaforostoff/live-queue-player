@@ -47,6 +47,10 @@
   <string name="stop_after_current_toast">La reproducción se detendrá tras la pista actual</string>
   <string name="queue_cleared_toast">Cola vaciada</string>
   <string name="upcoming_cleared_toast">Pistas siguientes eliminadas</string>
+  <string name="played_cleared_toast">Pistas anteriores eliminadas</string>
+  <string name="clear_queue_dialog_title">Vaciar cola</string>
+  <string name="clear_above_current">Vaciar pistas anteriores</string>
+  <string name="clear_below_current">Vaciar pistas siguientes</string>
   <string name="license_dialog_close">Cerrar</string>
   <string name="stop_playback_first">Detén primero la reproducción</string>
   <string name="load_audio_failed">Error al cargar los archivos de audio.</string>

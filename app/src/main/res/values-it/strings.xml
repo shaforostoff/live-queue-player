@@ -47,6 +47,10 @@
   <string name="stop_after_current_toast">La riproduzione si fermerà dopo la traccia corrente</string>
   <string name="queue_cleared_toast">Coda svuotata</string>
   <string name="upcoming_cleared_toast">Tracce successive rimosse</string>
+  <string name="played_cleared_toast">Tracce precedenti rimosse</string>
+  <string name="clear_queue_dialog_title">Svuota coda</string>
+  <string name="clear_above_current">Rimuovi tracce precedenti</string>
+  <string name="clear_below_current">Rimuovi tracce successive</string>
   <string name="license_dialog_close">Chiudi</string>
   <string name="stop_playback_first">Ferma prima la riproduzione</string>
   <string name="load_audio_failed">Impossibile caricare i file audio.</string>

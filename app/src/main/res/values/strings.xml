@@ -51,6 +51,10 @@
   <string name="stop_after_current_toast">Playback will stop after current track</string>
   <string name="queue_cleared_toast">Queue cleared</string>
   <string name="upcoming_cleared_toast">Cleared upcoming tracks</string>
+  <string name="played_cleared_toast">Cleared previous tracks</string>
+  <string name="clear_queue_dialog_title">Clear queue</string>
+  <string name="clear_above_current">Clear tracks above current</string>
+  <string name="clear_below_current">Clear tracks below current</string>
   <string name="license_dialog_title">GNU General Public License v3</string>
   <string name="license_dialog_close">Close</string>
   <string name="stop_playback_first">Stop playback first</string>

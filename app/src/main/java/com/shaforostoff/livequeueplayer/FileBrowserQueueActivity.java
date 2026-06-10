@@ -1522,7 +1522,8 @@ public class FileBrowserQueueActivity extends Activity {
     private void applyFileFilter() {
         filteredFileEntries.clear();
 
-        String query = fileFilterQuery == null ? "" : fileFilterQuery.trim().toLowerCase();
+        // No toLowerCase(): entryMatchesQuery matches case-insensitively without allocating.
+        String query = fileFilterQuery == null ? "" : fileFilterQuery.trim();
         if (query.length() == 0) {
             filteredFileEntries.addAll(fileEntries);
         } else {
@@ -1539,15 +1540,26 @@ public class FileBrowserQueueActivity extends Activity {
         updateStorageButtonState();
     }
 
-    private static boolean entryMatchesQuery(FileEntry entry, String lowerQuery) {
-        return containsIgnoreCase(entry.name, lowerQuery)
-                || containsIgnoreCase(entry.sortArtist, lowerQuery)
-                || containsIgnoreCase(entry.sortTitle,  lowerQuery)
-                || containsIgnoreCase(entry.sortGenre,  lowerQuery);
+    private static boolean entryMatchesQuery(FileEntry entry, String query) {
+        return containsIgnoreCase(entry.name, query)
+                || containsIgnoreCase(entry.sortArtist, query)
+                || containsIgnoreCase(entry.sortTitle,  query)
+                || containsIgnoreCase(entry.sortGenre,  query);
     }
 
-    private static boolean containsIgnoreCase(String value, String lowerQuery) {
-        return value != null && value.toLowerCase().contains(lowerQuery);
+    /** Case-insensitive {@code value.contains(query)} without allocating a lower-cased copy. */
+    private static boolean containsIgnoreCase(String value, String query) {
+        if (value == null) return false;
+        int queryLen = query.length();
+        if (queryLen == 0) return true;
+        int max = value.length() - queryLen;
+        for (int i = 0; i <= max; i++) {
+            // regionMatches(ignoreCase=true, ...) folds case per char, allocating nothing.
+            if (value.regionMatches(true, i, query, 0, queryLen)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static void scrollTo(ListView list, int position) {

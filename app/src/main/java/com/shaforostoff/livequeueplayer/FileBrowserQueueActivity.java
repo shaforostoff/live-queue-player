@@ -420,7 +420,7 @@ public class FileBrowserQueueActivity extends Activity {
         fileBrowserList.setOnItemClickListener((parent, view, position, id) -> {
             if (suppressItemClick) { suppressItemClick = false; return; }
             FileEntry entry = filteredFileEntries.get(position);
-            if (entry.isDirectory) {
+            if (entry.isDirectory()) {
                 if (entry.file != null) navigateTo(entry.file);
                 else navigateToDocumentEntry(entry.uri, entry.name);
                 return;
@@ -1260,7 +1260,7 @@ public class FileBrowserQueueActivity extends Activity {
 
     private void applyFilenameYearsInPlace() {
         for (FileEntry entry : fileEntries) {
-            if (entry.isDirectory || isPlaylistFile(entry.name) || entry.sortDateState == TagState.RESOLVED) {
+            if (entry.isDirectory() || isPlaylistFile(entry.name) || entry.sortDateState == TagState.RESOLVED) {
                 continue;
             }
             String filenameYear = MetadataExtractor.extractYearFromFileName(entry.name);
@@ -1273,16 +1273,13 @@ public class FileBrowserQueueActivity extends Activity {
     }
 
     private int compareFileEntries(FileEntry left, FileEntry right) {
-        if (left.isDirectory != right.isDirectory) {
-            return left.isDirectory ? -1 : 1;
+        // sortRank already encodes directory-before-playlist-before-audio (computed once per entry),
+        // so we avoid recomputing isDirectory()/isPlaylistFile() on every comparison.
+        if (left.sortRank != right.sortRank) {
+            return left.sortRank < right.sortRank ? -1 : 1;
         }
-        if (left.isDirectory) {
+        if (left.isDirectory()) {
             return left.name.compareToIgnoreCase(right.name);
-        }
-        boolean leftIsPlaylist = isPlaylistFile(left.name);
-        boolean rightIsPlaylist = isPlaylistFile(right.name);
-        if (leftIsPlaylist != rightIsPlaylist) {
-            return leftIsPlaylist ? -1 : 1;
         }
         int c;
         if (fileSortMode == SORT_YEAR) {
@@ -1329,7 +1326,7 @@ public class FileBrowserQueueActivity extends Activity {
         final ArrayList<FileEntry> pendingEntries = new ArrayList<>(fileEntries.size());
         boolean cacheApplied = false;
         for (FileEntry entry : fileEntries) {
-            if (entry.isDirectory || isPlaylistFile(entry.name) ||
+            if (entry.isDirectory() || isPlaylistFile(entry.name) ||
                     (entry.sortDateState == TagState.RESOLVED && entry.sortGenreState == TagState.RESOLVED
                             && entry.sortArtistState == TagState.RESOLVED && entry.sortBpmState == TagState.RESOLVED)
                     || entry.sortDateState == TagState.LOADING || entry.sortGenreState == TagState.LOADING
@@ -2326,7 +2323,7 @@ public class FileBrowserQueueActivity extends Activity {
     private void handleFileBrowserSwipe(int position) {
         if (position >= filteredFileEntries.size()) return;
         FileEntry entry = filteredFileEntries.get(position);
-        if (entry.isDirectory) {
+        if (entry.isDirectory()) {
             addFolderToQueue(entry);
             return;
         }
@@ -3061,7 +3058,7 @@ public class FileBrowserQueueActivity extends Activity {
         int currentPos = -1;
         for (int i = 0; i < filteredFileEntries.size(); i++) {
             FileEntry e = filteredFileEntries.get(i);
-            if (!e.isDirectory && browseFileUri.equals(e.uri)) {
+            if (!e.isDirectory() && browseFileUri.equals(e.uri)) {
                 currentPos = i;
                 break;
             }
@@ -3070,7 +3067,7 @@ public class FileBrowserQueueActivity extends Activity {
         ArrayList<Uri> uris = new ArrayList<>(filteredFileEntries.size() - currentPos - 1);
         for (int i = currentPos + 1; i < filteredFileEntries.size(); i++) {
             FileEntry e = filteredFileEntries.get(i);
-            if (!e.isDirectory && !isPlaylistFile(e.name)) {
+            if (!e.isDirectory() && !isPlaylistFile(e.name)) {
                 uris.add(e.uri);
             }
         }
@@ -3087,7 +3084,7 @@ public class FileBrowserQueueActivity extends Activity {
         int currentPos = -1;
         for (int i = 0; i < filteredFileEntries.size(); i++) {
             FileEntry e = filteredFileEntries.get(i);
-            if (!e.isDirectory && browseFileUri.equals(e.uri)) {
+            if (!e.isDirectory() && browseFileUri.equals(e.uri)) {
                 currentPos = i;
                 break;
             }
@@ -3095,7 +3092,7 @@ public class FileBrowserQueueActivity extends Activity {
         if (currentPos < 0) return;
         for (int i = currentPos + 1; i < filteredFileEntries.size(); i++) {
             FileEntry e = filteredFileEntries.get(i);
-            if (!e.isDirectory && !isPlaylistFile(e.name)) {
+            if (!e.isDirectory() && !isPlaylistFile(e.name)) {
                 ArrayList<Uri> uris = new ArrayList<>(1);
                 uris.add(e.uri);
                 Intent appendIntent = new Intent(this, Service.class);
@@ -3832,7 +3829,8 @@ public class FileBrowserQueueActivity extends Activity {
         final File   file;
         final Uri    uri;
         final String name;
-        final boolean isDirectory;
+        /** Primary sort bucket, precomputed once: 0 = directory, 1 = playlist, 2 = audio file. */
+        final int sortRank;
         String sortDate;
         String sortGenre;
         String sortArtist;
@@ -3847,14 +3845,23 @@ public class FileBrowserQueueActivity extends Activity {
             this.file        = file;
             this.uri         = Uri.fromFile(file);
             this.name        = name;
-            this.isDirectory = isDirectory;
+            this.sortRank    = computeSortRank(isDirectory, name);
         }
 
         FileEntry(Uri uri, String name, boolean isDirectory) {
             this.file        = null;
             this.uri         = uri;
             this.name        = name;
-            this.isDirectory = isDirectory;
+            this.sortRank    = computeSortRank(isDirectory, name);
+        }
+
+        boolean isDirectory() {
+            return sortRank == 0;
+        }
+
+        private static int computeSortRank(boolean isDirectory, String name) {
+            if (isDirectory) return 0;
+            return isPlaylistFile(name) ? 1 : 2;
         }
     }
 
@@ -3960,30 +3967,30 @@ public class FileBrowserQueueActivity extends Activity {
 
             FileEntry entry = filteredFileEntries.get(position);
             if (vh.hintStart != null) {
-                if (entry.isDirectory) {
+                if (entry.isDirectory()) {
                     vh.hintStart.setText("");
                 } else {
                     vh.hintStart.setText((mode == Mode.REMOTE_SEND && !localQueueShownInRemoteMode)
                             ? R.string.swipe_hint_send : R.string.swipe_hint_queue);
                 }
             }
-            vh.icon.setText(entry.isDirectory ? "\uD83D\uDCC1" : "\uD83C\uDFB5");
+            vh.icon.setText(entry.isDirectory() ? "\uD83D\uDCC1" : "\uD83C\uDFB5");
             vh.name.setText(fileSortMode != SORT_FILENAME && entry.sortTitle != null && !entry.sortTitle.isEmpty() ? entry.sortTitle : entry.name);
-            String metaText = entry.isDirectory ? "" :
+            String metaText = entry.isDirectory() ? "" :
                     buildMetaText(entry.sortDate, entry.sortGenre, entry.sortBpm);
-            String artistText = entry.isDirectory ? "" :
+            String artistText = entry.isDirectory() ? "" :
                     (entry.sortArtist != null ? entry.sortArtist : "");
             vh.artist.setText(artistText);
             vh.meta.setText(metaText);
             boolean hasSubtext = artistText.length() > 0 || metaText.length() > 0;
             vh.metaRow.setVisibility(hasSubtext ? View.VISIBLE : View.GONE);
-            vh.name.setGravity(entry.isDirectory && !hasSubtext ? Gravity.CENTER : Gravity.START);
+            vh.name.setGravity(entry.isDirectory() && !hasSubtext ? Gravity.CENTER : Gravity.START);
 
             boolean isBrowseEntry = Service.sBrowseMode
-                    && !entry.isDirectory
+                    && !entry.isDirectory()
                     && browseFileUri != null
                     && browseFileUri.equals(entry.uri);
-            boolean isPreviewEntry = !entry.isDirectory
+            boolean isPreviewEntry = !entry.isDirectory()
                     && fileBrowserPreviewingEntryUri != null
                     && fileBrowserPreviewingEntryUri.equals(entry.uri);
             boolean hasProgress = isPreviewEntry

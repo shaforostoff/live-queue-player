@@ -1537,7 +1537,7 @@ public class FileBrowserQueueActivity extends Activity {
             filteredFileEntries.addAll(fileEntries);
         } else {
             for (FileEntry entry : fileEntries) {
-                if (entry.name.toLowerCase().contains(query)) {
+                if (entryMatchesQuery(entry, query)) {
                     filteredFileEntries.add(entry);
                 }
             }
@@ -1547,6 +1547,17 @@ public class FileBrowserQueueActivity extends Activity {
             fileAdapter.notifyDataSetChanged();
         }
         updateStorageButtonState();
+    }
+
+    private static boolean entryMatchesQuery(FileEntry entry, String lowerQuery) {
+        return containsIgnoreCase(entry.name, lowerQuery)
+                || containsIgnoreCase(entry.sortArtist, lowerQuery)
+                || containsIgnoreCase(entry.sortTitle,  lowerQuery)
+                || containsIgnoreCase(entry.sortGenre,  lowerQuery);
+    }
+
+    private static boolean containsIgnoreCase(String value, String lowerQuery) {
+        return value != null && value.toLowerCase().contains(lowerQuery);
     }
 
     private static void scrollTo(ListView list, int position) {

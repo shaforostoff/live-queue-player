@@ -43,7 +43,7 @@
         a:layout_margin="4dp"
         a:layout_weight="1"
         a:background="@color/inputBackground"
-        a:hint="Filter files by name"
+        a:hint="@string/file_filter_hint"
         a:importantForAutofill="no"
         a:maxLines="1"
         a:textColor="@color/foreground"

@@ -26,6 +26,7 @@ import android.provider.MediaStore;
 import android.util.TypedValue;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
+import android.graphics.Rect;
 import android.graphics.drawable.ClipDrawable;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
@@ -36,6 +37,7 @@ import android.view.MotionEvent;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.WindowInsets;
 import android.widget.EditText;
 import android.widget.BaseAdapter;
 import android.widget.Button;
@@ -313,6 +315,7 @@ public class FileBrowserQueueActivity extends Activity {
         // -- view references -------------------------------------------------
         fileFilterInput = findViewById(R.id.file_filter_input);
         queueEmptyHint  = findViewById(R.id.queue_empty_hint);
+        installSearchCursorKeyboardBinding();
 
         fileBrowserList = findViewById(R.id.file_browser_list);
         queueList                = findViewById(R.id.queue_list);
@@ -2345,6 +2348,29 @@ public class FileBrowserQueueActivity extends Activity {
             },
             null
         );
+    }
+
+    /**
+     * The filter EditText is the only focusable view, so once it has keyboard focus it never gives
+     * it up and the cursor keeps blinking even after the user hides the keyboard. Bind the cursor's
+     * visibility to the soft keyboard so it shows only while the keyboard is up: tying it directly
+     * to IME visibility means the cursor vanishes the instant the keyboard is dismissed.
+     */
+    private void installSearchCursorKeyboardBinding() {
+        View content = findViewById(android.R.id.content);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {          // API 30+: exact IME insets
+            content.setOnApplyWindowInsetsListener((v, insets) -> {
+                fileFilterInput.setCursorVisible(insets.isVisible(WindowInsets.Type.ime()));
+                return v.onApplyWindowInsets(insets);
+            });
+        } else {                                                       // API 23-29: height heuristic
+            content.getViewTreeObserver().addOnGlobalLayoutListener(() -> {
+                Rect r = new Rect();
+                content.getWindowVisibleDisplayFrame(r);
+                int screenH = content.getRootView().getHeight();
+                fileFilterInput.setCursorVisible(screenH - r.bottom > screenH * 0.15f);
+            });
+        }
     }
 
     private Uri resolveFirstPlaylistUri(FileEntry playlistEntry) {

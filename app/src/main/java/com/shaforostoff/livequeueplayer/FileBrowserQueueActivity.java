@@ -1337,17 +1337,7 @@ public class FileBrowserQueueActivity extends Activity {
                 continue;
             }
 
-            if (entry.uri != null && metadataExtractor.isAllTagsCached(entry.uri)) {
-                MetadataExtractor.TagEntry tags = metadataExtractor.readSortTags(entry.uri);
-                entry.sortDate = tags.date;
-                entry.sortGenre = tags.genre;
-                entry.sortArtist = tags.artist;
-                entry.sortTitle = tags.title;
-                entry.sortBpm = tags.bpm;
-                entry.sortDateState   = TagState.RESOLVED;
-                entry.sortGenreState  = TagState.RESOLVED;
-                entry.sortArtistState = TagState.RESOLVED;
-                entry.sortBpmState    = TagState.RESOLVED;
+            if (applyCachedSortTags(entry)) {
                 cacheApplied = true;
                 continue;
             }
@@ -2325,29 +2315,113 @@ public class FileBrowserQueueActivity extends Activity {
 
     private void installFileBrowserSwipeAdd(ListView fileBrowserList) {
         installSwipeListener(fileBrowserList,
-            pos -> pos < filteredFileEntries.size() && !filteredFileEntries.get(pos).isDirectory,
+            pos -> pos < filteredFileEntries.size(),
             null, null,
-            position -> {
-                if (position >= filteredFileEntries.size()) return;
-                FileEntry entry = filteredFileEntries.get(position);
-                if (entry.isDirectory) return;
-                if (mode == Mode.REMOTE_SEND && !localQueueShownInRemoteMode) {
-                    if (isPlaylistFile(entry.name)) {
-                        sendPlaylistToRemote(entry);
-                    } else {
-                        btController.sendQueueRequest(entry.name, relativePathFromRoot(entry.uri),
-                                entry.sortTitle, entry.sortArtist, entry.sortDate);
-                    }
-                    return;
-                }
-                if (isPlaylistFile(entry.name)) {
-                    addPlaylistToQueue(entry);
-                } else {
-                    addToQueue(entry.name, entry.uri);
-                }
-            },
+            this::handleFileBrowserSwipe,
             null
         );
+    }
+
+    /** Swipe-to-add for a file-browser row: folders enqueue their tracks, playlists expand, files add. */
+    private void handleFileBrowserSwipe(int position) {
+        if (position >= filteredFileEntries.size()) return;
+        FileEntry entry = filteredFileEntries.get(position);
+        if (entry.isDirectory) {
+            addFolderToQueue(entry);
+            return;
+        }
+        if (mode == Mode.REMOTE_SEND && !localQueueShownInRemoteMode) {
+            if (isPlaylistFile(entry.name)) {
+                sendPlaylistToRemote(entry);
+            } else {
+                sendTrackToRemote(entry);
+            }
+            return;
+        }
+        if (isPlaylistFile(entry.name)) {
+            addPlaylistToQueue(entry);
+        } else {
+            addToQueue(entry.name, entry.uri);
+        }
+    }
+
+    private void sendTrackToRemote(FileEntry entry) {
+        btController.sendQueueRequest(entry.name, relativePathFromRoot(entry.uri),
+                entry.sortTitle, entry.sortArtist, entry.sortDate);
+    }
+
+    /**
+     * Swipe-to-enqueue for a folder row: appends the folder's immediate audio tracks (non-recursive,
+     * playlists skipped) in the active sort order. In remote-send mode the tracks are forwarded as
+     * queue requests instead, mirroring the per-file swipe.
+     */
+    private void addFolderToQueue(FileEntry folder) {
+        List<FileEntry> tracks = immediateAudioTracksSorted(folder);
+        if (tracks.isEmpty()) return;
+        if (mode == Mode.REMOTE_SEND && !localQueueShownInRemoteMode) {
+            for (FileEntry t : tracks) {
+                sendTrackToRemote(t);
+            }
+            return;
+        }
+        List<QueueEntry> adds = new ArrayList<>(tracks.size());
+        for (FileEntry t : tracks) {
+            adds.add(new QueueEntry(t.name, t.uri));
+        }
+        addToQueue(adds);
+    }
+
+    /**
+     * Immediate audio tracks of {@code folder} (playlists excluded), sorted by the active sort mode
+     * using only already-cached tag metadata — it never blocks on a tag read.
+     */
+    private List<FileEntry> immediateAudioTracksSorted(FileEntry folder) {
+        List<FileEntry> tracks = new ArrayList<>();
+        for (FileEntry child : storageBrowser.listImmediateAudioChildren(folder)) {
+            if (isPlaylistFile(child.name)) continue;
+            applyCachedSortMetadata(child);
+            tracks.add(child);
+        }
+        Collections.sort(tracks, this::compareFileEntries);
+        return tracks;
+    }
+
+    /**
+     * Fills an entry's sort fields from already-cached tags only (plus the cheap filename-year
+     * heuristic). Never reads files, so entries whose tags aren't cached keep UNKNOWN sort fields
+     * and fall back to name ordering in {@link #compareFileEntries}.
+     */
+    private void applyCachedSortMetadata(FileEntry e) {
+        if (applyCachedSortTags(e)) {
+            return;
+        }
+        String year = MetadataExtractor.extractYearFromFileName(e.name);
+        if (year.length() > 0) {
+            e.sortDate = year;
+            e.sortDateState = TagState.RESOLVED;
+        }
+    }
+
+    /**
+     * Copies an entry's sort tags from the metadata cache and marks them RESOLVED, but only when the
+     * full tag set is already cached (so it never blocks on a file read). Returns whether tags were
+     * applied. Shared by the swipe-add path and the visible-folder background resolver.
+     */
+    private boolean applyCachedSortTags(FileEntry e) {
+        if (e.uri == null || !metadataExtractor.isAllTagsCached(e.uri)) {
+            return false;
+        }
+        MetadataExtractor.TagEntry t = metadataExtractor.readSortTags(e.uri);
+        e.sortDate = t.date;
+        e.sortGenre = t.genre;
+        e.sortArtist = t.artist;
+        e.sortTitle = t.title;
+        e.sortBpm = t.bpm;
+        e.sortDateState   = TagState.RESOLVED;
+        e.sortGenreState  = TagState.RESOLVED;
+        e.sortArtistState = TagState.RESOLVED;
+        e.sortBpmState    = TagState.RESOLVED;
+        return true;
     }
 
     /**

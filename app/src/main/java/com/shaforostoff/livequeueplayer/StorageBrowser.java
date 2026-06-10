@@ -178,9 +178,19 @@ final class StorageBrowser {
      * first. Returns the listing (possibly empty) or {@code null} if the query threw.
      */
     List<FileBrowserQueueActivity.FileEntry> readCurrentDocumentDirectory() {
-        List<FileBrowserQueueActivity.FileEntry> entries = new ArrayList<>();
         Uri currentDocumentUri = documentUriStack.get(documentUriStack.size() - 1);
-        String documentId = DocumentsContract.getDocumentId(currentDocumentUri);
+        return readDocumentChildren(currentDocumentUri, true);
+    }
+
+    /**
+     * Lists the children of {@code documentUri}: audio files always, subdirectories only when
+     * {@code includeDirectories} is true (a non-recursive listing — descendant folders are never
+     * expanded). Returns the listing (possibly empty) or {@code null} if the query threw.
+     */
+    private List<FileBrowserQueueActivity.FileEntry> readDocumentChildren(Uri documentUri,
+                                                                          boolean includeDirectories) {
+        List<FileBrowserQueueActivity.FileEntry> entries = new ArrayList<>();
+        String documentId = DocumentsContract.getDocumentId(documentUri);
         Uri childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(currentTreeUri, documentId);
         String[] projection = {
                 DocumentsContract.Document.COLUMN_DOCUMENT_ID,
@@ -200,7 +210,9 @@ final class StorageBrowser {
                     continue;
                 }
                 boolean isDirectory = DocumentsContract.Document.MIME_TYPE_DIR.equals(mimeType);
-                if (!isDirectory && !isAudioDocument(childName, mimeType)) {
+                if (isDirectory) {
+                    if (!includeDirectories) continue;
+                } else if (!isAudioDocument(childName, mimeType)) {
                     continue;
                 }
                 Uri childDocumentUri = DocumentsContract.buildDocumentUriUsingTree(currentTreeUri, childDocumentId);
@@ -210,6 +222,39 @@ final class StorageBrowser {
         } catch (Exception ignored) {
             return null;
         }
+    }
+
+    /**
+     * Immediate audio-file children (non-recursive) of {@code folder}, without changing the current
+     * browse location. Subdirectories and hidden entries are skipped. Returns an empty list if the
+     * folder can't be read.
+     */
+    List<FileBrowserQueueActivity.FileEntry> listImmediateAudioChildren(FileBrowserQueueActivity.FileEntry folder) {
+        if (folder == null) return new ArrayList<>();
+        if (folder.file != null) {
+            return listImmediateAudioFileChildren(folder.file);
+        }
+        if (browsingDocumentTree && currentTreeUri != null) {
+            List<FileBrowserQueueActivity.FileEntry> children = readDocumentChildren(folder.uri, false);
+            return children != null ? children : new ArrayList<>();
+        }
+        return new ArrayList<>();
+    }
+
+    private List<FileBrowserQueueActivity.FileEntry> listImmediateAudioFileChildren(File dir) {
+        File[] files = dir.listFiles();
+        if (files == null) {
+            return new ArrayList<>();
+        }
+        List<FileBrowserQueueActivity.FileEntry> entries = new ArrayList<>(files.length);
+        for (File f : files) {
+            if (f.getName().startsWith(".")) continue;       // skip hidden
+            if (f.isDirectory()) continue;                   // non-recursive
+            if (FileBrowserQueueActivity.isAudioFile(f.getName())) {
+                entries.add(new FileBrowserQueueActivity.FileEntry(f, f.getName(), false));
+            }
+        }
+        return entries;
     }
 
     static boolean isAudioDocument(String name, String mimeType) {

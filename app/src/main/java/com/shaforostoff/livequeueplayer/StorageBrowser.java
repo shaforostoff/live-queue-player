@@ -14,7 +14,6 @@ import android.provider.DocumentsContract;
 
 import java.io.File;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.List;
 
 /**
@@ -104,8 +103,12 @@ final class StorageBrowser {
     // -- file (java.io.File) navigation --------------------------------------
 
     /**
-     * Switches to file-based browsing of {@code dir} and returns its listing (directories first,
-     * playlists second, then audio files, all alphabetical). Mutates location state; performs no UI.
+     * Switches to file-based browsing of {@code dir} and returns its listing in arbitrary
+     * (filesystem) order. The caller is expected to sort the result (see
+     * {@code FileBrowserQueueActivity.sortFileEntriesInPlace}), so this method does not sort:
+     * sorting the raw {@code File[]} here would call {@link File#isDirectory()} — an uncached
+     * {@code stat()} syscall — O(N&middot;logN) times for no benefit. Mutates location state;
+     * performs no UI.
      */
     List<FileBrowserQueueActivity.FileEntry> listFolder(File dir) {
         browsingDocumentTree = false;
@@ -118,16 +121,6 @@ final class StorageBrowser {
         if (files == null || files.length == 0) {
             return new ArrayList<>();
         }
-
-        Arrays.sort(files, (a, b) -> {
-            if (a.isDirectory() != b.isDirectory())
-                return a.isDirectory() ? -1 : 1;
-            boolean aPlaylist = FileBrowserQueueActivity.isPlaylistFile(a.getName());
-            boolean bPlaylist = FileBrowserQueueActivity.isPlaylistFile(b.getName());
-            if (aPlaylist != bPlaylist)
-                return aPlaylist ? -1 : 1;
-            return a.getName().compareToIgnoreCase(b.getName());
-        });
 
         // Upper bound: every file becomes at most one entry (hidden / non-audio are skipped).
         List<FileBrowserQueueActivity.FileEntry> entries = new ArrayList<>(files.length);

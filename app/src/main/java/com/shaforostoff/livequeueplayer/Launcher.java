@@ -101,7 +101,7 @@ public class Launcher extends Activity {
                 startActivity(new Intent(this, FileBrowserQueueActivity.class));
             });
 
-             findViewById(R.id.browse_mode_opener).setOnClickListener(v -> {
+             findViewById(R.id.explore_mode_button).setOnClickListener(v -> {
                 Intent browseIntent = new Intent(this, FileBrowserQueueActivity.class);
                 browseIntent.putExtra(FileBrowserQueueActivity.EXTRA_BROWSE_MODE, true);
                 startActivity(browseIntent);

@@ -37,6 +37,8 @@
   <string name="output_wired">Cable 3,5mm</string>
   <string name="output_usb">Audio USB</string>
   <string name="bluetooth_track_names">Nombres de pistas por Bluetooth</string>
+  <string name="dj_mode_button">Modo DJ</string>
+  <string name="explore_mode_button">Explorar</string>
   <string name="remote_send_button">+ Control Remoto</string>
   <string name="remote_receive_button">+ Recibir</string>
   <string name="stop_after_current_button">Detener tras la pista actual</string>

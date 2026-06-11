@@ -77,12 +77,12 @@
 
       <TableRow>
         <Button
-          a:id="@+id/browse_mode_opener"
+          a:id="@+id/explore_mode_button"
           a:layout_width="0dp"
           a:layout_height="wrap_content"
           a:layout_weight="1"
           a:layout_margin="10dp"
-          a:text="@string/browse_storage_button"/>
+          a:text="@string/explore_mode_button"/>
         <Button
           a:id="@+id/remote_send_opener"
           a:layout_width="0dp"

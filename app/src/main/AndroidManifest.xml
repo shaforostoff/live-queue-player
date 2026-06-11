@@ -2,8 +2,8 @@
 <manifest xmlns:a="http://schemas.android.com/apk/res/android"
           xmlns:tools="http://schemas.android.com/tools"
           package="com.shaforostoff.livequeueplayer"
-          a:versionCode="20"
-          a:versionName="1.4.4">
+          a:versionCode="21"
+          a:versionName="1.4.5">
 
   <uses-permission a:name="android.permission.POST_NOTIFICATIONS"/>
   <uses-permission a:name="android.permission.FOREGROUND_SERVICE"/>

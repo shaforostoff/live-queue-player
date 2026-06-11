@@ -41,6 +41,7 @@
     <activity
       a:name=".FileBrowserQueueActivity"
       a:exported="false"
+      a:windowSoftInputMode="stateAlwaysHidden"
       a:label="File Browser &amp; Queue" />
 
     <activity

@@ -25,6 +25,10 @@
     a:theme="@style/app_theme"
     tools:targetApi="n">
 
+    <meta-data
+      a:name="com.google.android.gms.car.application"
+      a:resource="@xml/automotive_app_desc"/>
+
     <receiver
       a:name=".HWListener"
       a:exported="true">
@@ -35,8 +39,12 @@
 
     <service
       a:name=".Service"
-      a:exported="false"
-      a:foregroundServiceType="mediaPlayback"/>
+      a:exported="true"
+      a:foregroundServiceType="mediaPlayback">
+      <intent-filter>
+        <action a:name="android.media.browse.MediaBrowserService" />
+      </intent-filter>
+    </service>
 
     <activity
       a:name=".FileBrowserQueueActivity"

@@ -3,22 +3,25 @@ package com.shaforostoff.livequeueplayer;
 import android.annotation.SuppressLint;
 import android.content.Intent;
 import android.content.pm.ServiceInfo;
+import android.media.MediaDescription;
 import android.media.MediaMetadataRetriever;
+import android.media.browse.MediaBrowser;
 import android.net.Uri;
 import android.os.Build;
+import android.os.Bundle;
 import android.os.Handler;
-import android.os.IBinder;
 import android.os.Looper;
 import android.os.PowerManager;
 import android.os.SystemClock;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.List;
 
 /**
  * service for playing music
  */
-public class Service extends android.app.Service implements MediaPlayerStateListener {
+public class Service extends android.service.media.MediaBrowserService implements MediaPlayerStateListener {
 
     static final String ACTION_PLAYBACK_STATE = "com.shaforostoff.livequeueplayer.PLAYBACK_STATE";
     static final String ACTION_PENDING_QUEUE_CLEARED = "com.shaforostoff.livequeueplayer.PENDING_QUEUE_CLEARED";
@@ -34,6 +37,8 @@ public class Service extends android.app.Service implements MediaPlayerStateList
     static final String EXTRA_CURRENT_ENTRY_ID = "current_entry_id";
     static final String EXTRA_SEEK_TO_MS = "seek_to_ms";
     static final String EXTRA_QUEUE_ALREADY_PERSISTED = "queue_already_persisted";
+    static final String EXTRA_QUEUE_INDEX = "queue_index";
+    private static final String MEDIA_ROOT_ID = "root";
     private static final long PLAYBACK_PROGRESS_BROADCAST_INTERVAL_MS = 1_000L;
 
     // Readable by the activity to re-sync state after missed broadcasts (e.g. screen off)
@@ -79,14 +84,6 @@ public class Service extends android.app.Service implements MediaPlayerStateList
     }
 
     /**
-     * unused
-     */
-    @Override
-    public IBinder onBind(Intent intent) {
-        return null;
-    }
-
-    /**
      * setup
      */
     @Override
@@ -99,7 +96,33 @@ public class Service extends android.app.Service implements MediaPlayerStateList
         playbackWakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "LiveQueuePlayer:Playback");
         playbackWakeLock.setReferenceCounted(false);
         hwListener.create();
+        // Publish the existing framework MediaSession token so MediaBrowser clients
+        // (Android Auto, Assistant, system media controls) can connect and control playback.
+        setSessionToken(hwListener.getSessionToken());
         notifications.create();
+    }
+
+    @Override
+    public BrowserRoot onGetRoot(String clientPackageName, int clientUid, Bundle rootHints) {
+        // Accept all callers; the only browsable content is the persisted play queue.
+        return new BrowserRoot(MEDIA_ROOT_ID, null);
+    }
+
+    @Override
+    public void onLoadChildren(String parentId, Result<List<MediaBrowser.MediaItem>> result) {
+        List<MediaBrowser.MediaItem> items = new ArrayList<>();
+        ArrayList<QueueStore.Entry> queue = QueueStore.load(this);
+        for (int i = 0; i < queue.size(); i++) {
+            QueueStore.Entry e = queue.get(i);
+            String title = (e.name != null && !e.name.isEmpty()) ? e.name : e.uri.getLastPathSegment();
+            if (title == null) title = "Track " + (i + 1);
+            MediaDescription desc = new MediaDescription.Builder()
+                    .setMediaId(String.valueOf(i)) // mediaId == persisted-queue index
+                    .setTitle(title)
+                    .build();
+            items.add(new MediaBrowser.MediaItem(desc, MediaBrowser.MediaItem.FLAG_PLAYABLE));
+        }
+        result.sendResult(items);
     }
 
     private void acquirePlaybackWakeLock() {
@@ -145,6 +168,9 @@ public class Service extends android.app.Service implements MediaPlayerStateList
                 if (action == Launcher.APPEND_QUEUE) {
                     appendQueueFromIntent(intent);
                 }
+                if (action == Launcher.PLAY_FROM_QUEUE_INDEX) {
+                    playFromQueueIndex(intent.getIntExtra(EXTRA_QUEUE_INDEX, -1));
+                }
                 return;
             }
 
@@ -181,6 +207,8 @@ public class Service extends android.app.Service implements MediaPlayerStateList
                 case Launcher.APPEND_QUEUE -> appendQueueFromIntent(intent);
                 case Launcher.CLEAR_QUEUE -> clearPendingQueue();
                 case Launcher.CLEAR_PLAYED_QUEUE -> clearPlayedQueue();
+                case Launcher.PLAY_FROM_QUEUE_INDEX ->
+                    playFromQueueIndex(intent.getIntExtra(EXTRA_QUEUE_INDEX, -1));
                 case Launcher.SEEK -> {
                     int seekToMs = intent.getIntExtra(EXTRA_SEEK_TO_MS, -1);
                     if (seekToMs >= 0 && audioPlayer != null) seekTo(seekToMs);
@@ -455,6 +483,33 @@ public class Service extends android.app.Service implements MediaPlayerStateList
         playlist.clear();
         playlistPosition = 0;
         for (int i = offset; i < persisted.size(); i++) {
+            QueueStore.Entry e = persisted.get(i);
+            ServicePlaylist.Entry pe = new ServicePlaylist.Entry();
+            pe.title = e.name != null ? e.name : "";
+            pe.location = e.uri;
+            pe.queueEntryId = e.id;
+            playlist.add(pe);
+        }
+        playEntryFromPlaylist();
+    }
+
+    /**
+     * Start playback of the persisted queue beginning at {@code index}. Routed here from a
+     * MediaSession onPlayFromMediaId callback (e.g. tapping a row in Android Auto). Mirrors
+     * {@link #playFromQueueStore()} but with a caller-chosen offset, and replaces any track
+     * already playing.
+     */
+    private void playFromQueueIndex(int index) {
+        ArrayList<QueueStore.Entry> persisted = QueueStore.load(this);
+        if (index < 0 || index >= persisted.size()) return;
+        if (audioPlayer != null) {
+            audioPlayer.onMediaPlayerDestroy();
+            audioPlayer = null;
+        }
+        QueueStore.savePlaybackOffset(this, index);
+        playlist.clear();
+        playlistPosition = 0;
+        for (int i = index; i < persisted.size(); i++) {
             QueueStore.Entry e = persisted.get(i);
             ServicePlaylist.Entry pe = new ServicePlaylist.Entry();
             pe.title = e.name != null ? e.name : "";

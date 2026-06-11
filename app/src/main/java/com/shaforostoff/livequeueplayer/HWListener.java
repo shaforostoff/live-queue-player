@@ -9,6 +9,7 @@ import android.media.MediaMetadata;
 import android.media.session.MediaSession;
 import android.media.session.PlaybackState;
 import android.os.Build;
+import android.os.Bundle;
 import android.view.KeyEvent;
 
 /**
@@ -39,6 +40,16 @@ public class HWListener extends BroadcastReceiver implements MediaPlayerStateLis
       }
       @Override public void onPlay()           { send(Launcher.PLAY); }
       @Override public void onPause()          { send(Launcher.PAUSE); }
+      @Override public void onSkipToNext()     { send(Launcher.SKIP); }
+      @Override public void onStop()           { send(Launcher.KILL); }
+      @Override public void onPlayFromMediaId(String mediaId, Bundle extras) {
+        int index;
+        try { index = Integer.parseInt(mediaId); } catch (NumberFormatException e) { return; }
+        Intent i = new Intent(service, Service.class);
+        i.putExtra(Launcher.TYPE, Launcher.PLAY_FROM_QUEUE_INDEX);
+        i.putExtra(Service.EXTRA_QUEUE_INDEX, index);
+        service.startService(i);
+      }
       @Override public void onSeekTo(long pos) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return;
         Intent i = new Intent(service, Service.class);
@@ -54,7 +65,10 @@ public class HWListener extends BroadcastReceiver implements MediaPlayerStateLis
     });
 
     playbackStateBuilder = new PlaybackState.Builder();
-    long actions = PlaybackState.ACTION_PLAY | PlaybackState.ACTION_PAUSE | PlaybackState.ACTION_PLAY_PAUSE;
+    long actions = PlaybackState.ACTION_PLAY | PlaybackState.ACTION_PAUSE | PlaybackState.ACTION_PLAY_PAUSE
+        | PlaybackState.ACTION_SKIP_TO_NEXT
+        | PlaybackState.ACTION_PLAY_FROM_MEDIA_ID
+        | PlaybackState.ACTION_STOP;
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
       actions |= PlaybackState.ACTION_SEEK_TO;
     }

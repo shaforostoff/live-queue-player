@@ -88,6 +88,17 @@ public class HWListener extends BroadcastReceiver implements MediaPlayerStateLis
     mediaSession.setPlaybackState(playbackStateBuilder.build());
   }
 
+  /**
+   * Stop (as opposed to pause): STATE_STOPPED clears the system/lock-screen media control,
+   * unlike STATE_PAUSED which keeps a resumable-looking transport. The session stays active
+   * and still advertises ACTION_PLAY, so a later media-button/headset play can resume.
+   */
+  void setStopped() {
+    if (mediaSession == null) return;
+    playbackStateBuilder.setState(PlaybackState.STATE_STOPPED, 0, 0f);
+    mediaSession.setPlaybackState(playbackStateBuilder.build());
+  }
+
   void setTrackMetadata(String title, long durationMs) {
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU || mediaSession == null) return;
     mediaSession.setMetadata(new MediaMetadata.Builder()

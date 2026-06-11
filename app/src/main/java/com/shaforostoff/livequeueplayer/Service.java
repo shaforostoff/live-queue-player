@@ -548,10 +548,17 @@ public class Service extends android.service.media.MediaBrowserService implement
         playlist.clear();
         playlistPosition = 0;
         releasePlaybackWakeLock();
-        hwListener.setState(false);
-        if (notifications.builder != null) {
-            notifications.setState(false);
+        // Stop is not a resumable pause: clear the system media control (STATE_STOPPED) and
+        // drop the foreground notification so nothing lingers in a paused-looking state. The
+        // service and its MediaSession stay alive (no stopSelf) so a later media-button/remote
+        // play can still resume without a fresh background foreground-service start.
+        hwListener.setStopped();
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            stopForeground(STOP_FOREGROUND_REMOVE);
+        } else {
+            stopForeground(true);
         }
+        notifications.onMediaPlayerReset();
         notifyPlaybackState(false, -1, null);
     }
 

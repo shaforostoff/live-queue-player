@@ -38,6 +38,7 @@ import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowInsets;
+import android.view.inputmethod.InputMethodManager;
 import android.widget.EditText;
 import android.widget.BaseAdapter;
 import android.widget.Button;
@@ -767,6 +768,20 @@ public class FileBrowserQueueActivity extends Activity {
         CharSequence current = fileFilterInput.getText();
         if (current != null && current.length() > 0) {
             fileFilterInput.setText("");
+        }
+        // Changing folder dismisses the keyboard; the cursor (bound to keyboard visibility) then
+        // stops blinking. Without this the field keeps focus and the keyboard stays up after a
+        // folder tap.
+        hideSearchKeyboard();
+    }
+
+    private void hideSearchKeyboard() {
+        if (fileFilterInput == null) {
+            return;
+        }
+        InputMethodManager imm = (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
+        if (imm != null) {
+            imm.hideSoftInputFromWindow(fileFilterInput.getWindowToken(), 0);
         }
     }
 
@@ -2512,7 +2527,7 @@ public class FileBrowserQueueActivity extends Activity {
 
     private void exitPlaylistBrowseFolder() {
         stopBrowsePlaybackForFolderSwitch();
-        fileFilterInput.setText("");
+        clearFileFilterInput();
         pendingBackScrollUri = currentBrowsePlaylistEntry.uri;
         currentBrowsePlaylistEntry = null;
         if (storageBrowser.isBrowsingDocumentTree()) {

@@ -12,13 +12,18 @@ import java.util.List;
 final class QueueStore {
 
     private static final String PREFS = "live_queue_player";
-    private static final String KEY_QUEUE = "persisted_queue_v1";
+    static final String KEY_QUEUE = "persisted_queue_v1";
     private static final String KEY_PLAYBACK_OFFSET = "playback_offset";
     private static final String KEY_NAME = "name";
     private static final String KEY_URI  = "uri";
     private static final String KEY_ID   = "id";
 
     private QueueStore() {
+    }
+
+    /** Backing prefs for the queue; also where queue-change listeners register. */
+    static SharedPreferences prefs(Context context) {
+        return context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
     }
 
     static final class Entry {

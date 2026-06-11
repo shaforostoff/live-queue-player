@@ -2,6 +2,7 @@ package com.shaforostoff.livequeueplayer;
 
 import android.annotation.SuppressLint;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.content.pm.ServiceInfo;
 import android.media.MediaDescription;
 import android.media.MediaMetadataRetriever;
@@ -56,6 +57,9 @@ public class Service extends android.service.media.MediaBrowserService implement
     private Notifications notifications;
     private AudioPlayer audioPlayer;
     private SilenceStreamer silenceStreamer;
+    // Strong ref required: SharedPreferences holds change listeners weakly. Fires the
+    // MediaBrowser/Android Auto queue-list refresh whenever the persisted queue changes.
+    private SharedPreferences.OnSharedPreferenceChangeListener queueChangeListener;
     // Held continuously from playback start through every track transition, so the CPU cannot
     // sleep in the wake-lock-free gap between an old MediaPlayer's PLAYBACK_COMPLETED state
     // (framework releases its setWakeMode lock) and the new MediaPlayer's prepare()+start().
@@ -99,6 +103,15 @@ public class Service extends android.service.media.MediaBrowserService implement
         // Publish the existing framework MediaSession token so MediaBrowser clients
         // (Android Auto, Assistant, system media controls) can connect and control playback.
         setSessionToken(hwListener.getSessionToken());
+        // Live-refresh the browse list when the queue changes from any component in this
+        // (single) process. SharedPreferences dispatches this callback on the main thread,
+        // which is required for notifyChildrenChanged().
+        queueChangeListener = (prefs, key) -> {
+            if (key == null || QueueStore.KEY_QUEUE.equals(key)) {
+                notifyChildrenChanged(MEDIA_ROOT_ID);
+            }
+        };
+        QueueStore.prefs(this).registerOnSharedPreferenceChangeListener(queueChangeListener);
         notifications.create();
     }
 
@@ -548,6 +561,10 @@ public class Service extends android.service.media.MediaBrowserService implement
     @Override
     public void onDestroy() {
         stopProgressTicks();
+        if (queueChangeListener != null) {
+            QueueStore.prefs(this).unregisterOnSharedPreferenceChangeListener(queueChangeListener);
+            queueChangeListener = null;
+        }
         // Leave SilenceStreamer running (including any active preview) —
         // the Activity owns its lifetime and releases it in onStop().
         silenceStreamer = null;

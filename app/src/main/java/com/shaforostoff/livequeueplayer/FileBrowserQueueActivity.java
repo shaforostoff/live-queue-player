@@ -156,6 +156,7 @@ public class FileBrowserQueueActivity extends Activity {
     private final List<FileEntry> filteredFileEntries = new ArrayList<>();
     private FileAdapter fileAdapter;
     private EditText fileFilterInput;
+    private View rootContainer;
     private String fileFilterQuery = "";
     private int fileSortMode = SORT_FILENAME;
     private int fileEntriesVersion = 0;
@@ -314,6 +315,7 @@ public class FileBrowserQueueActivity extends Activity {
         audioPreviewManager = new PreviewManager(this);
 
         // -- view references -------------------------------------------------
+        rootContainer   = findViewById(R.id.root_container);
         fileFilterInput = findViewById(R.id.file_filter_input);
         queueEmptyHint  = findViewById(R.id.queue_empty_hint);
         installSearchCursorKeyboardBinding();
@@ -769,10 +771,14 @@ public class FileBrowserQueueActivity extends Activity {
         if (current != null && current.length() > 0) {
             fileFilterInput.setText("");
         }
-        // Changing folder dismisses the keyboard; the cursor (bound to keyboard visibility) then
-        // stops blinking. Without this the field keeps focus and the keyboard stays up after a
-        // folder tap.
+        // Changing folder drops the search field's focus: an unfocused EditText shows no cursor on
+        // every Android version. (Relying on the keyboard-visibility binding alone is not enough —
+        // its IME inset callback doesn't fire on some versions, e.g. Android 13, leaving the cursor
+        // blinking.) Moving focus to the focusable root also lets the keyboard close.
         hideSearchKeyboard();
+        if (rootContainer != null) {
+            rootContainer.requestFocus();
+        }
     }
 
     private void hideSearchKeyboard() {

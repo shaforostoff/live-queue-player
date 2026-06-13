@@ -44,6 +44,11 @@ class MetadataExtractor {
         String fallback = "";
     }
 
+    // Cache keys are stored in a shortened, reversible form to save RAM (the cache can hold the
+    // whole library). SAF document URIs all share this long prefix, collapsed to "ct://".
+    private static final String SAF_TREE_PREFIX = "content://com.android.externalstorage.documents/tree/";
+    private static final String SAF_TREE_PREFIX_SHORT = "ct://";
+
     private final ContentResolver contentResolver;
     private final Map<String, TagEntry> tagCache = Collections.synchronizedMap(new HashMap<>());
     /** Library roots whose full recursive tag scan has already been started this session. */
@@ -69,6 +74,29 @@ class MetadataExtractor {
         return rootKey != null && scannedRoots.add(rootKey);
     }
 
+    /**
+     * Maps a track URI to its (shortened) cache key. Losslessly reversible by {@link #keyToUri}:
+     * the long SAF tree prefix becomes {@code ct://}, and {@code %20} becomes a space (a space in a
+     * canonical URI only ever originates from {@code %20}, so this round-trips exactly). All other
+     * percent-escapes are left verbatim so the original URI can be reconstructed for playback.
+     */
+    static String uriToKey(Uri uri) {
+        String s = uri.toString();
+        if (s.startsWith(SAF_TREE_PREFIX)) {
+            s = SAF_TREE_PREFIX_SHORT + s.substring(SAF_TREE_PREFIX.length());
+        }
+        return s.replace("%20", " ");
+    }
+
+    /** Inverse of {@link #uriToKey}: rebuilds the exact canonical URI string from a cache key. */
+    static String keyToUri(String key) {
+        String s = key.replace(" ", "%20");
+        if (s.startsWith(SAF_TREE_PREFIX_SHORT)) {
+            s = SAF_TREE_PREFIX + s.substring(SAF_TREE_PREFIX_SHORT.length());
+        }
+        return s;
+    }
+
     private TagEntry getOrCreate(String key) {
         return tagCache.computeIfAbsent(key, k -> new TagEntry());
     }
@@ -84,7 +112,7 @@ class MetadataExtractor {
 
     boolean isAllTagsCached(Uri uri) {
         if (uri == null) return false;
-        TagEntry e = tagCache.get(uri.toString());
+        TagEntry e = tagCache.get(uriToKey(uri));
         return e != null && e.date != null && e.genre != null && e.artist != null && e.title != null && e.bpm >= 0;
     }
 
@@ -100,7 +128,7 @@ class MetadataExtractor {
         if (uri == null) {
             TagEntry e = new TagEntry(); e.date = ""; e.genre = ""; e.bpm = 0; return e;
         }
-        String key = uri.toString();
+        String key = uriToKey(uri);
         TagEntry e = tagCache.get(key);
         if (e != null && e.date != null && e.genre != null && e.title != null && e.bpm >= 0) return e;
         e = getOrCreate(key);

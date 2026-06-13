@@ -49,7 +49,7 @@ final class TrackMatcher {
             if (tag.title == null || !tag.title.equalsIgnoreCase(title)) continue;
             float a = FuzzySearch.matchFuzzy(tag.artist, artist);
             if (bestExact == null || a > bestExactArtist) {
-                bestExact = Uri.parse(e.getKey());
+                bestExact = Uri.parse(MetadataExtractor.keyToUri(e.getKey()));
                 bestExactTag = tag;
                 bestExactArtist = a;
             }
@@ -70,7 +70,7 @@ final class TrackMatcher {
             float combined = t * 0.7f + FuzzySearch.matchFuzzy(tag.artist, artist) * 0.3f;
             if (combined > bestScore) {
                 bestScore = combined;
-                bestFuzzy = Uri.parse(e.getKey());
+                bestFuzzy = Uri.parse(MetadataExtractor.keyToUri(e.getKey()));
                 bestFuzzyTag = tag;
             }
         }

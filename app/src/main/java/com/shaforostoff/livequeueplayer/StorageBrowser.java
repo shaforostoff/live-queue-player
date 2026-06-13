@@ -14,7 +14,9 @@ import android.provider.DocumentsContract;
 
 import java.io.File;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Owns the user's current browsing location and all filesystem / SAF DocumentTree I/O.
@@ -32,6 +34,12 @@ final class StorageBrowser {
     private static final String PREF_LAST_TREE_URI = "last_tree_uri";
     private static final String MUSIC_DIRECTORY_NAME = "Music";
 
+    // SAF child-document queries are slow (~1ms+ per item, all inside ContentResolver.query()), so
+    // cache the listings of large folders for the session. Only big folders are worth caching, and
+    // only a handful are kept so memory stays bounded. file:// listings are fast and not cached.
+    private static final int LISTING_CACHE_MIN_ITEMS = 256;   // cache a listing only if it exceeds this
+    private static final int LISTING_CACHE_MAX_FOLDERS = 16;  // evict least-recently-used beyond this
+
     static final String[] AUDIO_EXTENSIONS_NO_PLAYLIST = {
             ".m4a", ".mp3", ".mp4", ".aac", ".ogg", ".flac", ".aiff", ".aif",
             ".wav", ".opus", ".wma", ".3gp"
@@ -45,6 +53,17 @@ final class StorageBrowser {
     private final ArrayList<Uri> documentUriStack = new ArrayList<>();
     private File currentFileDirectory;
     private File currentFileRootDirectory;
+
+    /** LRU cache of large document-folder listings, keyed by document Uri (access-ordered). */
+    private final LinkedHashMap<String, List<FileBrowserQueueActivity.FileEntry>> documentListingCache =
+            new LinkedHashMap<String, List<FileBrowserQueueActivity.FileEntry>>(
+                    LISTING_CACHE_MAX_FOLDERS + 1, 0.75f, true) {
+                @Override
+                protected boolean removeEldestEntry(
+                        Map.Entry<String, List<FileBrowserQueueActivity.FileEntry>> eldest) {
+                    return size() > LISTING_CACHE_MAX_FOLDERS;
+                }
+            };
 
     StorageBrowser(Context context) {
         this.context = context;
@@ -98,6 +117,7 @@ final class StorageBrowser {
         documentUriStack.clear();
         currentFileDirectory = null;
         currentFileRootDirectory = null;
+        documentListingCache.clear();
     }
 
     // -- file (java.io.File) navigation --------------------------------------
@@ -172,7 +192,23 @@ final class StorageBrowser {
      */
     List<FileBrowserQueueActivity.FileEntry> readCurrentDocumentDirectory() {
         Uri currentDocumentUri = documentUriStack.get(documentUriStack.size() - 1);
-        return readDocumentChildren(currentDocumentUri, true);
+        String key = currentDocumentUri.toString();
+        List<FileBrowserQueueActivity.FileEntry> cached = documentListingCache.get(key);
+        if (cached != null) {
+            return cached;
+        }
+        List<FileBrowserQueueActivity.FileEntry> listing = readDocumentChildren(currentDocumentUri, true);
+        if (listing != null && listing.size() > LISTING_CACHE_MIN_ITEMS) {
+            documentListingCache.put(key, listing);
+        }
+        return listing;
+    }
+
+    /** Drops any cached listing for {@code documentUri} so the next read re-queries it. */
+    void invalidateDocumentListing(Uri documentUri) {
+        if (documentUri != null) {
+            documentListingCache.remove(documentUri.toString());
+        }
     }
 
     /**

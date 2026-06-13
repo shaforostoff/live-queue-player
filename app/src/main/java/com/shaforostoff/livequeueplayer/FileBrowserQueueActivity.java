@@ -998,6 +998,9 @@ public class FileBrowserQueueActivity extends Activity {
 
     private void refreshCurrentFolderListing() {
         if (storageBrowser.isBrowsingDocumentTree()) {
+            // The folder's contents just changed (e.g. a playlist was saved into it), so drop any
+            // cached listing for it before re-reading.
+            storageBrowser.invalidateDocumentListing(storageBrowser.getCurrentDocumentUri());
             browseCurrentDocumentDirectory();
             return;
         }

@@ -9,9 +9,11 @@ import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -44,6 +46,8 @@ class MetadataExtractor {
 
     private final ContentResolver contentResolver;
     private final Map<String, TagEntry> tagCache = Collections.synchronizedMap(new HashMap<>());
+    /** Library roots whose full recursive tag scan has already been started this session. */
+    private final Set<String> scannedRoots = Collections.synchronizedSet(new HashSet<>());
 
     List<Map.Entry<String, TagEntry>> snapshotCacheEntries() {
         synchronized (tagCache) {
@@ -53,6 +57,16 @@ class MetadataExtractor {
 
     void clearCache() {
         tagCache.clear();
+        scannedRoots.clear();
+    }
+
+    /**
+     * Atomically claims {@code rootKey} for a recursive tag scan. Returns {@code true} the first
+     * time a given root is seen (caller should scan), {@code false} on later calls (already
+     * scanned/claimed this session) so the expensive whole-tree walk is skipped.
+     */
+    boolean claimRootScan(String rootKey) {
+        return rootKey != null && scannedRoots.add(rootKey);
     }
 
     private TagEntry getOrCreate(String key) {

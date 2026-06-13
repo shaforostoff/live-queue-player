@@ -3306,6 +3306,12 @@ public class FileBrowserQueueActivity extends Activity {
         final Uri treeUri = storageBrowser.getCurrentTreeUri();
         final File fileRoot = storageBrowser.getCurrentFileRootDirectory();
         if (!isDocTree && fileRoot == null) return;
+        // Skip the expensive whole-tree walk if this library root was already scanned this session
+        // (e.g. re-entering receive mode or an activity recreation). Cleared when the cache is.
+        String rootKey = isDocTree
+                ? (treeUri != null ? treeUri.toString() : null)
+                : fileRoot.getAbsolutePath();
+        if (!metadataExtractor.claimRootScan(rootKey)) return;
         new Thread(() -> {
             List<Uri> allUris = isDocTree
                     ? storageBrowser.collectAllAudioUrisFromDocumentTree(rootDocUri, treeUri)

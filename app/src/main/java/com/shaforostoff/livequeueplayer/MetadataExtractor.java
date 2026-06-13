@@ -14,6 +14,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -53,6 +54,8 @@ class MetadataExtractor {
     private final Map<String, TagEntry> tagCache = Collections.synchronizedMap(new HashMap<>());
     /** Library roots whose full recursive tag scan has already been started this session. */
     private final Set<String> scannedRoots = Collections.synchronizedSet(new HashSet<>());
+    /** Canonicalizes repeated genre/artist strings so equal values share one instance (saves RAM). */
+    private final ConcurrentHashMap<String, String> valuePool = new ConcurrentHashMap<>();
 
     List<Map.Entry<String, TagEntry>> snapshotCacheEntries() {
         synchronized (tagCache) {
@@ -63,6 +66,13 @@ class MetadataExtractor {
     void clearCache() {
         tagCache.clear();
         scannedRoots.clear();
+        valuePool.clear();
+    }
+
+    /** Returns a canonical (shared) instance for {@code s}, so duplicate values aren't kept N times. */
+    private String internValue(String s) {
+        if (s == null || s.isEmpty()) return s;   // "" is an already-shared literal; don't pool it
+        return valuePool.computeIfAbsent(s, k -> k);
     }
 
     /**
@@ -163,6 +173,9 @@ class MetadataExtractor {
         if (e.artist == null) e.artist = "";
         if (e.title == null) e.title = "";
         if (e.bpm < 0) e.bpm = 0;
+        // genre/artist repeat heavily across a library; share one instance per distinct value.
+        e.genre  = internValue(e.genre);
+        e.artist = internValue(e.artist);
         return e;
     }
 

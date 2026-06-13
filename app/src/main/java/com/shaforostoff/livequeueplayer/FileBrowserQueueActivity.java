@@ -345,16 +345,8 @@ public class FileBrowserQueueActivity extends Activity {
         btController = new BluetoothController(this, new BluetoothController.Callback() {
             @Override
             public void onModeSelected() {
-                if (getIntent().getBooleanExtra(EXTRA_REMOTE_QUEUE_FILL_MODE, false) && mode == Mode.DJ) {
-                    if (btController.isServerMode()) {
-                        mode = Mode.REMOTE_RECEIVE;
-                    } else {
-                        enterRemoteSendMode();
-                    }
-                }
-                if (mode == Mode.REMOTE_RECEIVE) {
-                    startRecursiveTagScanAsync();
-                }
+                // Mode is chosen up front in onCreate (server/client), and the receive-mode tag scan
+                // is kicked off there too; this callback only refreshes UI once the bridge is up.
                 applyPlayButtonModeState();
                 if (fileAdapter != null) fileAdapter.notifyDataSetChanged();
             }
@@ -492,8 +484,6 @@ public class FileBrowserQueueActivity extends Activity {
             } else if (serverMode == 0) {
                 enterRemoteSendMode();
                 btController.startRemoteSetupAsClient();
-            } else {
-                btController.startRemoteSetup(); // mode set in onModeSelected callback
             }
         }
 
@@ -523,6 +513,7 @@ public class FileBrowserQueueActivity extends Activity {
         if (!restorePersistedDocumentTree()) {
             requestPermissionsAndBrowse();
         }
+        // Sole trigger for the receive-mode whole-library tag scan (runs regardless of BT state).
         if (mode == Mode.REMOTE_RECEIVE) {
             startRecursiveTagScanAsync();
         }

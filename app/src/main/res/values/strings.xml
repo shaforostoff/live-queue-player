@@ -75,9 +75,6 @@
   <string name="sent_tracks">Sent %d track(s)</string>
   <string name="bt_not_connected">Not connected to Bluetooth server</string>
   <string name="bt_not_available">Bluetooth is not available on this device</string>
-  <string name="bt_mode_dialog_title">Remote queue Bluetooth mode</string>
-  <string name="bt_receive_requests">Receive requests</string>
-  <string name="bt_send_requests">Send requests</string>
   <string name="bt_no_paired_devices">No paired Bluetooth devices found</string>
   <string name="bt_select_server_device">Select server device</string>
   <string name="bt_connect_remembered">Connect remembered</string>

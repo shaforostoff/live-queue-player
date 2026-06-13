@@ -71,9 +71,6 @@
   <string name="sent_tracks">Se enviaron %d pistas</string>
   <string name="bt_not_connected">No conectado al servidor Bluetooth</string>
   <string name="bt_not_available">Bluetooth no está disponible en este dispositivo</string>
-  <string name="bt_mode_dialog_title">Modo Bluetooth de cola remota</string>
-  <string name="bt_receive_requests">Recibir solicitudes</string>
-  <string name="bt_send_requests">Enviar solicitudes</string>
   <string name="bt_no_paired_devices">No se encontraron dispositivos Bluetooth emparejados</string>
   <string name="bt_select_server_device">Selecciona el dispositivo servidor</string>
   <string name="bt_connect_remembered">Conectar al recordado</string>

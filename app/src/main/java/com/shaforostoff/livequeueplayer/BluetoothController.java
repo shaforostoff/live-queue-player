@@ -41,7 +41,7 @@ class BluetoothController {
     private boolean serverMode;
     private BroadcastReceiver bondingReceiver;
     private AlertDialog devicePickerDialog;
-    private int pendingMode = -1; // -1 = show dialog, 1 = server, 0 = client
+    private int pendingMode = -1; // -1 = unset, 1 = server, 0 = client
     private List<BluetoothQueueBridge.TrackRequest> pendingRequests;
 
     BluetoothController(Activity activity, Callback callback) {
@@ -186,26 +186,13 @@ class BluetoothController {
             activity.startActivity(new Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE));
             return;
         }
+        // The launcher always picks the mode up front (server=1 / client=0), so apply it directly;
+        // there is no longer an interactive mode dialog.
         if (pendingMode == 1) {
             applyServerMode();
-            return;
-        }
-        if (pendingMode == 0) {
+        } else if (pendingMode == 0) {
             applyClientMode();
-            return;
         }
-        String[] options = {activity.getString(R.string.bt_receive_requests), activity.getString(R.string.bt_send_requests)};
-        new AlertDialog.Builder(activity)
-                .setTitle(R.string.bt_mode_dialog_title)
-                .setItems(options, (dialog, which) -> {
-                    if (which == 0) {
-                        applyServerMode();
-                    } else {
-                        applyClientMode();
-                    }
-                })
-                .setNegativeButton(android.R.string.cancel, null)
-                .show();
     }
 
     private void applyServerMode() {

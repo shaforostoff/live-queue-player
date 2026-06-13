@@ -55,6 +55,11 @@ final class ServicePlaylistGenerator {
             return;
         }
 
+        // A track shared from a transient provider (e.g. Telegram) is only readable while the share
+        // grant lives; copy it into the granted music folder now so the persisted queue can replay
+        // it later. A no-op for file:// and for URIs we already hold a durable grant on.
+        location = MediaImporter.durableCopyIfNeeded(context, location, title);
+
         var entry = new ServicePlaylist.Entry();
         entry.title = title;
         entry.location = location;

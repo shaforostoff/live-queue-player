@@ -16,7 +16,8 @@ final class AiffMediaDataSource extends MediaDataSource {
     private final byte[] wavData;
 
     AiffMediaDataSource(Context ctx, Uri uri) throws IOException {
-        try (InputStream in = UriIo.open(ctx, uri)) {
+        try (InputStream in = ctx.getContentResolver().openInputStream(uri)) {
+            if (in == null) throw new IOException("Cannot open: " + uri);
             wavData = AiffConverter.convert(in);
         }
     }

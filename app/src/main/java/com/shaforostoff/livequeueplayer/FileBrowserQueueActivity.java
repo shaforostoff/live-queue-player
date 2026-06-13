@@ -3264,9 +3264,9 @@ public class FileBrowserQueueActivity extends Activity {
         Uri rootDocUri = isDocTree ? storageBrowser.getDocumentRootUri() : null;
         File fileRoot = storageBrowser.getCurrentFileRootDirectory();
 
-        // Fast path: when the music folders are identical on both devices the full path sent by
-        // the peer resolves directly, so we can skip the expensive recursive tree scan entirely.
-        Uri[] direct = new Uri[n];
+        // Stage 1 — direct path: when the music folders are identical on both devices the full path
+        // sent by the peer resolves directly, so we skip any scan entirely.
+        Uri[] results = new Uri[n];
         int resolved = 0;
         for (int i = 0; i < n; i++) {
             String relPath = requests.get(i).path;
@@ -3274,30 +3274,93 @@ public class FileBrowserQueueActivity extends Activity {
             Uri hit = isDocTree ? storageBrowser.resolveDirectDocumentPath(rootDocUri, relPath)
                                 : storageBrowser.resolveDirectFilePath(fileRoot, relPath);
             if (hit != null) {
-                direct[i] = hit;
+                results[i] = hit;
                 resolved++;
             }
         }
-        if (resolved == n) {
-            List<Uri> all = new ArrayList<>(n);
-            for (Uri u : direct) all.add(u);
-            return all;
+
+        // Stage 2 — tag cache: the recursive tag scan already indexed every file's URI as a cache
+        // key, so match the remaining requests by filename against that in-memory index instead of
+        // re-walking the SAF tree (which costs a query() per folder). Misses fall through to stage 3.
+        if (resolved < n) {
+            List<Map.Entry<String, MetadataExtractor.TagEntry>> snapshot =
+                    metadataExtractor.snapshotCacheEntries();
+            if (!snapshot.isEmpty()) {
+                List<Uri> cacheHits = findAllInTagCache(requests, snapshot);
+                for (int i = 0; i < n; i++) {
+                    if (results[i] == null && cacheHits.get(i) != null) {
+                        results[i] = cacheHits.get(i);
+                        resolved++;
+                    }
+                }
+            }
         }
 
-        // Fall back to a full tree traversal for the entries the fast path could not resolve.
-        List<Uri> results;
-        if (isDocTree) {
-            results = findAllInDocumentTree(rootDocUri, requests);
-        } else if (fileRoot != null && fileRoot.exists()) {
-            results = findAllInFileDirectory(fileRoot, requests);
-        } else {
-            results = new ArrayList<>(n);
-            for (int i = 0; i < n; i++) results.add(null);
+
+        // Stage 3 — tree walk: only for whatever stages 1-2 couldn't resolve (e.g. files added after
+        // the scan, or a request that arrived before the scan finished).
+        if (resolved < n) {
+            List<Uri> walk = null;
+            if (isDocTree) {
+                walk = findAllInDocumentTree(rootDocUri, requests);
+            } else if (fileRoot != null && fileRoot.exists()) {
+                walk = findAllInFileDirectory(fileRoot, requests);
+            }
+            if (walk != null) {
+                for (int i = 0; i < n; i++) {
+                    if (results[i] == null && walk.get(i) != null) results[i] = walk.get(i);
+                }
+            }
         }
-        for (int i = 0; i < n; i++) {
-            if (direct[i] != null) results.set(i, direct[i]);
+
+        List<Uri> out = new ArrayList<>(n);
+        for (Uri u : results) out.add(u);
+        return out;
+    }
+
+    /**
+     * Resolves requests against the in-memory tag cache, whose keys are every scanned file's URI.
+     * Mirrors {@link #findAllInDocumentTree}'s filename / parent-hint / extension matching but touches
+     * no SAF. Returns one URI per request (null where unmatched).
+     */
+    private List<Uri> findAllInTagCache(List<BluetoothQueueBridge.TrackRequest> requests,
+                                        List<Map.Entry<String, MetadataExtractor.TagEntry>> snapshot) {
+        int n = requests.size();
+        Uri[] hintMatches = new Uri[n];
+        Uri[] nameMatches = new Uri[n];
+        Uri[] extMatches  = new Uri[n];
+        String[] hints = TrackMatcher.parentHints(requests);
+
+        for (Map.Entry<String, MetadataExtractor.TagEntry> e : snapshot) {
+            Uri childUri = Uri.parse(MetadataExtractor.keyToUri(e.getKey()));
+            // For SAF the document id is a single path segment holding the whole "/"-separated
+            // subtree path; for file:// it's the file path. Either way the last two "/" components
+            // are the file name and its parent folder.
+            String docPath = "content".equals(childUri.getScheme())
+                    ? childUri.getLastPathSegment() : childUri.getPath();
+            if (docPath == null) continue;
+            int lastSlash = docPath.lastIndexOf('/');
+            String childName = lastSlash >= 0 ? docPath.substring(lastSlash + 1) : docPath;
+            if (childName.isEmpty()) continue;
+            String dirName = "";
+            if (lastSlash > 0) {
+                int prevSlash = docPath.lastIndexOf('/', lastSlash - 1);
+                dirName = docPath.substring(prevSlash + 1, lastSlash);
+            }
+            for (int i = 0; i < n; i++) {
+                if (hintMatches[i] != null) continue;
+                if (!childName.equalsIgnoreCase(requests.get(i).file)) continue;
+                String hint = hints[i];
+                if (hint.length() > 0 && dirName.equalsIgnoreCase(hint)) {
+                    hintMatches[i] = childUri;
+                } else if (nameMatches[i] == null) {
+                    nameMatches[i] = childUri;
+                }
+            }
+            TrackMatcher.applyExtFallbackMatch(TrackMatcher.stripExtension(childName), childUri,
+                    requests, hintMatches, nameMatches, extMatches);
         }
-        return results;
+        return TrackMatcher.mergeMatchResults(hintMatches, nameMatches, extMatches);
     }
 
     private void startRecursiveTagScanAsync() {

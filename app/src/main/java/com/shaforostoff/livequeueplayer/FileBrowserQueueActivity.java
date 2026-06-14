@@ -1827,6 +1827,31 @@ public class FileBrowserQueueActivity extends Activity {
                 targetDocIds[i] = volume + ":" + normalizedPath;
         }
 
+        // Cache pass: the target file's existence can be checked against the in-memory tag cache
+        // (whose keys are every enumerated file's URI), avoiding a SAF query per directory. Entries
+        // not found here fall through to the batch query below. Mirrors the exact-then-extension
+        // matching of Pass 2.
+        for (int i = 0; i < n; i++) {
+            if (result.get(i) != null || targetDocIds[i] == null) continue;
+            String docId = targetDocIds[i];
+            Uri candidate = DocumentsContract.buildDocumentUriUsingTree(treeUri, docId);
+            if (metadataExtractor.containsUri(candidate)) {
+                result.set(i, candidate);
+                continue;
+            }
+            int dot = docId.lastIndexOf('.');
+            String baseDocId = dot >= 0 ? docId.substring(0, dot) : docId;
+            String originalExt = dot >= 0 ? docId.substring(dot) : "";
+            for (String ext : StorageBrowser.AUDIO_EXTENSIONS_NO_PLAYLIST) {
+                if (ext.equals(originalExt)) continue;
+                Uri extCandidate = DocumentsContract.buildDocumentUriUsingTree(treeUri, baseDocId + ext);
+                if (metadataExtractor.containsUri(extCandidate)) {
+                    result.set(i, extCandidate);
+                    break;
+                }
+            }
+        }
+
         // Collect unique parent directories for entries that still need resolution
         Set<String> parentDocIds = new HashSet<>();
         for (int i = 0; i < n; i++) {

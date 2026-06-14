@@ -126,6 +126,11 @@ class MetadataExtractor {
         return e != null && e.date != null && e.genre != null && e.artist != null && e.title != null && e.bpm >= 0;
     }
 
+    /** True if {@code uri} is present in the cache, i.e. the file was enumerated this session. */
+    boolean containsUri(Uri uri) {
+        return uri != null && tagCache.containsKey(uriToKey(uri));
+    }
+
     static String extractYearFromFileName(String fileName) {
         if (fileName == null || fileName.length() == 0) return "";
         Matcher matcher = FILENAME_YEAR_MATCHER.get().reset(fileName);

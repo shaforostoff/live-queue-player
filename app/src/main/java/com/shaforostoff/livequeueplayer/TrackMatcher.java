@@ -107,7 +107,26 @@ final class TrackMatcher {
         return dot > 0 ? name.substring(0, dot) : name;
     }
 
-    static void applyExtFallbackMatch(String childNoExt, Uri childUri,
+    /**
+     * Matches one library file against every request by name, with a parent-folder hint and an
+     * extension-stripped fallback, filling the priority arrays. Hint matches outrank plain name
+     * matches, which outrank extension-stripped matches (see {@link #mergeMatchResults}). Shared by
+     * the SAF tree walk, the file walk, and the in-memory tag-cache lookup.
+     */
+    static void matchByNameAndHint(String childName, String dirName, Uri childUri,
+            List<BluetoothQueueBridge.TrackRequest> requests, String[] hints,
+            Uri[] hintMatches, Uri[] nameMatches, Uri[] extMatches) {
+        for (int i = 0; i < requests.size(); i++) {
+            if (hintMatches[i] != null) continue;
+            if (!childName.equalsIgnoreCase(requests.get(i).file)) continue;
+            String hint = hints[i];
+            if (hint.length() > 0 && dirName.equalsIgnoreCase(hint)) hintMatches[i] = childUri;
+            else if (nameMatches[i] == null) nameMatches[i] = childUri;
+        }
+        applyExtFallbackMatch(stripExtension(childName), childUri, requests, hintMatches, nameMatches, extMatches);
+    }
+
+    private static void applyExtFallbackMatch(String childNoExt, Uri childUri,
             List<BluetoothQueueBridge.TrackRequest> requests, Uri[] hintMatches, Uri[] nameMatches, Uri[] extMatches) {
         for (int i = 0; i < requests.size(); i++) {
             if (hintMatches[i] != null || nameMatches[i] != null || extMatches[i] != null) continue;

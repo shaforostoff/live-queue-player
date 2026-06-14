@@ -1790,6 +1790,26 @@ public class FileBrowserQueueActivity extends Activity {
         return builder.toString();
     }
 
+    /** Existence test for a document id (against the tag cache or a fetched sibling listing). */
+    private interface DocIdExists { boolean test(String docId); }
+
+    /**
+     * Resolves {@code docId} to an existing document id: the id itself if present, otherwise the same
+     * base name with a different audio extension; null if nothing exists. Shared by the playlist
+     * tag-cache pass and the SAF sibling-listing pass.
+     */
+    private static String resolveExistingDocId(String docId, DocIdExists exists) {
+        if (exists.test(docId)) return docId;
+        int dot = docId.lastIndexOf('.');
+        String base = dot >= 0 ? docId.substring(0, dot) : docId;
+        String originalExt = dot >= 0 ? docId.substring(dot) : "";
+        for (String ext : StorageBrowser.AUDIO_EXTENSIONS_NO_PLAYLIST) {
+            if (ext.equals(originalExt)) continue;
+            if (exists.test(base + ext)) return base + ext;
+        }
+        return null;
+    }
+
     private List<Uri> resolveDocumentPlaylistUrisBatch(Uri playlistUri, List<String> pathValues, Uri treeUri) {
         int n = pathValues.size();
         List<Uri> result = new ArrayList<>(n);
@@ -1827,29 +1847,14 @@ public class FileBrowserQueueActivity extends Activity {
                 targetDocIds[i] = volume + ":" + normalizedPath;
         }
 
-        // Cache pass: the target file's existence can be checked against the in-memory tag cache
-        // (whose keys are every enumerated file's URI), avoiding a SAF query per directory. Entries
-        // not found here fall through to the batch query below. Mirrors the exact-then-extension
-        // matching of Pass 2.
+        // Cache pass: when the library has been enumerated, the target's existence can be checked
+        // against the in-memory tag cache (whose keys are every enumerated file's URI), avoiding a
+        // SAF query per directory. Entries not found here fall through to the batch query below.
         for (int i = 0; i < n; i++) {
             if (result.get(i) != null || targetDocIds[i] == null) continue;
-            String docId = targetDocIds[i];
-            Uri candidate = DocumentsContract.buildDocumentUriUsingTree(treeUri, docId);
-            if (metadataExtractor.containsUri(candidate)) {
-                result.set(i, candidate);
-                continue;
-            }
-            int dot = docId.lastIndexOf('.');
-            String baseDocId = dot >= 0 ? docId.substring(0, dot) : docId;
-            String originalExt = dot >= 0 ? docId.substring(dot) : "";
-            for (String ext : StorageBrowser.AUDIO_EXTENSIONS_NO_PLAYLIST) {
-                if (ext.equals(originalExt)) continue;
-                Uri extCandidate = DocumentsContract.buildDocumentUriUsingTree(treeUri, baseDocId + ext);
-                if (metadataExtractor.containsUri(extCandidate)) {
-                    result.set(i, extCandidate);
-                    break;
-                }
-            }
+            String hit = resolveExistingDocId(targetDocIds[i],
+                    d -> metadataExtractor.containsUri(DocumentsContract.buildDocumentUriUsingTree(treeUri, d)));
+            if (hit != null) result.set(i, DocumentsContract.buildDocumentUriUsingTree(treeUri, hit));
         }
 
         // Collect unique parent directories for entries that still need resolution
@@ -1882,7 +1887,7 @@ public class FileBrowserQueueActivity extends Activity {
             dirContents.put(parentDocId, children);
         }
 
-        // Pass 2: match each entry against cached directory listings
+        // Pass 2: match each remaining entry against its fetched sibling listing.
         for (int i = 0; i < n; i++) {
             if (result.get(i) != null || targetDocIds[i] == null) continue;
             String docId = targetDocIds[i];
@@ -1891,23 +1896,8 @@ public class FileBrowserQueueActivity extends Activity {
             int slash = path.lastIndexOf('/');
             String parentPath = slash >= 0 ? path.substring(0, slash) : "";
             Set<String> siblings = dirContents.getOrDefault(volume + ":" + parentPath, Collections.emptySet());
-
-            if (siblings.contains(docId)) {
-                result.set(i, DocumentsContract.buildDocumentUriUsingTree(treeUri, docId));
-            } else {
-                // Extension fallback using the already-fetched sibling listing
-                int dot = docId.lastIndexOf('.');
-                String baseDocId = dot >= 0 ? docId.substring(0, dot) : docId;
-                String originalExt = dot >= 0 ? docId.substring(dot) : "";
-                for (String ext : StorageBrowser.AUDIO_EXTENSIONS_NO_PLAYLIST) {
-                    if (ext.equals(originalExt)) continue;
-                    String candidate = baseDocId + ext;
-                    if (siblings.contains(candidate)) {
-                        result.set(i, DocumentsContract.buildDocumentUriUsingTree(treeUri, candidate));
-                        break;
-                    }
-                }
-            }
+            String hit = resolveExistingDocId(docId, siblings::contains);
+            if (hit != null) result.set(i, DocumentsContract.buildDocumentUriUsingTree(treeUri, hit));
         }
 
         return result;
@@ -3372,18 +3362,8 @@ public class FileBrowserQueueActivity extends Activity {
                 int prevSlash = docPath.lastIndexOf('/', lastSlash - 1);
                 dirName = docPath.substring(prevSlash + 1, lastSlash);
             }
-            for (int i = 0; i < n; i++) {
-                if (hintMatches[i] != null) continue;
-                if (!childName.equalsIgnoreCase(requests.get(i).file)) continue;
-                String hint = hints[i];
-                if (hint.length() > 0 && dirName.equalsIgnoreCase(hint)) {
-                    hintMatches[i] = childUri;
-                } else if (nameMatches[i] == null) {
-                    nameMatches[i] = childUri;
-                }
-            }
-            TrackMatcher.applyExtFallbackMatch(TrackMatcher.stripExtension(childName), childUri,
-                    requests, hintMatches, nameMatches, extMatches);
+            TrackMatcher.matchByNameAndHint(childName, dirName, childUri,
+                    requests, hints, hintMatches, nameMatches, extMatches);
         }
         return TrackMatcher.mergeMatchResults(hintMatches, nameMatches, extMatches);
     }
@@ -3439,18 +3419,8 @@ public class FileBrowserQueueActivity extends Activity {
                 if (child.isDirectory()) { stack.add(child); continue; }
                 String childName = child.getName();
                 Uri childUri = Uri.fromFile(child);
-                for (int i = 0; i < n; i++) {
-                    if (hintMatches[i] != null) continue;
-                    if (childName.equalsIgnoreCase(requests.get(i).file)) {
-                        String hint = hints[i];
-                        if (hint.length() > 0 && dirName.equalsIgnoreCase(hint)) {
-                            hintMatches[i] = childUri;
-                        } else if (nameMatches[i] == null) {
-                            nameMatches[i] = childUri;
-                        }
-                    }
-                }
-                TrackMatcher.applyExtFallbackMatch(TrackMatcher.stripExtension(childName), childUri, requests, hintMatches, nameMatches, extMatches);
+                TrackMatcher.matchByNameAndHint(childName, dirName, childUri,
+                        requests, hints, hintMatches, nameMatches, extMatches);
             }
         }
 
@@ -3505,17 +3475,8 @@ public class FileBrowserQueueActivity extends Activity {
                         continue;
                     }
                     Uri childUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, childDocId);
-                    for (int i = 0; i < n; i++) {
-                        if (hintMatches[i] != null) continue;
-                        if (!childName.equalsIgnoreCase(requests.get(i).file)) continue;
-                        String hint = hints[i];
-                        if (hint.length() > 0 && dirName.equalsIgnoreCase(hint)) {
-                            hintMatches[i] = childUri;
-                        } else if (nameMatches[i] == null) {
-                            nameMatches[i] = childUri;
-                        }
-                    }
-                    TrackMatcher.applyExtFallbackMatch(TrackMatcher.stripExtension(childName), childUri, requests, hintMatches, nameMatches, extMatches);
+                    TrackMatcher.matchByNameAndHint(childName, dirName, childUri,
+                            requests, hints, hintMatches, nameMatches, extMatches);
                 }
             } catch (Exception ignored) {
             }

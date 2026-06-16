@@ -111,4 +111,11 @@
 
   </LinearLayout>
 
+  <View
+    a:id="@+id/anchor_marker"
+    a:layout_width="match_parent"
+    a:layout_height="3dp"
+    a:layout_gravity="top"
+    a:visibility="gone" />
+
 </FrameLayout>

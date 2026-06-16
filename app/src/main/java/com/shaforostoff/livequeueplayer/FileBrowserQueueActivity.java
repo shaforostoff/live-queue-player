@@ -190,6 +190,8 @@ public class FileBrowserQueueActivity extends Activity {
     private int progressTrackColor;
     private int progressFillColor;
     private int servicePlaybackOffset = 0;
+    /** Entry id of the insert anchor (0 = none): new tracks are inserted above it. */
+    private int anchorEntryId = 0;
     private Button stopButton;
     private Button browserStopButton;
     private Button sortButton;
@@ -270,6 +272,12 @@ public class FileBrowserQueueActivity extends Activity {
                 currentPlayingQueueIndex = resolvePlayingQueueIndex(entryId, serviceIndex, currentUri);
                 if (currentPlayingQueueIndex >= 0 && currentPlayingQueueIndex != prevPlayingIndex) {
                     scrollTo(queueList, currentPlayingQueueIndex);
+                }
+                // Playing the anchor track clears its anchor status.
+                if (currentPlayingQueueIndex >= 0 && anchorEntryId > 0
+                        && queueEntries.get(currentPlayingQueueIndex).id == anchorEntryId) {
+                    anchorEntryId = 0;
+                    persistAnchor();   // refreshQueuePlaybackRows() below repaints the row
                 }
             }
 
@@ -363,6 +371,7 @@ public class FileBrowserQueueActivity extends Activity {
                 if (mode == Mode.REMOTE_SEND && remoteQueueController != null) {
                     if ("queue_state".equals(type))        remoteQueueController.onQueueStateReceived(obj);
                     else if ("play_state".equals(type))    remoteQueueController.onPlaybackStateReceived(obj);
+                    else if ("queue_changed".equals(type)) remoteQueueController.requestQueue();
                     else if ("volume_state".equals(type))  remoteQueueController.onVolumeStateReceived(obj);
                     else if ("eq_state".equals(type))      remoteQueueController.onEqStateReceived(obj);
                     return;
@@ -372,6 +381,7 @@ public class FileBrowserQueueActivity extends Activity {
                     case "request_queue":   handleRemoteRequestQueue(obj);  break;
                     case "move_track":      handleRemoteMoveTrack(obj);     break;
                     case "remove_track":    handleRemoteRemoveTrack(obj);   break;
+                    case "set_anchor":      handleRemoteSetAnchor(obj);     break;
                     case "stop_playback":   stopPlaybackWithFadeout();   pushPlayState(); break;
                     case "resume_playback": cancelFadeOutAndContinue();  pushPlayState(); break;
                     case "play_track":      handleRemotePlayTrack(obj);     break;
@@ -1980,9 +1990,23 @@ public class FileBrowserQueueActivity extends Activity {
         if (entries.isEmpty()) {
             return;
         }
-        queueEntries.addAll(entries);
+        int anchorIdx = anchorIndex();
+        int insertAt;
+        if (anchorIdx >= 0) {
+            queueEntries.addAll(anchorIdx, entries);
+            insertAt = anchorIdx;
+            // Inserting at/before the playing row pushes it (and the service window) down.
+            if (currentPlayingQueueIndex >= 0 && insertAt <= currentPlayingQueueIndex) {
+                currentPlayingQueueIndex += entries.size();
+                setPlaybackOffset(servicePlaybackOffset + entries.size());
+            }
+        } else {
+            insertAt = queueEntries.size();
+            queueEntries.addAll(entries);
+        }
         queueAdapter.notifyDataSetChanged();
-        scrollTo(queueList, queueEntries.size() - 1);
+        // Scroll so the last newly-added track (and the anchor line just below it) is visible.
+        scrollTo(queueList, insertAt + entries.size() - 1);
         updateQueueHint();
         persistQueue();
         ensureQueueTagsCachedAsync();
@@ -1997,6 +2021,10 @@ public class FileBrowserQueueActivity extends Activity {
         if (position < 0 || position >= queueEntries.size()) return false;
         if (position == currentPlayingQueueIndex && isPlaybackActiveOrFading()) {
             return false;
+        }
+        if (anchorEntryId > 0 && queueEntries.get(position).id == anchorEntryId) {
+            anchorEntryId = 0;
+            persistAnchor();
         }
         queueEntries.remove(position);
         boolean playbackActive = isPlaybackActiveOrFading();
@@ -2021,6 +2049,36 @@ public class FileBrowserQueueActivity extends Activity {
             syncServicePendingQueue();
         }
         return true;
+    }
+
+    // -- insert anchor -------------------------------------------------------
+
+    /** Index of the insert anchor in queueEntries, or -1 if none / not present. */
+    private int anchorIndex() {
+        if (anchorEntryId <= 0) return -1;
+        for (int i = 0; i < queueEntries.size(); i++) {
+            if (queueEntries.get(i).id == anchorEntryId) return i;
+        }
+        return -1;
+    }
+
+    private void persistAnchor() {
+        QueueStore.saveAnchor(this, anchorEntryId);
+    }
+
+    /** Sets ({@code entryId > 0}) or clears ({@code 0}) the insert anchor and repaints the queue. */
+    private void setAnchor(int entryId) {
+        anchorEntryId = entryId;
+        persistAnchor();
+        queueAdapter.notifyDataSetChanged();
+    }
+
+    /** Makes the swiped track the insert anchor, or clears it if it already is. */
+    private void toggleAnchor(int position) {
+        if (position < 0 || position >= queueEntries.size()) return;
+        QueueEntry entry = queueEntries.get(position);
+        boolean isAnchor = anchorEntryId > 0 && entry.id == anchorEntryId;
+        setAnchor(isAnchor ? 0 : entry.id);
     }
 
     private void moveQueueItem(int from, int to) {
@@ -2067,6 +2125,8 @@ public class FileBrowserQueueActivity extends Activity {
         for (QueueStore.Entry entry : persisted) {
             queueEntries.add(new QueueEntry(entry.name, entry.uri, entry.id));
         }
+        anchorEntryId = QueueStore.loadAnchor(this);
+        if (anchorIndex() < 0) anchorEntryId = 0;   // drop a stale anchor whose track is gone
         queueAdapter.notifyDataSetChanged();
         updateQueueHint();
         ensureQueueTagsCachedAsync();
@@ -2171,7 +2231,7 @@ public class FileBrowserQueueActivity extends Activity {
                             TextView qHintStart = swipeState.swipingView.findViewById(R.id.swipe_hint_start);
                             if (qHintStart != null) {
                                 if (localQueueShownInRemoteMode) qHintStart.setText(R.string.swipe_hint_send);
-                                else qHintStart.setText("");
+                                else qHintStart.setText(R.string.swipe_hint_anchor);
                             }
                             TextView qHintEnd = swipeState.swipingView.findViewById(R.id.swipe_hint_end);
                             if (qHintEnd != null) qHintEnd.setText(R.string.swipe_hint_remove);
@@ -2255,11 +2315,18 @@ public class FileBrowserQueueActivity extends Activity {
                         swipeState.startPosition = -1;
                         return false;
                     }
-                    if (applySwipeMove(list, swipeState, dx, swipeHorizontalSlop, true, this::removeQueueAt)) {
+                    // Left swipe removes; mirror the change to a connected client (no-op off-host).
+                    SwipeAction removeAction = pos -> {
+                        if (removeQueueAt(pos)) notifyRemoteQueueChanged();
+                    };
+                    if (applySwipeMove(list, swipeState, dx, swipeHorizontalSlop, true, removeAction)) {
                         return true;
                     }
-                    if (localQueueShownInRemoteMode
-                            && applySwipeMove(list, swipeState, dx, swipeHorizontalSlop, false, this::sendQueueEntryToRemote)) {
+                    // Right swipe: send to remote in remote mode, otherwise set/clear the insert anchor.
+                    SwipeAction rightAction = localQueueShownInRemoteMode
+                            ? this::sendQueueEntryToRemote
+                            : pos -> { toggleAnchor(pos); notifyRemoteQueueChanged(); };
+                    if (applySwipeMove(list, swipeState, dx, swipeHorizontalSlop, false, rightAction)) {
                         return true;
                     }
                     return false;
@@ -2282,6 +2349,7 @@ public class FileBrowserQueueActivity extends Activity {
                         if (Service.sIsPlaying && !isStopFadeInProgress()) {
                             syncServicePendingQueue();
                         }
+                        notifyRemoteQueueChanged();
                         return true;
                     }
                     if (swipeState.swiping) suppressItemClick = true;
@@ -2633,6 +2701,11 @@ public class FileBrowserQueueActivity extends Activity {
             dispatchMediaPlayKey();
         }
 
+        // Starting the anchor track clears its anchor status.
+        if (anchorEntryId > 0 && queueEntries.get(position).id == anchorEntryId) {
+            anchorEntryId = 0;
+            persistAnchor();
+        }
         currentPlayingQueueIndex = position;
         currentTrackPositionMs = 0;
         currentTrackDurationMs = 0;
@@ -2682,6 +2755,17 @@ public class FileBrowserQueueActivity extends Activity {
 
     private String playStateKey() {
         return remotePlaybackState() + "|" + currentPlayingEntryId();
+    }
+
+    /**
+     * Tells a connected remote client that this host's queue changed locally (reorder, remove,
+     * anchor) so it re-fetches the queue. The client re-requests with its known-id range, so the
+     * reply is a normal delta — no need to push the full state here. No-op unless we're the host.
+     */
+    private void notifyRemoteQueueChanged() {
+        if (mode == Mode.REMOTE_RECEIVE && btController != null) {
+            btController.sendRaw("{\"type\":\"queue_changed\"}");
+        }
     }
 
     private void handleRemoteSetVolume(JSONObject obj) {
@@ -2923,6 +3007,7 @@ public class FileBrowserQueueActivity extends Activity {
             JSONObject response = new JSONObject();
             response.put("type", "queue_state");
             response.put("current_id", currentPlayingEntryId());
+            response.put("anchor_id", anchorEntryId);
             String state = remotePlaybackState();
             response.put("playback_state", state);
             if ("fading".equals(state)) response.put("fade_duration_ms", fadeDurationMs());
@@ -2963,6 +3048,13 @@ public class FileBrowserQueueActivity extends Activity {
         int id = obj.optInt("id", -1);
         int pos = findQueueIndexById(id);
         if (pos >= 0) removeQueueAt(pos);
+    }
+
+    private void handleRemoteSetAnchor(JSONObject obj) {
+        int id = obj.optInt("id", -1);
+        if (id <= 0 || id == currentPlayingEntryId()) return;
+        if (findQueueIndexById(id) < 0) return;
+        setAnchor(anchorEntryId == id ? 0 : id);   // toggle; also repaints the local queue
     }
 
     private void handleRemotePlayTrack(JSONObject obj) {
@@ -3064,6 +3156,7 @@ public class FileBrowserQueueActivity extends Activity {
             stopPlaybackImmediately();
         }
         queueEntries.clear();
+        anchorEntryId = 0;   // QueueStore.clear() drops the persisted key below
         queueAdapter.notifyDataSetChanged();
         updateQueueHint();
         QueueStore.clear(this);
@@ -3234,7 +3327,7 @@ public class FileBrowserQueueActivity extends Activity {
         try {
             JSONObject obj = new JSONObject(jsonLine);
             if (!"match_result".equals(obj.optString("type"))) return;
-            if (remoteQueueController != null) remoteQueueController.refreshAndScrollToBottom();
+            if (remoteQueueController != null) remoteQueueController.refreshAndScrollToNewTrack();
             int name  = obj.optInt("name",  0);
             int tag   = obj.optInt("tag",   0);
             int fuzzy = obj.optInt("fuzzy", 0);
@@ -4017,6 +4110,7 @@ public class FileBrowserQueueActivity extends Activity {
         final TextView artist;
         final TextView meta;
         final TextView hintStart;
+        final View anchorMarker;
         ViewHolder(View v) {
             content = v.findViewById(R.id.swipe_content);
             icon = v.findViewById(R.id.file_icon);
@@ -4026,6 +4120,7 @@ public class FileBrowserQueueActivity extends Activity {
             artist = v.findViewById(R.id.file_artist);
             meta = v.findViewById(R.id.file_meta);
             hintStart = v.findViewById(R.id.swipe_hint_start);
+            anchorMarker = v.findViewById(R.id.anchor_marker);
         }
     }
 
@@ -4048,6 +4143,7 @@ public class FileBrowserQueueActivity extends Activity {
             }
 
             FileEntry entry = filteredFileEntries.get(position);
+            if (vh.anchorMarker != null) vh.anchorMarker.setVisibility(View.GONE);
             if (vh.hintStart != null) {
                 if (entry.isDirectory()) {
                     vh.hintStart.setText("");
@@ -4130,6 +4226,12 @@ public class FileBrowserQueueActivity extends Activity {
             QueueEntry entry = queueEntries.get(position);
             vh.content.setTranslationX(0);
             convertView.setAlpha(draggingQueueIndex >= 0 && position == draggingQueueIndex ? 0f : 1.0f);
+
+            boolean isAnchor = anchorEntryId > 0 && entry.id == anchorEntryId;
+            if (vh.anchorMarker != null) {
+                vh.anchorMarker.setVisibility(isAnchor ? View.VISIBLE : View.GONE);
+                if (isAnchor) vh.anchorMarker.setBackgroundColor(progressFillColor);
+            }
 
             boolean isCurrentTrack = position == currentPlayingQueueIndex
                     && isPlaybackActiveOrFading();

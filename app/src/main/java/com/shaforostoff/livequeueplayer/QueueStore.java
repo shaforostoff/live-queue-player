@@ -14,6 +14,7 @@ final class QueueStore {
     private static final String PREFS = "live_queue_player";
     static final String KEY_QUEUE = "persisted_queue_v1";
     private static final String KEY_PLAYBACK_OFFSET = "playback_offset";
+    private static final String KEY_ANCHOR_ID = "anchor_entry_id";
     private static final String KEY_NAME = "name";
     private static final String KEY_URI  = "uri";
     private static final String KEY_ID   = "id";
@@ -108,12 +109,29 @@ final class QueueStore {
                       .getInt(KEY_PLAYBACK_OFFSET, 0);
     }
 
+    /** Persists the insert-anchor entry id; {@code anchorEntryId <= 0} clears it. */
+    static void saveAnchor(Context context, int anchorEntryId) {
+        SharedPreferences.Editor edit = context
+                .getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .edit();
+        if (anchorEntryId > 0) edit.putInt(KEY_ANCHOR_ID, anchorEntryId);
+        else edit.remove(KEY_ANCHOR_ID);
+        commit(edit);
+    }
+
+    /** Returns the persisted insert-anchor entry id, or 0 when none is set. */
+    static int loadAnchor(Context context) {
+        return context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                      .getInt(KEY_ANCHOR_ID, 0);
+    }
+
     static void clear(Context context) {
         SharedPreferences.Editor edit = context
                 .getSharedPreferences(PREFS, Context.MODE_PRIVATE)
                 .edit();
         edit.remove(KEY_QUEUE);
         edit.remove(KEY_PLAYBACK_OFFSET);
+        edit.remove(KEY_ANCHOR_ID);
         commit(edit);
     }
 

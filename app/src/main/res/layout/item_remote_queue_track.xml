@@ -10,6 +10,15 @@
     a:paddingStart="16dp"
     a:paddingEnd="16dp">
 
+    <TextView
+      a:id="@+id/swipe_hint_start"
+      a:layout_width="wrap_content"
+      a:layout_height="wrap_content"
+      a:layout_gravity="center_vertical"
+      a:textSize="13sp"
+      a:textColor="?android:attr/textColorPrimary"
+      a:text="@string/swipe_hint_anchor" />
+
     <View
       a:layout_width="0dp"
       a:layout_height="0dp"
@@ -78,5 +87,12 @@
       a:text="&#x2630;" />
 
   </LinearLayout>
+
+  <View
+    a:id="@+id/anchor_marker"
+    a:layout_width="match_parent"
+    a:layout_height="3dp"
+    a:layout_gravity="top"
+    a:visibility="gone" />
 
 </FrameLayout>

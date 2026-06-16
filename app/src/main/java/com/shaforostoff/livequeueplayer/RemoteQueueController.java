@@ -87,9 +87,10 @@ final class RemoteQueueController {
     private final Handler uiHandler = new Handler();
 
     private int     currentId     = -1;
+    private int     anchorId      = 0;     // entry id of the remote insert anchor (0 = none)
     private String  playbackState = "stopped";
     private int     draggingIndex = -1;
-    private boolean scrollToBottomPending;
+    private boolean scrollToNewTrackPending;
     private Runnable fadeEndRunnable;
 
     private PopupWindow volumePopup;
@@ -327,8 +328,8 @@ final class RemoteQueueController {
         }
     }
 
-    void refreshAndScrollToBottom() {
-        scrollToBottomPending = true;
+    void refreshAndScrollToNewTrack() {
+        scrollToNewTrackPending = true;
         requestQueue();
     }
 
@@ -352,6 +353,7 @@ final class RemoteQueueController {
 
     void onQueueStateReceived(JSONObject obj) {
         currentId     = obj.optInt("current_id", -1);
+        anchorId      = obj.optInt("anchor_id", 0);
         playbackState = obj.optString("playback_state", "stopped");
         JSONArray tracks = obj.optJSONArray("tracks");
         queueEntries.clear();
@@ -380,7 +382,7 @@ final class RemoteQueueController {
                 queueEntries.add(entry);
             }
         }
-        applyStateUpdate(obj, scrollToBottomPending, true);
+        applyStateUpdate(obj, scrollToNewTrackPending, true);
     }
 
     void onPlaybackStateReceived(JSONObject obj) {
@@ -397,17 +399,31 @@ final class RemoteQueueController {
         }
     }
 
-    private void applyStateUpdate(JSONObject obj, boolean scrollToBottom, boolean scrollToCurrent) {
+    private void applyStateUpdate(JSONObject obj, boolean scrollToNewTrack, boolean scrollToCurrent) {
         applyFadeTimer(obj, playbackState);
         adapter.notifyDataSetChanged();
         updatePlaybackButtons();
-        if (scrollToBottom && !queueEntries.isEmpty()) {
-            scrollToBottomPending = false;
-            final int last = queueEntries.size() - 1;
-            queueList.post(() -> scrollTo(queueList, last));
+        if (scrollToNewTrack && !queueEntries.isEmpty()) {
+            scrollToNewTrackPending = false;
+            final int target = newTrackScrollTarget();
+            queueList.post(() -> scrollTo(queueList, target));
         } else if (scrollToCurrent) {
             ensureCurrentVisible();
         }
+    }
+
+    /**
+     * Row to scroll to so a just-added track is visible. With an insert anchor set, new tracks
+     * land directly above it, so target the row just above the anchor; otherwise the track was
+     * appended at the end.
+     */
+    private int newTrackScrollTarget() {
+        if (anchorId > 0) {
+            for (int i = 0; i < queueEntries.size(); i++) {
+                if (queueEntries.get(i).id == anchorId) return Math.max(0, i - 1);
+            }
+        }
+        return queueEntries.size() - 1;
     }
 
     private static void scrollTo(ListView list, int position) {
@@ -471,6 +487,20 @@ final class RemoteQueueController {
     private void updatePlaybackButtons() {
         stopButton.setVisibility("playing".equals(playbackState) ? View.VISIBLE : View.GONE);
         playButton.setVisibility("fading".equals(playbackState)  ? View.VISIBLE : View.GONE);
+    }
+
+    /** Optimistically toggles the remote insert anchor on the swiped track and tells the host. */
+    private void toggleAnchorAt(int pos) {
+        TrackEntry entry = queueEntries.get(pos);
+        if (entry.id == currentId) return;   // the playing track can't be an anchor
+        anchorId = (anchorId == entry.id) ? 0 : entry.id;
+        adapter.notifyDataSetChanged();
+        try {
+            JSONObject cmd = new JSONObject();
+            cmd.put("type", "set_anchor");
+            cmd.put("id", entry.id);
+            btController.sendRaw(cmd.toString());
+        } catch (Exception ignored) {}
     }
 
     private void installGestureHandler(ListView list) {
@@ -607,6 +637,20 @@ final class RemoteQueueController {
                         }
                         return true;
                     }
+                    if (dx > 0 && swipeState.swipingView != null) {
+                        swipeState.contentView.setTranslationX(Math.min(dx, swipeState.contentView.getWidth()));
+                        list.getParent().requestDisallowInterceptTouchEvent(true);
+                        if (swipeState.contentView.getWidth() > 0
+                                && Math.abs(dx) >= swipeState.contentView.getWidth() / 2f) {
+                            swipeState.handled = true;
+                            swipeState.resetView();
+                            int pos = swipeState.startPosition;
+                            if (pos >= 0 && pos < queueEntries.size()) {
+                                toggleAnchorAt(pos);
+                            }
+                        }
+                        return true;
+                    }
                     return false;
                 }
 
@@ -655,12 +699,14 @@ final class RemoteQueueController {
         private final LayoutInflater inflater = LayoutInflater.from(activity);
         private final int colorBackground;
         private final int colorCurrent;
+        private final int colorAnchor;
 
         QueueAdapter() {
             TypedValue out = new TypedValue();
             activity.getTheme().resolveAttribute(android.R.attr.colorBackground, out, true);
             colorBackground = out.data;
             colorCurrent    = activity.getColor(R.color.queueProgressBackground);
+            colorAnchor     = activity.getColor(R.color.queueProgressFill);
         }
 
         @Override public int     getCount()         { return queueEntries.size(); }
@@ -679,12 +725,19 @@ final class RemoteQueueController {
             TextView artistView = convertView.findViewById(R.id.file_artist);
             View     metaRow    = convertView.findViewById(R.id.file_meta_row);
             View     content    = convertView.findViewById(R.id.swipe_content);
+            View     anchorMarker = convertView.findViewById(R.id.anchor_marker);
 
             convertView.setAlpha(position == draggingIndex ? 0f : 1f);
             content.setTranslationX(0);
 
             boolean isCurrent = (currentId >= 0 && entry.id == currentId);
             content.setBackgroundColor(isCurrent ? colorCurrent : colorBackground);
+
+            boolean isAnchor = (anchorId > 0 && entry.id == anchorId);
+            if (anchorMarker != null) {
+                anchorMarker.setVisibility(isAnchor ? View.VISIBLE : View.GONE);
+                if (isAnchor) anchorMarker.setBackgroundColor(colorAnchor);
+            }
 
             String displayName = (!entry.title.isEmpty()) ? entry.title : entry.name;
             nameView.setText(displayName);

@@ -283,12 +283,7 @@ public class FileBrowserQueueActivity extends Activity {
 
             refreshQueuePlaybackRows(prevPlayingIndex);
             maybeQueueNextBrowseTrack();
-            if (mode == Mode.REMOTE_RECEIVE && btController != null) {
-                String key = playStateKey();
-                if (!key.equals(lastBroadcastPushedPlayKey)) {
-                    pushPlayState();
-                }
-            }
+            pushPlayStateIfChanged();
         }
     };
     private boolean playbackReceiverRegistered;
@@ -511,6 +506,9 @@ public class FileBrowserQueueActivity extends Activity {
             } else {
                 stopPlaybackWithFadeout();
             }
+            // A local stop/resume must notify a connected client too, just as the remote
+            // stop_playback / resume_playback handlers do (the later broadcast is deduped).
+            if (mode == Mode.REMOTE_RECEIVE) pushPlayState();
         });
 
         browserStopButton = findViewById(R.id.btn_stop_browser);
@@ -2758,6 +2756,19 @@ public class FileBrowserQueueActivity extends Activity {
     }
 
     /**
+     * Pushes the current play state to a connected client, but only when it differs from what we
+     * last pushed. Called from both the playback broadcast and the 1s poll so a stop the host
+     * reaches on its own — e.g. a fade-out finishing — still reaches the client even if the
+     * discrete broadcast is missed. No-op unless we're the remote host.
+     */
+    private void pushPlayStateIfChanged() {
+        if (mode == Mode.REMOTE_RECEIVE && btController != null
+                && !playStateKey().equals(lastBroadcastPushedPlayKey)) {
+            pushPlayState();
+        }
+    }
+
+    /**
      * Tells a connected remote client that this host's queue changed locally (reorder, remove,
      * anchor) so it re-fetches the queue. The client re-requests with its known-id range, so the
      * reply is a normal delta — no need to push the full state here. No-op unless we're the host.
@@ -3864,6 +3875,7 @@ public class FileBrowserQueueActivity extends Activity {
         if (fileAdapter != null && (fileBrowserPreviewingUri != null || Service.sBrowseMode)) fileAdapter.notifyDataSetChanged();
         updateEqButtonVisibility();
         maybeQueueNextBrowseTrack();
+        pushPlayStateIfChanged();
     }
 
     private void setPlaybackOffset(int offset) {

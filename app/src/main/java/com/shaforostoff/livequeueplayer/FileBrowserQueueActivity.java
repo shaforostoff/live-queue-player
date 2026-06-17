@@ -273,14 +273,9 @@ public class FileBrowserQueueActivity extends Activity {
                 if (currentPlayingQueueIndex >= 0 && currentPlayingQueueIndex != prevPlayingIndex) {
                     scrollTo(queueList, currentPlayingQueueIndex);
                 }
-                // Playing the anchor track clears its anchor status.
-                if (currentPlayingQueueIndex >= 0 && anchorEntryId > 0
-                        && queueEntries.get(currentPlayingQueueIndex).id == anchorEntryId) {
-                    anchorEntryId = 0;
-                    persistAnchor();   // refreshQueuePlaybackRows() below repaints the row
-                }
             }
 
+            clearAnchorIfPlaybackReached();
             refreshQueuePlaybackRows(prevPlayingIndex);
             maybeQueueNextBrowseTrack();
             pushPlayStateIfChanged();
@@ -2079,6 +2074,22 @@ public class FileBrowserQueueActivity extends Activity {
         setAnchor(isAnchor ? 0 : entry.id);
     }
 
+    /**
+     * Clears the insert anchor once playback has reached (or moved past) the anchored track —
+     * whether started by a tap or by auto-advance. Inserting above an already-playing track makes
+     * no sense, so the anchor is dropped. Called from every place that updates the playing index
+     * (tap, playback broadcast, and the 1s poll) so auto-advance is covered even if a discrete
+     * broadcast is missed or resolves a step late. Only repaints the row that lost the marker.
+     */
+    private void clearAnchorIfPlaybackReached() {
+        if (anchorEntryId <= 0 || currentPlayingQueueIndex < 0) return;
+        int ai = anchorIndex();
+        if (ai < 0 || currentPlayingQueueIndex < ai) return;
+        anchorEntryId = 0;
+        persistAnchor();
+        rebindQueueRow(ai);
+    }
+
     private void moveQueueItem(int from, int to) {
         if (from == to || from < 0 || to < 0
                 || from >= queueEntries.size() || to >= queueEntries.size()) return;
@@ -2699,14 +2710,11 @@ public class FileBrowserQueueActivity extends Activity {
             dispatchMediaPlayKey();
         }
 
-        // Starting the anchor track clears its anchor status.
-        if (anchorEntryId > 0 && queueEntries.get(position).id == anchorEntryId) {
-            anchorEntryId = 0;
-            persistAnchor();
-        }
         currentPlayingQueueIndex = position;
         currentTrackPositionMs = 0;
         currentTrackDurationMs = 0;
+        // Starting at/after the anchor track clears its anchor status.
+        clearAnchorIfPlaybackReached();
         queueAdapter.notifyDataSetChanged();
     }
 
@@ -3871,6 +3879,7 @@ public class FileBrowserQueueActivity extends Activity {
                 currentPlayingQueueIndex = resolvePlayingQueueIndex(entryId, serviceIndex, serviceUri);
             }
         }
+        clearAnchorIfPlaybackReached();
         refreshQueuePlaybackRows(prevPlayingIndex);
         if (fileAdapter != null && (fileBrowserPreviewingUri != null || Service.sBrowseMode)) fileAdapter.notifyDataSetChanged();
         updateEqButtonVisibility();

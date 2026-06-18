@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@color/ic_launcher_background" />
+    <!-- Zoom knob: larger inset = smaller record (more black rim); smaller inset = bigger (risks
+         side clipping). 18dp fills the visible circle exactly; 20dp leaves a small safe margin. -->
+    <foreground>
+        <inset
+            android:drawable="@drawable/ic_launcher_foreground"
+            android:inset="20dp" />
+    </foreground>
+</adaptive-icon>

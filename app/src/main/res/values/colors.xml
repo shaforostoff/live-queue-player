@@ -10,4 +10,5 @@
   <color name="queueProgressFill">#FFD3D3D3</color>
   <color name="inputBackground">#FFFFFF</color>
   <color name="inputHint">#757575</color>
+  <color name="ic_launcher_background">#000000</color>
 </resources>

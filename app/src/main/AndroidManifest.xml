@@ -3,7 +3,7 @@
           xmlns:tools="http://schemas.android.com/tools"
           package="com.shaforostoff.livequeueplayer"
           a:versionCode="23"
-          a:versionName="1.4.7">
+          a:versionName="1.4.8">
 
   <uses-permission a:name="android.permission.POST_NOTIFICATIONS"/>
   <uses-permission a:name="android.permission.FOREGROUND_SERVICE"/>

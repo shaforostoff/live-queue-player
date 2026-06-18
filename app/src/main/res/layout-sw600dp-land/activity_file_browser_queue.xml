@@ -1,0 +1,172 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Tablet landscape (sw600dp): File Browser on the left half, Play Queue on the right half. -->
+<LinearLayout xmlns:a="http://schemas.android.com/apk/res/android"
+  xmlns:tools="http://schemas.android.com/tools"
+  a:id="@+id/root_container"
+  a:layout_width="match_parent"
+  a:layout_height="match_parent"
+  a:orientation="horizontal"
+  a:fitsSystemWindows="true"
+  a:focusable="true"
+  a:focusableInTouchMode="true"
+  tools:ignore="HardcodedText">
+
+  <!-- Left half: File Browser -->
+  <LinearLayout
+    a:layout_width="0dp"
+    a:layout_height="match_parent"
+    a:layout_weight="1"
+    a:orientation="vertical">
+
+
+    <LinearLayout
+      a:layout_width="match_parent"
+      a:layout_height="wrap_content"
+      a:orientation="horizontal">
+
+      <Button
+        a:id="@+id/btn_open_storage"
+        a:layout_width="wrap_content"
+        a:layout_height="wrap_content"
+        a:layout_margin="4dp"
+        a:text="@string/browse_storage_button"
+        a:textSize="14sp" />
+
+      <Button
+        a:id="@+id/btn_sort_files"
+        a:layout_width="wrap_content"
+        a:layout_height="wrap_content"
+        a:layout_margin="4dp"
+        a:text="@string/sort_button"
+        a:textSize="14sp" />
+
+      <EditText
+        a:id="@+id/file_filter_input"
+        a:layout_width="0dp"
+        a:layout_height="wrap_content"
+        a:layout_margin="4dp"
+        a:layout_weight="1"
+        a:background="@color/inputBackground"
+        a:hint="@string/file_filter_hint"
+        a:importantForAutofill="no"
+        a:maxLines="1"
+        a:textColor="@color/foreground"
+        a:textColorHint="@color/inputHint"
+        a:textSize="14sp" />
+
+      <Button
+        a:id="@+id/btn_stop_browser"
+        a:layout_width="wrap_content"
+        a:layout_height="wrap_content"
+        a:layout_margin="4dp"
+        a:text="@string/stop_browser_button"
+        a:textSize="14sp"
+        a:visibility="gone" />
+    </LinearLayout>
+
+    <ListView
+      a:id="@+id/file_browser_list"
+      a:layout_width="match_parent"
+      a:layout_height="0dp"
+      a:layout_weight="1"
+      a:divider="@color/buttonBackground"
+      a:dividerHeight="1dp" />
+  </LinearLayout>
+
+  <!-- Divider -->
+  <View
+    a:layout_width="3dp"
+    a:layout_height="match_parent"
+    a:background="@color/foreground" />
+
+  <!-- Right half: Play Queue (local) or Remote Queue (in REMOTE_SEND mode) -->
+  <FrameLayout
+    a:id="@+id/queue_container"
+    a:layout_width="0dp"
+    a:layout_height="match_parent"
+    a:layout_weight="1">
+
+    <LinearLayout
+      a:id="@+id/local_queue_panel"
+      a:layout_width="match_parent"
+      a:layout_height="match_parent"
+      a:orientation="vertical">
+
+      <LinearLayout
+        a:layout_width="match_parent"
+        a:layout_height="wrap_content"
+        a:background="@color/buttonBackground"
+        a:orientation="horizontal">
+
+        <TextView
+          a:id="@+id/play_queue_label"
+          a:layout_width="0dp"
+          a:layout_height="wrap_content"
+          a:layout_gravity="center_vertical"
+          a:layout_weight="1"
+          a:padding="6dp"
+          a:text="Play Queue"
+          a:textSize="18sp"
+          a:background="?android:attr/selectableItemBackground"
+          a:clickable="true"
+          a:focusable="true" />
+
+        <ImageButton
+          a:id="@+id/btn_eq"
+          a:layout_width="wrap_content"
+          a:layout_height="wrap_content"
+          a:layout_margin="4dp"
+          a:src="@drawable/ic_equalizer"
+          a:background="?android:attr/selectableItemBackground"
+          a:contentDescription="@string/eq_button" />
+
+        <Button
+          a:id="@+id/btn_clear_queue"
+          a:layout_width="wrap_content"
+          a:layout_height="wrap_content"
+          a:layout_margin="4dp"
+          a:text="@string/clear_button_text"
+          a:textSize="14sp"
+          a:visibility="gone" />
+
+        <Button
+          a:id="@+id/btn_save_queue"
+          a:layout_width="wrap_content"
+          a:layout_height="wrap_content"
+          a:layout_margin="4dp"
+          a:text="@string/save_queue_button"
+          a:textSize="14sp" />
+
+        <Button
+          a:id="@+id/btn_stop_queue"
+          a:layout_width="wrap_content"
+          a:layout_height="wrap_content"
+          a:layout_margin="4dp"
+          a:text="@string/stop_button_text"
+          a:textSize="14sp" />
+      </LinearLayout>
+
+      <TextView
+        a:id="@+id/queue_empty_hint"
+        a:layout_width="match_parent"
+        a:layout_height="wrap_content"
+        a:gravity="center"
+        a:padding="16dp"
+        a:text="@string/queue_hint_normal"
+        a:textSize="14sp"
+        a:visibility="visible" />
+
+      <ListView
+        a:id="@+id/queue_list"
+        a:layout_width="match_parent"
+        a:layout_height="0dp"
+        a:layout_weight="1"
+        a:divider="@color/buttonBackground"
+        a:dividerHeight="1dp"
+        a:listSelector="@android:color/transparent" />
+    </LinearLayout>
+
+    <include layout="@layout/partial_remote_queue" />
+  </FrameLayout>
+
+</LinearLayout>

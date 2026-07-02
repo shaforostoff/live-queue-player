@@ -239,6 +239,17 @@ public class Service extends android.service.media.MediaBrowserService implement
             // branch below can skip it or block on I/O.
             ensureForeground();
             sBrowseMode = intent.getBooleanExtra(EXTRA_BROWSE_MODE, false);
+            // Double-start race guard. playQueueFrom() starts this foreground service AND dispatches
+            // a media-play key (the Android 14+ background-FGS-start workaround). If the media key
+            // wins, it routes to playFromQueueStore(), which loads the already-persisted queue and
+            // sets audioPlayer. This ACTION_SEND_MULTIPLE intent then arrives as a redundant
+            // duplicate — appending its URIs now would double the queue both in memory (replaying
+            // the whole set) and in the store. EXTRA_QUEUE_ALREADY_PERSISTED is set only by
+            // playQueueFrom (never a genuine append), so with a player already live this intent is
+            // always that duplicate: bail before mutating the playlist or the store.
+            if (audioPlayer != null && intent.getBooleanExtra(EXTRA_QUEUE_ALREADY_PERSISTED, false)) {
+                return;
+            }
             int sizeBefore = playlist.size();
             switch (intent.getAction()) {
                 case Intent.ACTION_VIEW -> playlist.generate(intent.getData());

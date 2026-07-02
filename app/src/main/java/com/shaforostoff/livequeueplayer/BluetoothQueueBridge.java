@@ -65,6 +65,9 @@ final class BluetoothQueueBridge {
     private static final String SERVICE_NAME = "LiveQueuePlayerRemoteFill";
     private static final UUID SERVICE_UUID = UUID.fromString("0d58a337-968d-4b4c-a8a2-6c4b04e6a8d5");
     private static final int COMPRESS_THRESHOLD = 1024;
+    // Sanity cap on the length prefix: a desynced/corrupt frame can otherwise read a garbage
+    // length and either try to allocate gigabytes or throw NegativeArraySizeException.
+    private static final int MAX_FRAME_BYTES = 8 * 1024 * 1024;
 
     // The bridge is application-scoped (see App), so it outlives any single activity. The current
     // activity attaches via setListener(); the volatile ref lets read/connect threads swap safely.
@@ -383,6 +386,11 @@ final class BluetoothQueueBridge {
         try (DataInputStream in = new DataInputStream(socket.getInputStream())) {
             while (running || socket.isConnected()) {
                 int length = in.readInt();
+                if (length < 0 || length > MAX_FRAME_BYTES) {
+                    // Corrupt or desynced framing — there's no way to resync this stream, so treat
+                    // it like the connection dying; handleSocketClosed() reconnects if applicable.
+                    throw new IOException("Bad frame length: " + length);
+                }
                 byte[] data = new byte[length];
                 in.readFully(data);
                 // GZIP magic: 0x1F 0x8B

@@ -69,37 +69,75 @@ final class BluetoothQueueBridge {
     private Thread readThread;
     private volatile boolean running;
 
+    private BluetoothAdapter serverAdapter;
+    private volatile boolean wantConnected;
+    private volatile BluetoothDevice lastDevice;
+
     BluetoothQueueBridge(Listener listener) {
         this.listener = listener;
+    }
+
+    /** Delay before the Nth (0-based) retry of a dropped server/client connection. */
+    private static long backoffDelayMs(int attempt) {
+        if (attempt <= 0) return 1000L;
+        if (attempt == 1) return 2000L;
+        return 5000L;
+    }
+
+    private static String safeName(BluetoothDevice device) {
+        String name = device.getName();
+        return name != null ? name : device.getAddress();
     }
 
     @SuppressLint("MissingPermission")
     boolean startServer(BluetoothAdapter adapter) {
         stopServer();
         if (adapter == null) return false;
+        serverAdapter = adapter;
+        if (!openServerSocket()) return false;
+
+        running = true;
+        acceptThread = new Thread(this::acceptLoop, "bt-queue-accept");
+        acceptThread.start();
+        listener.onConnectionStateChanged(false, "Bluetooth server is listening");
+        return true;
+    }
+
+    @SuppressLint("MissingPermission")
+    private boolean openServerSocket() {
         try {
-            serverSocket = adapter.listenUsingRfcommWithServiceRecord(SERVICE_NAME, SERVICE_UUID);
+            serverSocket = serverAdapter.listenUsingRfcommWithServiceRecord(SERVICE_NAME, SERVICE_UUID);
+            return true;
         } catch (Exception e) {
             listener.onConnectionStateChanged(false, "Bluetooth server failed to start");
             return false;
         }
+    }
 
-        running = true;
-        acceptThread = new Thread(() -> {
-            while (running) {
+    /** Keeps listening across transient accept failures instead of giving up permanently. */
+    private void acceptLoop() {
+        int attempt = 0;
+        while (running) {
+            try {
+                BluetoothSocket socket = serverSocket.accept();
+                if (socket == null) continue;
+                attempt = 0;
+                attachSocket(socket, "Client connected");
+            } catch (Exception e) {
+                if (!running) break;
+                closeServerSocket();
+                if (attempt == 0) {
+                    listener.onConnectionStateChanged(false, "Bluetooth server dropped, restarting...");
+                }
                 try {
-                    BluetoothSocket socket = serverSocket.accept();
-                    if (socket == null) continue;
-                    attachSocket(socket, "Client connected");
-                } catch (Exception e) {
-                    if (running) listener.onConnectionStateChanged(false, "Bluetooth server disconnected");
+                    Thread.sleep(backoffDelayMs(attempt++));
+                } catch (InterruptedException ie) {
                     break;
                 }
+                if (!running) break;
+                if (!openServerSocket()) continue; // keep retrying with backoff
             }
-        }, "bt-queue-accept");
-        acceptThread.start();
-        listener.onConnectionStateChanged(false, "Bluetooth server is listening");
-        return true;
+        }
     }
 
     void stopServer() {
@@ -114,30 +152,54 @@ final class BluetoothQueueBridge {
     @SuppressLint("MissingPermission")
     boolean connect(BluetoothDevice device) {
         if (device == null) return false;
-        disconnect();
-        Thread thread = new Thread(() -> {
-            BluetoothSocket socket = null;
-            try {
-                socket = device.createRfcommSocketToServiceRecord(SERVICE_UUID);
-                socket.connect();
-                attachSocket(socket, "Connected to " + device.getName());
-            } catch (Exception e) {
-                if (!Thread.currentThread().isInterrupted()) {
-                    listener.onConnectionStateChanged(false, "Failed to connect to " + device.getName());
-                }
-                closeSocketSilently(socket);
-            } finally {
-                synchronized (socketLock) {
-                    if (connectThread == Thread.currentThread()) connectThread = null;
-                }
-            }
-        }, "bt-queue-connect");
+        wantConnected = true;
+        lastDevice = device;
+        startConnectAttempt();
+        return true;
+    }
+
+    private void startConnectAttempt() {
+        Thread thread = new Thread(this::runConnectLoop, "bt-queue-connect");
         synchronized (socketLock) {
             if (connectThread != null) connectThread.interrupt();
             connectThread = thread;
         }
         thread.start();
-        return true;
+    }
+
+    /** Retries the remembered device with backoff until it connects or reconnection is cancelled. */
+    @SuppressLint("MissingPermission")
+    private void runConnectLoop() {
+        Thread self = Thread.currentThread();
+        try {
+            int attempt = 0;
+            while (wantConnected && !self.isInterrupted()) {
+                BluetoothDevice device = lastDevice;
+                if (device == null) return;
+                BluetoothSocket socket = null;
+                try {
+                    socket = device.createRfcommSocketToServiceRecord(SERVICE_UUID);
+                    socket.connect();
+                    attachSocket(socket, "Connected to " + safeName(device));
+                    return;
+                } catch (Exception e) {
+                    closeSocketSilently(socket);
+                    if (!wantConnected || self.isInterrupted()) return;
+                    if (attempt == 0) {
+                        listener.onConnectionStateChanged(false, "Reconnecting to " + safeName(device) + "...");
+                    }
+                    try {
+                        Thread.sleep(backoffDelayMs(attempt++));
+                    } catch (InterruptedException ie) {
+                        return;
+                    }
+                }
+            }
+        } finally {
+            synchronized (socketLock) {
+                if (connectThread == self) connectThread = null;
+            }
+        }
     }
 
     boolean sendQueueRequests(List<TrackRequest> requests) {
@@ -161,8 +223,7 @@ final class BluetoothQueueBridge {
             }
             return sendBytes(preparePayload(payload.toString()));
         } catch (Exception e) {
-            listener.onConnectionStateChanged(false, "Bluetooth send failed");
-            disconnect();
+            handleSendFailure();
             return false;
         }
     }
@@ -171,10 +232,19 @@ final class BluetoothQueueBridge {
         try {
             return sendBytes(preparePayload(json));
         } catch (Exception e) {
-            listener.onConnectionStateChanged(false, "Bluetooth send failed");
-            disconnect();
+            handleSendFailure();
             return false;
         }
+    }
+
+    /** A write failure means the socket is dead; treat it like the read loop hitting EOF. */
+    private void handleSendFailure() {
+        BluetoothSocket failed;
+        synchronized (socketLock) {
+            failed = connectedSocket;
+        }
+        if (failed != null) handleSocketClosed(failed);
+        else listener.onConnectionStateChanged(false, "Bluetooth send failed");
     }
 
     boolean isConnected() {
@@ -183,7 +253,9 @@ final class BluetoothQueueBridge {
         }
     }
 
+    /** Explicit, user/mode-initiated disconnect — cancels any pending auto-reconnect. */
     void disconnect() {
+        wantConnected = false;
         BluetoothSocket toClose;
         Thread connectToInterrupt;
         Thread readToInterrupt;
@@ -200,6 +272,27 @@ final class BluetoothQueueBridge {
         if (connectToInterrupt != null) connectToInterrupt.interrupt();
         if (readToInterrupt != null) readToInterrupt.interrupt();
         listener.onConnectionStateChanged(false, "Bluetooth disconnected");
+    }
+
+    /**
+     * A socket died on its own (read EOF/error, or a failed write) rather than by user action.
+     * In client mode this auto-reconnects to the remembered device with backoff; in server mode
+     * there's nothing to reconnect to — the accept loop is already listening for the next client.
+     */
+    private void handleSocketClosed(BluetoothSocket socket) {
+        synchronized (socketLock) {
+            if (connectedSocket != socket) return; // already replaced or handled
+            connectedSocket = null;
+            connectedOutput = null;
+            readThread = null;
+        }
+        closeSocketSilently(socket);
+        if (wantConnected && lastDevice != null) {
+            listener.onConnectionStateChanged(false, "Connection lost, reconnecting...");
+            startConnectAttempt();
+        } else {
+            listener.onConnectionStateChanged(false, "Bluetooth disconnected");
+        }
     }
 
     void shutdown() {
@@ -300,10 +393,7 @@ final class BluetoothQueueBridge {
             }
         } catch (Exception ignored) {
         } finally {
-            synchronized (socketLock) {
-                if (connectedSocket != socket) return;
-            }
-            disconnect();
+            handleSocketClosed(socket);
         }
     }
 

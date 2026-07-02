@@ -2117,23 +2117,19 @@ public class FileBrowserQueueActivity extends Activity {
             return;
         }
 
-        Intent clearIntent = new Intent(this, Service.class);
-        clearIntent.putExtra(Launcher.TYPE, Launcher.CLEAR_QUEUE);
-        startService(clearIntent);
-
+        // Replace the service's pending tracks (everything after the current one) in a single
+        // atomic command. Splitting this into a CLEAR then a separate APPEND lets an auto-advance
+        // track-completion callback slip in between the two and stop playback (it would see an
+        // empty pending playlist); SET_PENDING_QUEUE clears and re-appends in one onStart pass.
         int nextIndex = currentPlayingQueueIndex + 1;
-        if (nextIndex >= queueEntries.size()) {
-            return;
-        }
-
-        ArrayList<Uri> pendingUris = new ArrayList<>(queueEntries.size() - nextIndex);
+        ArrayList<Uri> pendingUris = new ArrayList<>(Math.max(0, queueEntries.size() - nextIndex));
         for (int i = nextIndex; i < queueEntries.size(); i++) {
             pendingUris.add(queueEntries.get(i).uri);
         }
-        Intent appendIntent = new Intent(this, Service.class);
-        appendIntent.putExtra(Launcher.TYPE, Launcher.APPEND_QUEUE);
-        appendIntent.putParcelableArrayListExtra(Intent.EXTRA_STREAM, pendingUris);
-        startService(appendIntent);
+        Intent intent = new Intent(this, Service.class);
+        intent.putExtra(Launcher.TYPE, Launcher.SET_PENDING_QUEUE);
+        intent.putParcelableArrayListExtra(Intent.EXTRA_STREAM, pendingUris);
+        startService(intent);
     }
 
     private void restorePersistedQueue() {

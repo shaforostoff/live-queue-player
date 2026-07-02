@@ -218,6 +218,7 @@ public class Service extends android.service.media.MediaBrowserService implement
                     audioPlayer.fadeOutAndStop(AudioOutputRouter.getFadeOutSeconds(this) * 1_000L);
                 }
                 case Launcher.APPEND_QUEUE -> appendQueueFromIntent(intent);
+                case Launcher.SET_PENDING_QUEUE -> setPendingQueue(intent);
                 case Launcher.CLEAR_QUEUE -> clearPendingQueue();
                 case Launcher.CLEAR_PLAYED_QUEUE -> clearPlayedQueue();
                 case Launcher.PLAY_FROM_QUEUE_INDEX ->
@@ -420,6 +421,34 @@ public class Service extends android.service.media.MediaBrowserService implement
             if (item instanceof Uri uri) uriList.add(uri);
         }
         if (!uriList.isEmpty()) playlist.generate(uriList);
+    }
+
+    /**
+     * Atomically replace the pending queue (every track after the currently playing one) with the
+     * URIs carried in {@code intent}'s {@link Intent#EXTRA_STREAM}. Done in a single onStart
+     * invocation — rather than a CLEAR_QUEUE followed by a separate APPEND_QUEUE — so that an
+     * auto-advance PLAYBACK_COMPLETED callback, which is dispatched on this same main-thread
+     * message queue, cannot interleave between the clear and the re-append and observe an empty
+     * pending playlist (which would stop playback mid-set). Called on every queue edit made while
+     * a track is playing, so this window would otherwise be hit constantly over a long session.
+     */
+    private void setPendingQueue(Intent intent) {
+        if (playlistPosition < 0) playlistPosition = 0;
+        // Drop the existing pending tracks, keeping the currently playing one (playlistPosition - 1).
+        while (playlist.size() > playlistPosition) {
+            playlist.remove(playlist.size() - 1);
+        }
+        // Append the replacement pending set in the same invocation.
+        ArrayList<?> stream = intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM);
+        if (stream != null) {
+            ArrayList<Uri> uriList = new ArrayList<>(stream.size());
+            for (Object item : stream) {
+                if (item instanceof Uri uri) uriList.add(uri);
+            }
+            if (!uriList.isEmpty()) playlist.generate(uriList);
+        }
+        sHasPendingTracks = playlistPosition < playlist.size();
+        sendPlaybackStateBroadcast();
     }
 
     /**

@@ -41,6 +41,7 @@ public class Launcher extends Activity {
     public static final byte APPLY_EQ = 11;
     public static final byte CLEAR_PLAYED_QUEUE = 12;
     public static final byte PLAY_FROM_QUEUE_INDEX = 13;
+    public static final byte SET_PENDING_QUEUE = 14;
 
     private Button stopAfterCurrentButton;
     private BroadcastReceiver playbackStateReceiver;

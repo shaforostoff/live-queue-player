@@ -66,7 +66,6 @@ import java.util.Map;
 import java.util.Locale;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -165,7 +164,9 @@ public class FileBrowserQueueActivity extends Activity {
     private int tagReadProgressTotal;
     private final AtomicInteger tagReadProgressDone = new AtomicInteger(0);
     private final AtomicBoolean progressRedrawPending = new AtomicBoolean(false);
-    private final ExecutorService tagReadExecutor = Executors.newFixedThreadPool(4);
+    // App-scoped (see App.getTagReadExecutor): outlives this activity so a scan running past
+    // teardown is never rejected. Not shut down here.
+    private ExecutorService tagReadExecutor;
     private ClipDrawable progressClipDrawable;
 
     // -- queue state --------------------------------------------------------
@@ -339,6 +340,7 @@ public class FileBrowserQueueActivity extends Activity {
                         ? new ParametricLocalEqSink(this)
                         : new LocalEqSink(this)));
         metadataExtractor = ((App) getApplication()).getMetadataExtractor();
+        tagReadExecutor = ((App) getApplication()).getTagReadExecutor();
         storageBrowser = new StorageBrowser(this);
         btController = new BluetoothController(this, new BluetoothController.Callback() {
             @Override
@@ -4001,7 +4003,10 @@ public class FileBrowserQueueActivity extends Activity {
         // only tear the connection down when the activity is genuinely finishing.
         btController.onActivityDestroyed(isChangingConfigurations());
         if (audioPreviewManager != null) audioPreviewManager.stopPreview();
-        tagReadExecutor.shutdownNow();
+        // tagReadExecutor is app-scoped (App.getTagReadExecutor) and intentionally not shut down
+        // here: a scan can still be walking the tree and would hit RejectedExecutionException on its
+        // next submit(), crashing the process. In-flight tasks self-cancel via the fileEntriesVersion
+        // / isDestroyed() guards in their UI callbacks.
         super.onDestroy();
     }
 

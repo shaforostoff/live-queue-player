@@ -36,7 +36,9 @@ class BluetoothController {
     private final Activity activity;
     private final Callback callback;
     private final BluetoothAdapter bluetoothAdapter;
-    private BluetoothQueueBridge bridge;
+    // Owned by App (application-scoped) so the connection survives activity recreation; this
+    // controller is just the per-activity UI/permission facade that attaches to it.
+    private final BluetoothQueueBridge bridge;
     private String targetDeviceAddress;
     private boolean serverMode;
     private BroadcastReceiver bondingReceiver;
@@ -47,6 +49,7 @@ class BluetoothController {
     BluetoothController(Activity activity, Callback callback) {
         this.activity = activity;
         this.callback = callback;
+        this.bridge = ((App) activity.getApplication()).getBluetoothBridge();
         bluetoothAdapter = BluetoothAdapter.getDefaultAdapter();
         targetDeviceAddress = activity.getSharedPreferences(PREFS_BLUETOOTH, Context.MODE_PRIVATE)
                 .getString(KEY_TARGET_DEVICE, null);
@@ -67,52 +70,52 @@ class BluetoothController {
     }
 
     void startRemoteSetup() {
-        if (bridge == null) {
-            bridge = new BluetoothQueueBridge(new BluetoothQueueBridge.Listener() {
-                @Override
-                public void onQueueRequestsReceived(List<BluetoothQueueBridge.TrackRequest> tracks) {
-                    activity.runOnUiThread(() -> {
-                        if (!activity.isDestroyed())
-                            callback.onQueueRequestsReceived(tracks);
-                    });
-                }
+        // Attach this activity to the shared bridge. On recreation (rotation) the previous
+        // activity's listener is replaced here, so the app-scoped bridge never leaks it.
+        bridge.setListener(new BluetoothQueueBridge.Listener() {
+            @Override
+            public void onQueueRequestsReceived(List<BluetoothQueueBridge.TrackRequest> tracks) {
+                activity.runOnUiThread(() -> {
+                    if (!activity.isDestroyed())
+                        callback.onQueueRequestsReceived(tracks);
+                });
+            }
 
-                @Override
-                public void onMatchResultReceived(String jsonLine) {
-                    activity.runOnUiThread(() -> {
-                        if (!activity.isDestroyed())
-                            callback.onMatchResultReceived(jsonLine);
-                    });
-                }
+            @Override
+            public void onMatchResultReceived(String jsonLine) {
+                activity.runOnUiThread(() -> {
+                    if (!activity.isDestroyed())
+                        callback.onMatchResultReceived(jsonLine);
+                });
+            }
 
-                @Override
-                public void onRemoteQueueMessageReceived(String type, JSONObject obj) {
-                    activity.runOnUiThread(() -> {
-                        if (!activity.isDestroyed())
-                            callback.onRemoteQueueMessageReceived(type, obj);
-                    });
-                }
+            @Override
+            public void onRemoteQueueMessageReceived(String type, JSONObject obj) {
+                activity.runOnUiThread(() -> {
+                    if (!activity.isDestroyed())
+                        callback.onRemoteQueueMessageReceived(type, obj);
+                });
+            }
 
-                @Override
-                public void onConnectionStateChanged(boolean connected, String message) {
-                    activity.runOnUiThread(() -> {
-                        if (activity.isDestroyed()) return;
-                        Toast.makeText(activity, message, Toast.LENGTH_SHORT).show();
-                        callback.onConnectionStateChanged(connected);
-                        if (connected && pendingRequests != null) {
-                            List<BluetoothQueueBridge.TrackRequest> toSend = pendingRequests;
-                            pendingRequests = null;
-                            if (bridge.sendQueueRequests(toSend)) {
-                                //String msg = toSend.size() == 1
-                                //        ? "Track request sent"
-                                //        : "Sent " + toSend.size() + " track(s)";
-                                //Toast.makeText(activity, msg, Toast.LENGTH_SHORT).show();
-                            }
+            @Override
+            public void onConnectionStateChanged(boolean connected, String message) {
+                activity.runOnUiThread(() -> {
+                    if (activity.isDestroyed()) return;
+                    Toast.makeText(activity, message, Toast.LENGTH_SHORT).show();
+                    callback.onConnectionStateChanged(connected);
+                    if (connected && pendingRequests != null) {
+                        List<BluetoothQueueBridge.TrackRequest> toSend = pendingRequests;
+                        pendingRequests = null;
+                        if (bridge.sendQueueRequests(toSend)) {
+                            //String msg = toSend.size() == 1
+                            //        ? "Track request sent"
+                            //        : "Sent " + toSend.size() + " track(s)";
+                            //Toast.makeText(activity, msg, Toast.LENGTH_SHORT).show();
                         }
-                    });
-                }
-            });
-        }
+                    }
+                });
+            }
+        });
         ensurePermissions();
     }
 
@@ -120,13 +123,16 @@ class BluetoothController {
         showModeDialog();
     }
 
+    boolean isConnected() {
+        return bridge.isConnected();
+    }
+
     boolean sendRaw(String line) {
-        if (bridge == null) return false;
         return bridge.sendRaw(line);
     }
 
     boolean sendQueueRequests(List<BluetoothQueueBridge.TrackRequest> requests) {
-        if (bridge == null || !bridge.isConnected()) {
+        if (!bridge.isConnected()) {
             pendingRequests = requests;
             startRemoteSetup();
             return false;
@@ -144,12 +150,17 @@ class BluetoothController {
         return sendQueueRequests(list);
     }
 
-    void shutdown() {
+    /**
+     * Called from the activity's onDestroy. On a configuration change (e.g. rotation) the bridge
+     * is left running so the connection survives — we only detach this dying activity as its
+     * listener. On a genuine finish, the bridge is fully torn down.
+     */
+    void onActivityDestroyed(boolean changingConfigurations) {
         dismissDialog();
         unregisterBondingReceiver();
-        if (bridge != null) {
+        bridge.setListener(null);
+        if (!changingConfigurations) {
             bridge.shutdown();
-            bridge = null;
         }
     }
 
@@ -197,15 +208,24 @@ class BluetoothController {
 
     private void applyServerMode() {
         serverMode = true;
-        bridge.disconnect();
-        bridge.startServer(bluetoothAdapter);
+        // If the shared bridge is already listening (e.g. re-attaching after rotation), leave it —
+        // restarting would drop a connected client. Only stand the server up on first setup.
+        if (!bridge.isServerRunning()) {
+            bridge.disconnect();
+            bridge.startServer(bluetoothAdapter);
+        }
         callback.onModeSelected();
     }
 
     private void applyClientMode() {
         serverMode = false;
-        bridge.stopServer();
-        pickServerDevice();
+        // Likewise, skip the device picker / reconnect when the shared bridge is already connected
+        // or reconnecting — the surviving connection just needs the new activity to re-sync (handled
+        // via onModeSelected below).
+        if (!bridge.isClientActive()) {
+            bridge.stopServer();
+            pickServerDevice();
+        }
         callback.onModeSelected();
     }
 
@@ -257,7 +277,7 @@ class BluetoothController {
     }
 
     private void connectToServer(BluetoothDevice device) {
-        if (device == null || bridge == null) return;
+        if (device == null) return;
         targetDeviceAddress = device.getAddress();
         activity.getSharedPreferences(PREFS_BLUETOOTH, Context.MODE_PRIVATE)
                 .edit()

@@ -347,6 +347,14 @@ public class FileBrowserQueueActivity extends Activity {
                 // is kicked off there too; this callback only refreshes UI once the bridge is up.
                 applyPlayButtonModeState();
                 if (fileAdapter != null) fileAdapter.notifyDataSetChanged();
+                // If we re-attached to an already-live connection (e.g. after rotation), the fresh
+                // RemoteQueueController is empty and no new "connected" event will fire — pull the
+                // current queue so the mirror repopulates. On first setup isConnected() is still
+                // false here (connect is async), so this is a no-op until the real connect arrives.
+                if (mode == Mode.REMOTE_SEND && remoteQueueController != null
+                        && btController.isConnected()) {
+                    remoteQueueController.onConnected();
+                }
             }
             @Override
             public void onQueueRequestsReceived(List<BluetoothQueueBridge.TrackRequest> tracks) {
@@ -3993,7 +4001,9 @@ public class FileBrowserQueueActivity extends Activity {
         uiHandler.removeCallbacks(playbackStateSyncRunnable);
         unregisterPlaybackStateReceiver();
         if (remoteQueueController != null) remoteQueueController.shutdown();
-        btController.shutdown();
+        // Preserve the app-scoped Bluetooth bridge across configuration changes (e.g. rotation);
+        // only tear the connection down when the activity is genuinely finishing.
+        btController.onActivityDestroyed(isChangingConfigurations());
         if (audioPreviewManager != null) audioPreviewManager.stopPreview();
         tagReadExecutor.shutdownNow();
         super.onDestroy();

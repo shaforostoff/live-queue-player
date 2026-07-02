@@ -54,11 +54,21 @@ final class BluetoothQueueBridge {
         void onConnectionStateChanged(boolean connected, String message);
     }
 
+    /** Swallows callbacks while no activity is attached (e.g. mid-rotation). */
+    private static final Listener NO_OP = new Listener() {
+        @Override public void onQueueRequestsReceived(List<TrackRequest> tracks) {}
+        @Override public void onMatchResultReceived(String jsonLine) {}
+        @Override public void onRemoteQueueMessageReceived(String type, JSONObject obj) {}
+        @Override public void onConnectionStateChanged(boolean connected, String message) {}
+    };
+
     private static final String SERVICE_NAME = "LiveQueuePlayerRemoteFill";
     private static final UUID SERVICE_UUID = UUID.fromString("0d58a337-968d-4b4c-a8a2-6c4b04e6a8d5");
     private static final int COMPRESS_THRESHOLD = 1024;
 
-    private final Listener listener;
+    // The bridge is application-scoped (see App), so it outlives any single activity. The current
+    // activity attaches via setListener(); the volatile ref lets read/connect threads swap safely.
+    private volatile Listener listener = NO_OP;
     private final Object socketLock = new Object();
 
     private BluetoothServerSocket serverSocket;
@@ -73,8 +83,26 @@ final class BluetoothQueueBridge {
     private volatile boolean wantConnected;
     private volatile BluetoothDevice lastDevice;
 
-    BluetoothQueueBridge(Listener listener) {
-        this.listener = listener;
+    BluetoothQueueBridge() {
+    }
+
+    /**
+     * Attaches the current activity's callback, or {@code null} to detach (falls back to a no-op).
+     * When attaching to an already-live connection, callers can query {@link #isConnected()} to
+     * decide whether to re-sync UI state that was lost with the previous activity instance.
+     */
+    void setListener(Listener listener) {
+        this.listener = (listener != null) ? listener : NO_OP;
+    }
+
+    /** True while the RFCOMM server socket is accepting (host/receiver role). */
+    boolean isServerRunning() {
+        return running;
+    }
+
+    /** True while a client connection is wanted — connected or actively reconnecting (sender role). */
+    boolean isClientActive() {
+        return wantConnected;
     }
 
     /** Delay before the Nth (0-based) retry of a dropped server/client connection. */

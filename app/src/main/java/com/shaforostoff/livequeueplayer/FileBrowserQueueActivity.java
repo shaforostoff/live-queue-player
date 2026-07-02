@@ -1407,7 +1407,14 @@ public class FileBrowserQueueActivity extends Activity {
             tagReadExecutor.submit(() -> {
                 int idx;
                 while ((idx = workQueue.getAndIncrement()) < pendingEntries.size()) {
-                    results[idx] = metadataExtractor.readSortTags(pendingEntries.get(idx).uri);
+                    try {
+                        results[idx] = metadataExtractor.readSortTags(pendingEntries.get(idx).uri);
+                    } catch (Exception ignored) {
+                        // Leave results[idx] null: the completion pass treats a null tag as a failed
+                        // read and resets that entry to UNKNOWN. Falling through the finally below
+                        // keeps the progress/pending counters honest so the batch never stalls in
+                        // LOADING (which would also freeze the sort-button progress bar forever).
+                    }
                     int done = tagReadProgressDone.incrementAndGet();
                     if (done % 8 == 0 && progressRedrawPending.compareAndSet(false, true)) {
                         runOnUiThread(() -> {
@@ -1438,6 +1445,16 @@ public class FileBrowserQueueActivity extends Activity {
                             for (int j = 0; j < pendingEntries.size(); j++) {
                                 MetadataExtractor.TagEntry tag = results[j];
                                 FileEntry e = pendingEntries.get(j);
+                                if (tag == null) {
+                                    // Read threw for this file — reset to UNKNOWN so a later pass
+                                    // (folder revisit / re-sort) can retry it, instead of leaving the
+                                    // row wedged in LOADING and skipped forever.
+                                    e.sortDateState   = TagState.UNKNOWN;
+                                    e.sortGenreState  = TagState.UNKNOWN;
+                                    e.sortArtistState = TagState.UNKNOWN;
+                                    e.sortBpmState    = TagState.UNKNOWN;
+                                    continue;
+                                }
                                 e.sortDate   = tag.date;
                                 e.sortGenre  = tag.genre;
                                 e.sortArtist = tag.artist;
@@ -1950,9 +1967,15 @@ public class FileBrowserQueueActivity extends Activity {
             tagReadExecutor.submit(() -> {
                 int idx;
                 while ((idx = workQueue.getAndIncrement()) < count) {
-                    work.run(idx);
-                    if (pending.decrementAndGet() == 0 && onAllDone != null) {
-                        onAllDone.run();
+                    try {
+                        work.run(idx);
+                    } catch (Exception ignored) {
+                        // A single unreadable file must not kill this worker or strand the pending
+                        // count — the finally still decrements so onAllDone can fire.
+                    } finally {
+                        if (pending.decrementAndGet() == 0 && onAllDone != null) {
+                            onAllDone.run();
+                        }
                     }
                 }
             });
@@ -1978,6 +2001,9 @@ public class FileBrowserQueueActivity extends Activity {
                     for (int j = 0; j < uncached.size(); j++) {
                         QueueEntry e = uncached.get(j);
                         MetadataExtractor.TagEntry tag = results[j];
+                        // Null means the read threw; leave tagsCached false so it retries later
+                        // rather than NPE-ing now that onAllDone always fires (see runParallelTagReads).
+                        if (tag == null) continue;
                         e.title  = tag.title;
                         e.artist = tag.artist;
                         e.date   = tag.date;

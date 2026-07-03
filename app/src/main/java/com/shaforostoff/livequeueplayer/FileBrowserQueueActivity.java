@@ -2161,13 +2161,19 @@ public class FileBrowserQueueActivity extends Activity {
         // track-completion callback slip in between the two and stop playback (it would see an
         // empty pending playlist); SET_PENDING_QUEUE clears and re-appends in one onStart pass.
         int nextIndex = currentPlayingQueueIndex + 1;
-        ArrayList<Uri> pendingUris = new ArrayList<>(Math.max(0, queueEntries.size() - nextIndex));
+        int count = Math.max(0, queueEntries.size() - nextIndex);
+        ArrayList<Uri> pendingUris = new ArrayList<>(count);
+        int[] ids = new int[count];
         for (int i = nextIndex; i < queueEntries.size(); i++) {
-            pendingUris.add(queueEntries.get(i).uri);
+            QueueEntry e = queueEntries.get(i);
+            pendingUris.add(e.uri);
+            ids[i - nextIndex] = e.id;
         }
         Intent intent = new Intent(this, Service.class);
         intent.putExtra(Launcher.TYPE, Launcher.SET_PENDING_QUEUE);
         intent.putParcelableArrayListExtra(Intent.EXTRA_STREAM, pendingUris);
+        // Carry stable ids so an auto-advanced track still resolves to the right queue row by id.
+        intent.putExtra(Service.EXTRA_ENTRY_IDS, ids);
         startService(intent);
     }
 

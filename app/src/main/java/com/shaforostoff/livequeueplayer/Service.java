@@ -267,12 +267,7 @@ public class Service extends android.service.media.MediaBrowserService implement
                     }
                 }
             }
-            int[] entryIds = intent.getIntArrayExtra(EXTRA_ENTRY_IDS);
-            if (entryIds != null) {
-                for (int i = 0; i < entryIds.length && (sizeBefore + i) < playlist.size(); i++) {
-                    playlist.get(sizeBefore + i).queueEntryId = entryIds[i];
-                }
-            }
+            applyEntryIds(sizeBefore, intent.getIntArrayExtra(EXTRA_ENTRY_IDS));
             ArrayList<QueueStore.Entry> newEntries = new ArrayList<>();
             newEntries.ensureCapacity(playlist.size());
             for (int i = sizeBefore; i < playlist.size(); i++) {
@@ -455,6 +450,7 @@ public class Service extends android.service.media.MediaBrowserService implement
             playlist.remove(playlist.size() - 1);
         }
         // Append the replacement pending set in the same invocation.
+        int sizeBefore = playlist.size();
         ArrayList<?> stream = intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM);
         if (stream != null) {
             ArrayList<Uri> uriList = new ArrayList<>(stream.size());
@@ -463,8 +459,22 @@ public class Service extends android.service.media.MediaBrowserService implement
             }
             if (!uriList.isEmpty()) playlist.generate(uriList);
         }
+        // Carry the stable queue-entry ids across so the now-playing row keeps resolving by id
+        // (not the fragile offset+URI heuristic) once one of these pending tracks starts.
+        applyEntryIds(sizeBefore, intent.getIntArrayExtra(EXTRA_ENTRY_IDS));
         sHasPendingTracks = playlistPosition < playlist.size();
         sendPlaybackStateBroadcast();
+    }
+
+    /**
+     * Stamp the freshly-appended playlist entries (those at [{@code sizeBefore}, size)) with the
+     * caller-supplied stable queue-entry ids, positionally. No-op when {@code entryIds} is null.
+     */
+    private void applyEntryIds(int sizeBefore, int[] entryIds) {
+        if (entryIds == null) return;
+        for (int i = 0; i < entryIds.length && (sizeBefore + i) < playlist.size(); i++) {
+            playlist.get(sizeBefore + i).queueEntryId = entryIds[i];
+        }
     }
 
     /**

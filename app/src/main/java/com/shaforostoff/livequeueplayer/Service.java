@@ -24,7 +24,6 @@ import java.util.List;
 public class Service extends android.service.media.MediaBrowserService implements MediaPlayerStateListener {
 
     static final String ACTION_PLAYBACK_STATE = "com.shaforostoff.livequeueplayer.PLAYBACK_STATE";
-    static final String ACTION_PENDING_QUEUE_CLEARED = "com.shaforostoff.livequeueplayer.PENDING_QUEUE_CLEARED";
     static final String EXTRA_CURRENT_INDEX = "current_index";
     static final String EXTRA_IS_PLAYING = "is_playing";
     static final String EXTRA_CURRENT_URI = "current_uri";
@@ -486,8 +485,6 @@ public class Service extends android.service.media.MediaBrowserService implement
         // Update the state of whether there are pending tracks
         sHasPendingTracks = playlistPosition < playlist.size();
         sendPlaybackStateBroadcast();
-        // Notify that pending queue was cleared
-        sendBroadcast(new Intent(ACTION_PENDING_QUEUE_CLEARED));
     }
 
     /**

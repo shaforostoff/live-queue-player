@@ -55,7 +55,6 @@ public class Service extends android.service.media.MediaBrowserService implement
     private HWListener hwListener;
     private Notifications notifications;
     private AudioPlayer audioPlayer;
-    private SilenceStreamer silenceStreamer;
     // Strong ref required: SharedPreferences holds change listeners weakly. Fires the
     // MediaBrowser/Android Auto queue-list refresh whenever the persisted queue changes.
     private SharedPreferences.OnSharedPreferenceChangeListener queueChangeListener;
@@ -358,7 +357,6 @@ public class Service extends android.service.media.MediaBrowserService implement
             return;
         }
         SilenceStreamer.ensure(this);
-        silenceStreamer = SilenceStreamer.current;
     }
 
     public void playOrDestroy() {
@@ -633,7 +631,6 @@ public class Service extends android.service.media.MediaBrowserService implement
         }
         // Leave SilenceStreamer running (including any active preview) —
         // the Activity owns its lifetime and releases it in onStop().
-        silenceStreamer = null;
         sFadeOutInProgress = false;
         notifyPlaybackState(false, -1, null);
         onMediaPlayerReset();

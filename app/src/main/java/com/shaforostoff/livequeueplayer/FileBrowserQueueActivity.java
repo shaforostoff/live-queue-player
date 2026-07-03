@@ -1367,10 +1367,13 @@ public class FileBrowserQueueActivity extends Activity {
                 continue;
             }
 
+            // Seed a provisional sort date from the filename so this batch orders correctly right
+            // away (cacheApplied triggers the re-sort below); the real tag read still runs and
+            // overwrites sortDate when it finishes. The state stays LOADING — set unconditionally
+            // just below — so don't mark it RESOLVED here (that assignment was dead anyway).
             String filenameYear = MetadataExtractor.extractYearFromFileName(entry.name);
             if (filenameYear.length() > 0) {
                 entry.sortDate = filenameYear;
-                entry.sortDateState = TagState.RESOLVED;
                 cacheApplied = true;
             }
             entry.sortDateState   = TagState.LOADING;

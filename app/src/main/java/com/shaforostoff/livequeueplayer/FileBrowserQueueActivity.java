@@ -3359,6 +3359,9 @@ public class FileBrowserQueueActivity extends Activity {
             final String fTagName   = tagCount   == 1 ? tagMatchedTitle   : null;
             final String fFuzzyName = fuzzyCount == 1 ? fuzzyMatchedTitle : null;
             runOnUiThread(() -> {
+                // The matching walk ran on a background thread; the activity may have been destroyed
+                // meanwhile. Bail before touching queue state / views (as addPlaylistToQueue does).
+                if (isDestroyed()) return;
                 if (!toAdd.isEmpty()) {
                     addToQueue(toAdd);
                     Toast.makeText(this, getString(R.string.added_tracks_from_remote, toAdd.size()), Toast.LENGTH_SHORT).show();

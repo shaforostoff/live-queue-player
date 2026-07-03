@@ -1506,17 +1506,28 @@ public class FileBrowserQueueActivity extends Activity {
         }
     }
 
-    private void applyProgressBackground(View target, float progress, int baseColor, int fillColor) {
-        GradientDrawable base = new GradientDrawable();
-        base.setColor(baseColor);
-
-        GradientDrawable progressFill = new GradientDrawable();
-        progressFill.setColor(fillColor);
-        ClipDrawable clippedProgress = new ClipDrawable(progressFill, Gravity.START, ClipDrawable.HORIZONTAL);
-        clippedProgress.setLevel((int) (Math.max(0f, Math.min(1f, progress)) * PROGRESS_LEVEL_MAX));
-
-        LayerDrawable layer = new LayerDrawable(new Drawable[]{base, clippedProgress});
-        target.setBackground(layer);
+    /**
+     * Paints {@code vh.content} with a track/fill progress background. The drawable stack (base +
+     * clipped fill) is built once per recycled ViewHolder and cached; subsequent calls — including
+     * the once-a-second refresh of the playing row — only update the clip level, so a scrolling or
+     * ticking list allocates no drawables. Base/fill colours are the theme constants resolved in
+     * onCreate, so they never change and don't need to be re-applied.
+     */
+    private void applyProgressBackground(ViewHolder vh, float progress) {
+        if (vh.progressLayer == null) {
+            GradientDrawable base = new GradientDrawable();
+            base.setColor(progressTrackColor);
+            GradientDrawable fill = new GradientDrawable();
+            fill.setColor(progressFillColor);
+            vh.progressClip = new ClipDrawable(fill, Gravity.START, ClipDrawable.HORIZONTAL);
+            vh.progressLayer = new LayerDrawable(new Drawable[]{base, vh.progressClip});
+        }
+        vh.progressClip.setLevel((int) (Math.max(0f, Math.min(1f, progress)) * PROGRESS_LEVEL_MAX));
+        // Re-attach only when the row was previously painted a solid colour (setBackgroundColor
+        // swaps in a ColorDrawable); a no-op once the layer is already the background.
+        if (vh.content.getBackground() != vh.progressLayer) {
+            vh.content.setBackground(vh.progressLayer);
+        }
     }
 
     private void showLyricsOverlayForQueueEntry(QueueEntry entry) {
@@ -4169,6 +4180,11 @@ public class FileBrowserQueueActivity extends Activity {
         final TextView meta;
         final TextView hintStart;
         final View anchorMarker;
+        // Lazily-built once per recycled row, then reused: the progress fill is updated with a
+        // cheap setLevel() every second instead of allocating a fresh LayerDrawable/ClipDrawable
+        // /GradientDrawable set on each bind. See applyProgressBackground(ViewHolder, float).
+        ClipDrawable progressClip;
+        LayerDrawable progressLayer;
         ViewHolder(View v) {
             content = v.findViewById(R.id.swipe_content);
             icon = v.findViewById(R.id.file_icon);
@@ -4244,7 +4260,7 @@ public class FileBrowserQueueActivity extends Activity {
                     progress = Math.min(1f, Math.max(0f,
                             currentTrackPositionMs / (float) currentTrackDurationMs));
                 }
-                applyProgressBackground(vh.content, progress, progressTrackColor, progressFillColor);
+                applyProgressBackground(vh, progress);
             } else if (isPreviewEntry) {
                 float progress = 0f;
                 if (hasProgress) {
@@ -4254,7 +4270,7 @@ public class FileBrowserQueueActivity extends Activity {
                                 SilenceStreamer.previewPositionMs / (float) dur));
                     }
                 }
-                applyProgressBackground(vh.content, progress, progressTrackColor, progressFillColor);
+                applyProgressBackground(vh, progress);
             } else {
                 vh.content.setBackgroundColor(themeBackgroundColor);
             }
@@ -4299,7 +4315,7 @@ public class FileBrowserQueueActivity extends Activity {
                     progress = Math.min(1f,
                             Math.max(0f, currentTrackPositionMs / (float) currentTrackDurationMs));
                 }
-                applyProgressBackground(vh.content, progress, progressTrackColor, progressFillColor);
+                applyProgressBackground(vh, progress);
             } else {
                 vh.content.setBackgroundColor(themeBackgroundColor);
             }

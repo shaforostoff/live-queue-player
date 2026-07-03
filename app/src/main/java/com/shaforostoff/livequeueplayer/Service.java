@@ -504,6 +504,10 @@ public class Service extends android.service.media.MediaBrowserService implement
         }
         playlistPosition -= removeCount;
         if (playlistPosition < 0) playlistPosition = 0;
+        // Removing entries renumbers every playlist index, so a retry marker captured against the
+        // old numbering would now point at the wrong track (denying it a legitimate retry, or
+        // granting a spurious one). Clear it — a fresh retry budget is the safe default here.
+        retriedAtPosition = -1;
         // Current track is now index 0; rebroadcast so listeners (activity) realign.
         notifyPlaybackState(sIsPlaying, sCurrentIndex - removeCount, sCurrentUri);
     }

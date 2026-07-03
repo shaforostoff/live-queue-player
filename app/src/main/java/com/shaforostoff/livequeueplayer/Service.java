@@ -721,6 +721,11 @@ public class Service extends android.service.media.MediaBrowserService implement
 
     private void sendPlaybackStateBroadcast() {
         Intent intent = new Intent(ACTION_PLAYBACK_STATE);
+        // Confine to our own package: every receiver is in-app (the activity and Launcher), and an
+        // implicit broadcast would otherwise let other apps read the current-track URI or inject a
+        // spoofed state to desync our UI. Receivers already register as NOT_EXPORTED on API 33+;
+        // this closes the same hole on older releases.
+        intent.setPackage(getPackageName());
         intent.putExtra(EXTRA_IS_PLAYING, sIsPlaying);
         intent.putExtra(EXTRA_CURRENT_INDEX, sCurrentIndex);
         intent.putExtra(EXTRA_CURRENT_URI, sCurrentUri);

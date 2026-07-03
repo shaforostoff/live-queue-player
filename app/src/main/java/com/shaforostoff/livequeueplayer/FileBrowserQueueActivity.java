@@ -1704,11 +1704,11 @@ public class FileBrowserQueueActivity extends Activity {
                 Uri uri = resolvePlaylistTargetUri(playlistEntry, line);
                 if (uri == null) {
                     if (missingNamesToToast.size() < 2) {
-                        missingNamesToToast.add(getDisplayNameForPlaylistItem(line, null));
+                        missingNamesToToast.add(getDisplayNameForPlaylistItem(line));
                     }
                     missingCount++;
                 } else {
-                    resolvedEntries.add(new QueueEntry(getDisplayNameForPlaylistItem(line, uri), uri));
+                    resolvedEntries.add(new QueueEntry(getDisplayNameForPlaylistItem(line), uri));
                 }
             }
 
@@ -1947,7 +1947,7 @@ public class FileBrowserQueueActivity extends Activity {
         return result;
     }
 
-    private String getDisplayNameForPlaylistItem(String playlistValue, Uri resolvedUri) {
+    private String getDisplayNameForPlaylistItem(String playlistValue) {
         String normalized = playlistValue.replace('\\', '/');
         int slash = normalized.lastIndexOf('/');
         if (slash >= 0 && slash + 1 < normalized.length()) {
@@ -2642,13 +2642,13 @@ public class FileBrowserQueueActivity extends Activity {
                 for (int i = 0; i < lines.size(); i++) {
                     Uri uri = uris.get(i);
                     if (uri != null)
-                        tracks.add(new FileEntry(uri, getDisplayNameForPlaylistItem(lines.get(i), uri), false));
+                        tracks.add(new FileEntry(uri, getDisplayNameForPlaylistItem(lines.get(i)), false));
                 }
             } else {
                 for (String line : lines) {
                     Uri uri = resolvePlaylistTargetUri(playlistEntry, line);
                     if (uri != null)
-                        tracks.add(new FileEntry(uri, getDisplayNameForPlaylistItem(line, uri), false));
+                        tracks.add(new FileEntry(uri, getDisplayNameForPlaylistItem(line), false));
                 }
             }
             runOnUiThread(() -> {

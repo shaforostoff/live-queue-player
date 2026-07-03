@@ -125,6 +125,16 @@ class AudioPlayer extends Thread implements MediaPlayer.OnCompletionListener, Me
       // prepare() has returned, so the native player is now in a valid state — transport commands
       // may touch it from here on. Anything that arrived earlier was deferred (see setState).
       prepared = true;
+      // Report the now-cheaply-available duration back to the service, replacing its old blocking
+      // MediaMetadataRetriever read on the main thread at every transition. getDuration() returns
+      // -1 for unknown/streamed sources; the service clamps that to 0 (its existing "unknown" value).
+      int durationMs;
+      try {
+        durationMs = mediaPlayer.getDuration();
+      } catch (IllegalStateException e) {
+        durationMs = 0;
+      }
+      service.onTrackDurationResolved(this, durationMs);
       // Request audio focus with GAIN priority for main playback
       // This ensures preview (with TRANSIENT_MAY_DUCK) won't interrupt us
       requestAudioFocus();

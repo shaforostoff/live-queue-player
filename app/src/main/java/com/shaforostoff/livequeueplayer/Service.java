@@ -5,7 +5,6 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.ServiceInfo;
 import android.media.MediaDescription;
-import android.media.MediaMetadataRetriever;
 import android.media.browse.MediaBrowser;
 import android.net.Uri;
 import android.os.Build;
@@ -68,6 +67,9 @@ public class Service extends android.service.media.MediaBrowserService implement
     private ServicePlaylist playlist;
     /** Index of the next entry to play in {@link #playlist}. */
     private int playlistPosition = 0;
+    /** Title of the current track, retained so {@link #onTrackDurationResolved} can re-publish the
+     *  media-session metadata with the duration once AudioPlayer reports it. */
+    private String currentTrackTitle = "";
     // Tracks which playlist index has already been retried once, to avoid infinite retry loops.
     private volatile int retriedAtPosition = -1;
     private int progressAnchorPositionMs = 0;
@@ -336,8 +338,11 @@ public class Service extends android.service.media.MediaBrowserService implement
                 startForeground(Notifications.NOTIFICATION_ID, notifications.notification);
 
             initializeProgressForTrack(entry.location);
+            currentTrackTitle = entry.title != null ? entry.title : "";
             sCurrentEntryId = entry.queueEntryId;
-            hwListener.setTrackMetadata(entry.title, sPlaybackDurationMs);
+            // Duration is unknown until AudioPlayer finishes prepare() on its own thread; publish
+            // the title now with a placeholder 0 and let onTrackDurationResolved() fill it in.
+            hwListener.setTrackMetadata(currentTrackTitle, sPlaybackDurationMs);
             notifyPlaybackState(true, currentIndex, entry.location);
 
         } catch (IllegalArgumentException e) {
@@ -656,9 +661,31 @@ public class Service extends android.service.media.MediaBrowserService implement
 
     private void initializeProgressForTrack(Uri trackUri) {
         sPlaybackPositionMs = 0;
-        sPlaybackDurationMs = loadTrackDurationMs(trackUri);
+        // Duration starts unknown (0) and is filled in by onTrackDurationResolved() once AudioPlayer
+        // finishes prepare() on its own thread. It used to be read here with a blocking
+        // MediaMetadataRetriever on the (often content://) URI — ~1s per SAF track — which ran inline
+        // on the main thread at every transition, widening the inter-track gap and risking an ANR.
+        sPlaybackDurationMs = 0;
         progressAnchorPositionMs = 0;
         progressAnchorElapsedMs = SystemClock.elapsedRealtime();
+    }
+
+    /**
+     * Reported by {@link AudioPlayer} on its own thread once prepare() completes and the native
+     * duration is cheaply available via {@code MediaPlayer.getDuration()}. Posted to the main thread
+     * so the progress fields, media-session metadata and broadcast are all touched there, matching
+     * where the rest of the playback state is mutated. The {@code reporter} identity check drops a
+     * stale report from a superseded player (e.g. the user skipped while a slow prepare was still
+     * running), so a late duration can never clobber the track that replaced it.
+     */
+    void onTrackDurationResolved(AudioPlayer reporter, int durationMs) {
+        progressHandler.post(() -> {
+            if (reporter != audioPlayer) return;
+            sPlaybackDurationMs = Math.max(0, durationMs);
+            hwListener.setTrackMetadata(currentTrackTitle, sPlaybackDurationMs);
+            refreshProgressSnapshot();
+            sendPlaybackStateBroadcast();
+        });
     }
 
     private void refreshProgressSnapshot() {
@@ -727,33 +754,6 @@ public class Service extends android.service.media.MediaBrowserService implement
 
     private void stopProgressTicks() {
         progressHandler.removeCallbacks(progressTickRunnable);
-    }
-
-    private int loadTrackDurationMs(Uri uri) {
-        if (uri == null) {
-            return 0;
-        }
-
-        MediaMetadataRetriever retriever = new MediaMetadataRetriever();
-        try {
-            if (AiffConverter.isAiff(this, uri)) {
-                retriever.setDataSource(new AiffMediaDataSource(this, uri));
-            } else {
-                retriever.setDataSource(this, uri);
-            }
-            String durationValue = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION);
-            if (durationValue == null) {
-                return 0;
-            }
-            return Math.max(0, Integer.parseInt(durationValue));
-        } catch (Exception ignored) {
-            return 0;
-        } finally {
-            try {
-                retriever.release();
-            } catch (IOException | RuntimeException ignored) {
-            }
-        }
     }
 }
 

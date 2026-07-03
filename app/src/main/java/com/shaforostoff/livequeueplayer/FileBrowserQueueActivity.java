@@ -3945,6 +3945,11 @@ public class FileBrowserQueueActivity extends Activity {
         if (Service.sBrowseMode) queueRemainingBrowseTracks();
         persistQueue();
         unregisterPlaybackStateReceiver();
+        // Stop the 1s UI-sync poll while backgrounded — nothing is visible to update, and onStart
+        // re-syncs once and reschedules it on return. Symmetric with the receiver above; without
+        // this it kept ticking (and waking the main thread) for the whole time the activity was
+        // stopped, e.g. a full DJ set spent in another app.
+        uiHandler.removeCallbacks(playbackStateSyncRunnable);
         resetFileBrowserPreview();
         if (Service.sCurrentUri == null) {
             SilenceStreamer.fadeOutAndRelease();

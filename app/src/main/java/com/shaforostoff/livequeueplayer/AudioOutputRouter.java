@@ -32,18 +32,26 @@ final class AudioOutputRouter {
      */
     static volatile boolean sAudioPreviewAvailableAtTrackStart;
 
+    /** Cached KEY_OUTPUT value; the pref is only ever written via setPreferredOutput (same process). */
+    private static volatile int sCachedPreferredOutput = Integer.MIN_VALUE;
+
     private AudioOutputRouter() {
     }
 
     static int getPreferredOutput(Context context) {
+        int cached = sCachedPreferredOutput;
+        if (cached != Integer.MIN_VALUE) return cached;
         SharedPreferences prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
-        return prefs.getInt(KEY_OUTPUT, OUTPUT_DEFAULT);
+        int value = prefs.getInt(KEY_OUTPUT, OUTPUT_DEFAULT);
+        sCachedPreferredOutput = value;
+        return value;
     }
 
     static void setPreferredOutput(Context context, int value) {
         SharedPreferences prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
         var edit = prefs.edit().putInt(KEY_OUTPUT, value);
         edit.apply();
+        sCachedPreferredOutput = value;
     }
 
     static int getFadeOutSeconds(Context context) {

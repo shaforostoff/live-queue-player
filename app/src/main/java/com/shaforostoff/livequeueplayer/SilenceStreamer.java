@@ -97,6 +97,20 @@ final class SilenceStreamer {
             final byte[] monoBuf = new byte[bufSize / 2];
             boolean died = false;
             while (running) {
+                if (pendingFlush) {
+                    pendingFlush = false;
+                    try {
+                        trackRef.pause();
+                        trackRef.flush();
+                        trackRef.play();
+                    } catch (Exception e) {
+                        // If play() failed after pause()/flush() the track is stuck paused; the next
+                        // blocking write() would never return and interrupt() can't unblock it. Treat
+                        // the track as dead and tear down instead of wedging the thread forever.
+                        died = true;
+                        break;
+                    }
+                }
                 PcmDecoder dec = previewDecoder.get();
                 if (dec != null) {
                     int n;
@@ -120,20 +134,6 @@ final class SilenceStreamer {
                         continue;
                     } else {
                         continue; // codec pipeline momentarily dry; don't inject silence
-                    }
-                }
-                if (pendingFlush) {
-                    pendingFlush = false;
-                    try {
-                        trackRef.pause();
-                        trackRef.flush();
-                        trackRef.play();
-                    } catch (Exception e) {
-                        // If play() failed after pause()/flush() the track is stuck paused; the next
-                        // blocking write() would never return and interrupt() can't unblock it. Treat
-                        // the track as dead and tear down instead of wedging the thread forever.
-                        died = true;
-                        break;
                     }
                 }
                 if (trackRef.write(silence, 0, silence.length) < 0) { died = true; break; }

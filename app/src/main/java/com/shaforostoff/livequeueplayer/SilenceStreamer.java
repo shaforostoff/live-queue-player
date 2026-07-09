@@ -2,8 +2,10 @@ package com.shaforostoff.livequeueplayer;
 
 import android.content.Context;
 import android.media.AudioAttributes;
+import android.media.AudioDeviceCallback;
 import android.media.AudioDeviceInfo;
 import android.media.AudioFormat;
+import android.media.AudioManager;
 import android.media.AudioTrack;
 import android.net.Uri;
 import android.os.Build;
@@ -18,6 +20,15 @@ final class SilenceStreamer {
 
     /** Preferred output value in effect when the current instance was started. */
     static volatile int sPreferredOutputAtStart = AudioOutputRouter.OUTPUT_DEFAULT;
+
+    /** Identity of the resolved secondary output when the current instance started (see resolvedSecondaryId). */
+    static volatile int sSecondaryIdAtStart = -1;
+
+    /** Application context captured by ensure(), used by the device-topology callback. */
+    private static volatile Context sAppContext;
+
+    /** Registered while previews are wanted; fires when outputs are plugged/unplugged. */
+    private static AudioDeviceCallback sDeviceCallback;
 
     static volatile long previewPositionMs;
     static volatile long previewDurationMs;
@@ -90,6 +101,7 @@ final class SilenceStreamer {
         running = true;
         isActive = true;
         current = this;
+        sSecondaryIdAtStart = resolvedSecondaryId();
 
         thread = new Thread(() -> {
             final byte[] silence = new byte[bufSize];
@@ -163,6 +175,7 @@ final class SilenceStreamer {
         fadingOut = false;
         running = false;
         isActive = false;
+        unregisterDeviceCallback();
         if (thread != null) { thread.interrupt(); thread = null; }
         // audioTrack released by streaming thread on exit
     }
@@ -192,6 +205,7 @@ final class SilenceStreamer {
         isActive = false;
         fadingOut = true;
         running = false;
+        unregisterDeviceCallback();
         thread = null; // detach; streaming thread cleans up itself
     }
 
@@ -201,10 +215,14 @@ final class SilenceStreamer {
      * Safe to call when a Service-owned instance is already active — it is a no-op then.
      */
     static void ensure(Context context) {
+        sAppContext = context.getApplicationContext();
         if (isActive) return;
         AudioOutputRouter.resolve(context);
         sPreferredOutputAtStart = AudioOutputRouter.getPreferredOutput(context);
         new SilenceStreamer().start();
+        // Listen for outputs appearing/disappearing so we can retarget or (re)start — even when
+        // start() bailed just now because no secondary output was connected yet.
+        registerDeviceCallback();
     }
 
     static void reinitIfOutputChanged(Context context) {
@@ -212,6 +230,61 @@ final class SilenceStreamer {
         if (AudioOutputRouter.getPreferredOutput(context) == sPreferredOutputAtStart) return;
         release();
         ensure(context);
+    }
+
+    /** Stable identity of the resolved secondary output, or -1 (none) / -2 (default-routed BT). */
+    private static int resolvedSecondaryId() {
+        AudioDeviceInfo secondary = AudioOutputRouter.sResolvedSecondary;
+        if (secondary != null) return secondary.getId();
+        return AudioOutputRouter.sResolvedSecondaryIsDefault ? -2 : -1;
+    }
+
+    private static void registerDeviceCallback() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) return;
+        if (sDeviceCallback != null) return;
+        Context ctx = sAppContext;
+        if (ctx == null) return;
+        AudioManager am = (AudioManager) ctx.getSystemService(Context.AUDIO_SERVICE);
+        if (am == null) return;
+        sDeviceCallback = new AudioDeviceCallback() {
+            @Override public void onAudioDevicesAdded(AudioDeviceInfo[] addedDevices) {
+                onDeviceTopologyChanged();
+            }
+            @Override public void onAudioDevicesRemoved(AudioDeviceInfo[] removedDevices) {
+                onDeviceTopologyChanged();
+            }
+        };
+        // null handler -> delivered on the main thread, same as the other callers of ensure/release.
+        am.registerAudioDeviceCallback(sDeviceCallback, null);
+    }
+
+    private static void unregisterDeviceCallback() {
+        Context ctx = sAppContext;
+        AudioDeviceCallback cb = sDeviceCallback;
+        if (ctx == null || cb == null) return;
+        AudioManager am = (AudioManager) ctx.getSystemService(Context.AUDIO_SERVICE);
+        if (am != null) am.unregisterAudioDeviceCallback(cb);
+        sDeviceCallback = null;
+    }
+
+    /**
+     * An output was plugged or unplugged. Re-resolve routing and, if the secondary output we pinned
+     * to has changed identity, restart the streamer on the new one. If the streamer isn't running
+     * (never started for lack of a second output, or died when its device vanished), (re)start it.
+     * Runs on the main thread.
+     */
+    private static void onDeviceTopologyChanged() {
+        Context ctx = sAppContext;
+        if (ctx == null) return;
+        AudioOutputRouter.resolve(ctx);
+        if (!isActive) {
+            ensure(ctx);
+            return;
+        }
+        if (resolvedSecondaryId() != sSecondaryIdAtStart) {
+            release();
+            ensure(ctx);
+        }
     }
 
     /** Stop the current instance immediately, if any. Counterpart to ensure(). */

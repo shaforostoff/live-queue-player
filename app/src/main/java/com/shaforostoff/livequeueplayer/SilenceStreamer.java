@@ -95,6 +95,7 @@ final class SilenceStreamer {
             final byte[] silence = new byte[bufSize];
             final byte[] decBuf = new byte[bufSize];
             final byte[] monoBuf = new byte[bufSize / 2];
+            boolean died = false;
             while (running) {
                 PcmDecoder dec = previewDecoder.get();
                 if (dec != null) {
@@ -115,7 +116,7 @@ final class SilenceStreamer {
                         // doStartPreview may have already set the new decoder's rate — don't clobber it.
                     } else if (n > 0) {
                         previewPositionMs = dec.positionUs / 1000;
-                        if (trackRef.write(decBuf, 0, n) < 0) break;
+                        if (trackRef.write(decBuf, 0, n) < 0) { died = true; break; }
                         continue;
                     } else {
                         continue; // codec pipeline momentarily dry; don't inject silence
@@ -129,7 +130,7 @@ final class SilenceStreamer {
                         trackRef.play();
                     } catch (Exception ignored) {}
                 }
-                if (trackRef.write(silence, 0, silence.length) < 0) break;
+                if (trackRef.write(silence, 0, silence.length) < 0) { died = true; break; }
             }
             if (fadingOut) {
                 final int chunkSize = bufSize / 8; // ~10ms per write paces the loop naturally
@@ -143,6 +144,7 @@ final class SilenceStreamer {
             audioTrack = null;
             try { trackRef.stop(); } catch (IllegalStateException ignored) {}
             trackRef.release();
+            if (died) onStreamerDied();
         }, "SilenceStreamer");
         thread.setDaemon(true);
         thread.start();
@@ -157,6 +159,24 @@ final class SilenceStreamer {
         isActive = false;
         if (thread != null) { thread.interrupt(); thread = null; }
         // audioTrack released by streaming thread on exit
+    }
+
+    /**
+     * The streaming thread exited because the AudioTrack write failed — typically the secondary
+     * output device vanished (ERROR_DEAD_OBJECT). Reset the lifecycle statics so a later
+     * {@link #ensure(Context)} (e.g. from the device-topology callback or the activity's sync tick)
+     * can start a fresh streamer instead of finding a stale isActive flag and no-op'ing forever.
+     */
+    private void onStreamerDied() {
+        synchronized (SilenceStreamer.class) {
+            if (current != this) return; // already superseded by stop()/release()
+            current = null;
+            isActive = false;
+        }
+        running = false;
+        fadingOut = false;
+        PreviewManager.isPreviewActive = false;
+        doStopPreview(); // close any decoder still installed when the track failed
     }
 
     private void fadeOutAndStop() {

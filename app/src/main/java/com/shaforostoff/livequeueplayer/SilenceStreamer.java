@@ -128,7 +128,13 @@ final class SilenceStreamer {
                         trackRef.pause();
                         trackRef.flush();
                         trackRef.play();
-                    } catch (Exception ignored) {}
+                    } catch (Exception e) {
+                        // If play() failed after pause()/flush() the track is stuck paused; the next
+                        // blocking write() would never return and interrupt() can't unblock it. Treat
+                        // the track as dead and tear down instead of wedging the thread forever.
+                        died = true;
+                        break;
+                    }
                 }
                 if (trackRef.write(silence, 0, silence.length) < 0) { died = true; break; }
             }

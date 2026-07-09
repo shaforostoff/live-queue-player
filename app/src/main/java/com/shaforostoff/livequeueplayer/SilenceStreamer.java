@@ -24,7 +24,7 @@ final class SilenceStreamer {
 
     static volatile SilenceStreamer current;
 
-    private AudioTrack audioTrack;
+    private volatile AudioTrack audioTrack;
     private Thread thread;
     private volatile boolean running;
     private volatile boolean fadingOut;
@@ -138,9 +138,11 @@ final class SilenceStreamer {
                     if (trackRef.write(silence, 0, chunkSize) < 0) break;
                 }
             }
+            // Clear the shared reference before releasing so a concurrent reader (the decoder-init
+            // thread, the UI thread) never touches a released track.
+            audioTrack = null;
             try { trackRef.stop(); } catch (IllegalStateException ignored) {}
             trackRef.release();
-            audioTrack = null;
         }, "SilenceStreamer");
         thread.setDaemon(true);
         thread.start();

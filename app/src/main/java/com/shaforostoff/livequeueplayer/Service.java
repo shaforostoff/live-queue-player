@@ -333,6 +333,7 @@ public class Service extends android.service.media.MediaBrowserService implement
             initializeProgressForTrack(entry.location);
             currentTrackTitle = entry.title != null ? entry.title : "";
             sCurrentEntryId = entry.queueEntryId;
+            persistPlaybackOffsetFor(entry);
             // Duration is unknown until AudioPlayer finishes prepare() on its own thread; publish
             // the title now with a placeholder 0 and let onTrackDurationResolved() fill it in.
             hwListener.setTrackMetadata(currentTrackTitle, sPlaybackDurationMs);
@@ -356,6 +357,27 @@ public class Service extends android.service.media.MediaBrowserService implement
             return;
         }
         SilenceStreamer.ensure(this);
+    }
+
+    /**
+     * Keep the persisted playback offset pointing at the track that actually plays. It used to be
+     * written only when playback started (playQueueFrom in the activity, playFromQueueIndex here),
+     * so after any auto-advance a stop followed by a resume via {@link #playFromQueueStore()}
+     * replayed the queue from the original start row instead of the last-played track. Resolved
+     * through the stable entry id rather than offset+index arithmetic, because queue edits made
+     * mid-playback (remove, move, clear-played) renumber the persisted rows. Id-less playback
+     * (browse mode, external ACTION_VIEW/SEND shares) is left untouched: those flows never carried
+     * entry ids, and their offset semantics stay as before.
+     */
+    private void persistPlaybackOffsetFor(ServicePlaylist.Entry entry) {
+        if (entry.queueEntryId <= 0) return;
+        ArrayList<QueueStore.Entry> persisted = QueueStore.load(this);
+        for (int i = 0; i < persisted.size(); i++) {
+            if (persisted.get(i).id == entry.queueEntryId) {
+                QueueStore.savePlaybackOffset(this, i);
+                return;
+            }
+        }
     }
 
     public void playOrDestroy() {

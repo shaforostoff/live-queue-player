@@ -175,6 +175,11 @@ public class FileBrowserQueueActivity extends Activity {
     private ListView queueList;
     private TextView queueEmptyHint;
     private boolean queueTransitionActive;
+    private long queueTransitionStartedAtMs;
+    /** How long a play intent may stay unconfirmed by a Service broadcast before the optimistic
+     *  transition state is abandoned. The confirming broadcast is sent synchronously when the
+     *  track starts (or playback fails), so this fires only when it was genuinely lost. */
+    private static final long QUEUE_TRANSITION_TIMEOUT_MS = 10_000L;
     private int currentPlayingQueueIndex = -1;
     private int draggingQueueIndex = -1;
     // set when a swipe gesture starts so the ListView's item-click (fired on finger
@@ -248,7 +253,7 @@ public class FileBrowserQueueActivity extends Activity {
                     // Keep browse state intact; the next broadcast will update us.
                     return;
                 }
-                if (queueTransitionActive && !isStopFadeInProgress()) {
+                if (isQueueTransitionActive() && !isStopFadeInProgress()) {
                     return;
                 }
                 clearBrowseState();
@@ -473,7 +478,7 @@ public class FileBrowserQueueActivity extends Activity {
             }
             if (isStopFadeInProgress()) {
                 playQueueFrom(position, true);
-            } else if (!Service.sIsPlaying && !queueTransitionActive) {
+            } else if (!Service.sIsPlaying && !isQueueTransitionActive()) {
                 playQueueFrom(position);
             } else {
                 Toast.makeText(this, R.string.stop_playback_first, Toast.LENGTH_SHORT).show();
@@ -2748,6 +2753,7 @@ public class FileBrowserQueueActivity extends Activity {
         intent.putExtra(Service.EXTRA_QUEUE_ALREADY_PERSISTED, true);
 
         queueTransitionActive = true;
+        queueTransitionStartedAtMs = SystemClock.elapsedRealtime();
         if (forceImmediateRestart) {
             sendStopNowCommand();
         }
@@ -2786,7 +2792,7 @@ public class FileBrowserQueueActivity extends Activity {
         // current_id from the cache reported the previous track to remote clients even after an
         // explicit refresh. During a locally initiated transition the optimistic cache is fresher
         // than the service statics (the old track may still be winding down), so keep it there.
-        if (!queueTransitionActive) {
+        if (!isQueueTransitionActive()) {
             int serviceId = Service.sCurrentEntryId;
             if (serviceId > 0) return serviceId;
         }
@@ -2795,13 +2801,30 @@ public class FileBrowserQueueActivity extends Activity {
         return -1;
     }
 
+    /**
+     * True while a locally initiated play intent is believed to be in flight to the Service —
+     * the optimistic "playing" window between startService() and the Service's first broadcast
+     * for the new track. Time-bounded, because the flag is only cleared by observing that
+     * broadcast (or the poll): if it never arrives — every track in the intent failed, or the
+     * stopped-state guard swallowed it — the raw flag stays true forever, and everything derived
+     * from it reports a phantom "playing" state that deadlocks remote clients (play_track
+     * rejected, stop_playback a no-op). All readers must use this accessor, not the field.
+     */
+    private boolean isQueueTransitionActive() {
+        if (queueTransitionActive
+                && SystemClock.elapsedRealtime() - queueTransitionStartedAtMs > QUEUE_TRANSITION_TIMEOUT_MS) {
+            queueTransitionActive = false;
+        }
+        return queueTransitionActive;
+    }
+
     /** Derives the canonical playback state string from the Service volatile fields,
      *  which are written immediately by the fade/playback thread and never lag. */
     private String remotePlaybackState() {
         boolean fading = Service.sFadeOutInProgress;
         // queueTransitionActive treated as "playing": mirrors the sFadeOutInProgress sync pattern
         // so pushPlayState() sends the correct state before the async service broadcast arrives.
-        return fading ? "fading" : (Service.sIsPlaying || queueTransitionActive ? "playing" : "stopped");
+        return fading ? "fading" : (Service.sIsPlaying || isQueueTransitionActive() ? "playing" : "stopped");
     }
 
     private long fadeDurationMs() {
@@ -3140,7 +3163,7 @@ public class FileBrowserQueueActivity extends Activity {
     }
 
     private void handleRemotePlayTrack(JSONObject obj) {
-        if ((Service.sIsPlaying || queueTransitionActive) && !isStopFadeInProgress()) {
+        if ((Service.sIsPlaying || isQueueTransitionActive()) && !isStopFadeInProgress()) {
             pushPlayState();
             return;
         }
@@ -3168,7 +3191,7 @@ public class FileBrowserQueueActivity extends Activity {
         }
 
         // Do not show fading UI when nothing is currently playing.
-        if ((!Service.sIsPlaying && !queueTransitionActive) || (currentPlayingQueueIndex < 0 && !Service.sBrowseMode)) {
+        if ((!Service.sIsPlaying && !isQueueTransitionActive()) || (currentPlayingQueueIndex < 0 && !Service.sBrowseMode)) {
             resetStopButtonState();
             return;
         }
@@ -3664,7 +3687,7 @@ public class FileBrowserQueueActivity extends Activity {
     }
 
     private boolean isPlaybackActiveOrFading() {
-        return Service.sIsPlaying || isStopFadeInProgress() || queueTransitionActive;
+        return Service.sIsPlaying || isStopFadeInProgress() || isQueueTransitionActive();
     }
 
     private boolean hasBrowseBehavior() {
@@ -3917,7 +3940,7 @@ public class FileBrowserQueueActivity extends Activity {
                 // Transient stop between sendStopNowCommand() and the browse track starting.
                 return;
             }
-            if (queueTransitionActive && !isStopFadeInProgress()) {
+            if (isQueueTransitionActive() && !isStopFadeInProgress()) {
                 return;
             }
             if (isStopFadeInProgress()) {
@@ -3967,12 +3990,21 @@ public class FileBrowserQueueActivity extends Activity {
     protected void onStop() {
         if (Service.sBrowseMode) queueRemainingBrowseTracks();
         persistQueue();
-        unregisterPlaybackStateReceiver();
-        // Stop the 1s UI-sync poll while backgrounded — nothing is visible to update, and onStart
-        // re-syncs once and reschedules it on return. Symmetric with the receiver above; without
-        // this it kept ticking (and waking the main thread) for the whole time the activity was
-        // stopped, e.g. a full DJ set spent in another app.
-        uiHandler.removeCallbacks(playbackStateSyncRunnable);
+        // As the remote host, state observation must outlive the visible activity: the app-scoped
+        // Bluetooth bridge keeps delivering client commands while the screen is off, and those
+        // handlers serve state derived from fields (queueTransitionActive,
+        // currentPlayingQueueIndex) that only the receiver and the 1s poll keep in sync — and the
+        // poll is also what pushes play_state changes (auto-advance, fade finishing) to the
+        // client. Tearing them down froze that state mid-session: the client was never told about
+        // advances, and a play_track processed while stopped left queueTransitionActive stuck
+        // true, so the host reported "playing" forever after playback ended, deadlocking the
+        // remote UI. In every other mode nothing observes playback while backgrounded, so keep
+        // the teardown there (it otherwise wakes the main thread every second for a whole DJ set
+        // spent in another app); onStart re-registers and re-syncs on return, onDestroy cleans up.
+        if (mode != Mode.REMOTE_RECEIVE) {
+            unregisterPlaybackStateReceiver();
+            uiHandler.removeCallbacks(playbackStateSyncRunnable);
+        }
         resetFileBrowserPreview();
         if (Service.sCurrentUri == null) {
             SilenceStreamer.fadeOutAndRelease();

@@ -2779,6 +2779,17 @@ public class FileBrowserQueueActivity extends Activity {
     }
 
     private int currentPlayingEntryId() {
+        // Prefer the Service's entry id: it is authoritative and updates on every auto-advance,
+        // while currentPlayingQueueIndex is a UI cache that is only maintained while this
+        // activity is started (the playback receiver and 1s poll are torn down in onStop). The
+        // Bluetooth bridge keeps answering request_queue while the host screen is off, so serving
+        // current_id from the cache reported the previous track to remote clients even after an
+        // explicit refresh. During a locally initiated transition the optimistic cache is fresher
+        // than the service statics (the old track may still be winding down), so keep it there.
+        if (!queueTransitionActive) {
+            int serviceId = Service.sCurrentEntryId;
+            if (serviceId > 0) return serviceId;
+        }
         if (currentPlayingQueueIndex >= 0 && currentPlayingQueueIndex < queueEntries.size())
             return queueEntries.get(currentPlayingQueueIndex).id;
         return -1;

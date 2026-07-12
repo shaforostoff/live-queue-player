@@ -525,6 +525,17 @@ public class Service extends android.service.media.MediaBrowserService implement
      * destroy on playback complete
      */
     void onMediaPlayerComplete() {
+        // The track's natural end raced a user-initiated fade-out (Stop pressed near the end of
+        // the track). The user asked for playback to stop, so honor that instead of advancing:
+        // auto-advancing here starts the next track at full volume, and — because the fade thread
+        // belongs to the now-replaced player — leaves sFadeOutInProgress stuck true, desyncing
+        // every fade-state consumer (stop button, remote clients) for the rest of the queue.
+        // sFadeOutInProgress covers the window where the STOP intent is still queued behind this
+        // callback; the audioPlayer flag covers a fade already running.
+        if (sFadeOutInProgress || (audioPlayer != null && audioPlayer.isFadeOutInProgress())) {
+            onPlaybackStoppedKeepAlive();
+            return;
+        }
         if (!playNextEntry())
             onPlaybackStoppedKeepAlive();
     }

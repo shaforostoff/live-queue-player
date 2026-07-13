@@ -174,6 +174,8 @@ public class FileBrowserQueueActivity extends Activity {
     private QueueAdapter queueAdapter;
     private ListView queueList;
     private TextView queueEmptyHint;
+    /** True between onStart and onStop — i.e. while this activity keeps the app visible. */
+    private boolean activityStarted;
     private boolean queueTransitionActive;
     private long queueTransitionStartedAtMs;
     /** How long a play intent may stay unconfirmed by a Service broadcast before the optimistic
@@ -496,6 +498,14 @@ public class FileBrowserQueueActivity extends Activity {
             if (serverMode == 1) {
                 mode = Mode.REMOTE_RECEIVE;
                 btController.startRemoteSetupAsServer();
+                // Pin the playback service to the foreground for the whole hosting session, while
+                // this activity is still visible and the promotion is permitted. Without this, the
+                // first remote play command arriving with the screen off has no legal way to
+                // (re)enter the foreground on Android 14/15, and App Standby stops the demoted
+                // service ~1 minute later, mid-song.
+                Intent hostIntent = new Intent(this, Service.class);
+                hostIntent.putExtra(Launcher.TYPE, Launcher.HOST_SESSION);
+                startPlaybackService(hostIntent);
             } else if (serverMode == 0) {
                 enterRemoteSendMode();
                 btController.startRemoteSetupAsClient();
@@ -2754,17 +2764,31 @@ public class FileBrowserQueueActivity extends Activity {
 
         queueTransitionActive = true;
         queueTransitionStartedAtMs = SystemClock.elapsedRealtime();
-        if (forceImmediateRestart) {
-            sendStopNowCommand();
-        }
         resetStopButtonState();
-        startPlaybackService(intent);
-        if (!forceImmediateRestart) {
-            // Only dispatch the media-play key when starting from a stopped/idle state — that's
-            // where the FGS-start exemption from a MediaSession callback actually matters. During
-            // a fade-out the service is already alive, so the KILL + ACTION_SEND_MULTIPLE intents
-            // above are sufficient and a racing media-key PLAY arriving before the KILL would
-            // call cancelFadeOutAndResume() on the current (wrong) track.
+        if (forceImmediateRestart) {
+            // Replace inside the Service rather than the old KILL + play intent pair: the KILL's
+            // stopForeground() opened a foreground gap that cannot be re-closed from the
+            // background on Android 14/15 (see Service.EXTRA_REPLACE_PLAYBACK).
+            intent.putExtra(Service.EXTRA_REPLACE_PLAYBACK, true);
+        }
+        if (canSendServiceIntents()) {
+            startPlaybackService(intent);
+            if (!forceImmediateRestart) {
+                // Only dispatch the media-play key when starting from a stopped/idle state — that's
+                // where the FGS-start exemption from a MediaSession callback actually matters. During
+                // a fade-out the service is already alive, so the KILL + ACTION_SEND_MULTIPLE intents
+                // above are sufficient and a racing media-key PLAY arriving before the KILL would
+                // call cancelFadeOutAndResume() on the current (wrong) track.
+                dispatchMediaPlayKey();
+            }
+        } else {
+            // Fully backgrounded with nothing playing — a remote play_track while the host's
+            // screen is off. The direct intent above is not merely deferred here: on Android
+            // 14/15 the delivered startForegroundService crash-loops the whole process with
+            // ForegroundServiceStartNotAllowedException, taking the Bluetooth server down with
+            // it. The media-key route is the sanctioned path: the MediaSession dispatch
+            // temp-allowlists the process, and its PLAY callback plays the queue + offset
+            // persisted above (playFromQueueStore), so it starts the same track.
             dispatchMediaPlayKey();
         }
 
@@ -2774,6 +2798,22 @@ public class FileBrowserQueueActivity extends Activity {
         // Starting at/after the anchor track clears its anchor status.
         clearAnchorIfPlaybackReached();
         queueAdapter.notifyDataSetChanged();
+    }
+
+    /**
+     * Whether this app may currently send start intents to the playback Service at all. True
+     * while the activity is visible (foreground app) or while the Service holds foreground
+     * status (the process is then not "background" to the OS, regardless of screen state; in
+     * remote-receive mode the service keeps that status for the whole hosting session even when
+     * idle). When neither holds Android 12+ rejects service starts: startService() throws in
+     * this process, and a startForegroundService()'s delayed startForeground() throws inside
+     * the service, crash-looping the process (observed on Android 15). Remote-command paths
+     * must check this and fall back to {@link #dispatchMediaPlayKey()} — a best-effort route:
+     * Android grants no FGS exemption for self-dispatched keys, so playback started that way
+     * survives only until App Standby notices, but it beats crashing the process.
+     */
+    private boolean canSendServiceIntents() {
+        return activityStarted || Service.sForegroundActive;
     }
 
     private void dispatchMediaPlayKey() {
@@ -3207,9 +3247,17 @@ public class FileBrowserQueueActivity extends Activity {
     }
 
     private void cancelFadeOutAndContinue() {
-        Intent intent = new Intent(this, Service.class);
-        intent.putExtra(Launcher.TYPE, Launcher.PLAY);
-        startService(intent);
+        if (canSendServiceIntents()) {
+            Intent intent = new Intent(this, Service.class);
+            intent.putExtra(Launcher.TYPE, Launcher.PLAY);
+            startService(intent);
+        } else {
+            // resume_playback from a client that still believes we're fading while playback has
+            // in fact fully stopped and the app is backgrounded: startService() above would throw
+            // (background service-start restriction) and crash the host process. Route through
+            // the media session instead; its PLAY lands on the same Launcher.PLAY handler.
+            dispatchMediaPlayKey();
+        }
 
         // Clear the flag synchronously so that pushPlayState() (called right after this
         // in the resume_playback handler) sees "playing" rather than "fading".  The Service
@@ -3892,6 +3940,7 @@ public class FileBrowserQueueActivity extends Activity {
     @Override
     protected void onStart() {
         super.onStart();
+        activityStarted = true;
         restorePersistedQueue();
         servicePlaybackOffset = QueueStore.loadPlaybackOffset(this);
         if (Service.sBrowseMode && Service.sCurrentUri != null) {
@@ -3988,6 +4037,7 @@ public class FileBrowserQueueActivity extends Activity {
 
     @Override
     protected void onStop() {
+        activityStarted = false;
         if (Service.sBrowseMode) queueRemainingBrowseTracks();
         persistQueue();
         // As the remote host, state observation must outlive the visible activity: the app-scoped
@@ -4099,6 +4149,15 @@ public class FileBrowserQueueActivity extends Activity {
         // Preserve the app-scoped Bluetooth bridge across configuration changes (e.g. rotation);
         // only tear the connection down when the activity is genuinely finishing.
         btController.onActivityDestroyed(isChangingConfigurations());
+        // The hosting session is over (bridge server just shut down above): if nothing is
+        // playing, release the service pinned to the foreground by HOST_SESSION — its idle
+        // notification would otherwise linger indefinitely. With a track still live, the
+        // service keeps running as a normal media FGS and tears itself down at playback end
+        // (isRemoteHostSession() is false by then, so the stop path drops foreground normally).
+        if (!isChangingConfigurations() && mode == Mode.REMOTE_RECEIVE
+                && !Service.sIsPlaying && Service.sCurrentUri == null && Service.sForegroundActive) {
+            sendStopNowCommand();
+        }
         if (audioPreviewManager != null) audioPreviewManager.stopPreview();
         // tagReadExecutor is app-scoped (App.getTagReadExecutor) and intentionally not shut down
         // here: a scan can still be walking the tree and would hit RejectedExecutionException on its

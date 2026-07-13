@@ -36,6 +36,7 @@ public class Service extends android.service.media.MediaBrowserService implement
     static final String EXTRA_CURRENT_ENTRY_ID = "current_entry_id";
     static final String EXTRA_SEEK_TO_MS = "seek_to_ms";
     static final String EXTRA_QUEUE_ALREADY_PERSISTED = "queue_already_persisted";
+    static final String EXTRA_REPLACE_PLAYBACK = "replace_playback";
     static final String EXTRA_QUEUE_INDEX = "queue_index";
     private static final String MEDIA_ROOT_ID = "root";
     private static final long PLAYBACK_PROGRESS_BROADCAST_INTERVAL_MS = 1_000L;
@@ -50,6 +51,10 @@ public class Service extends android.service.media.MediaBrowserService implement
     static volatile boolean sFadeOutInProgress = false;
     static volatile boolean sBrowseMode = false;
     static volatile int sCurrentEntryId = -1;
+    /** True while this service holds foreground status. The activity consults it to decide
+     *  whether service intents are currently permitted (a process with a live FGS is not
+     *  "background" to the OS, regardless of screen state). */
+    static volatile boolean sForegroundActive = false;
 
     private HWListener hwListener;
     private Notifications notifications;
@@ -163,6 +168,15 @@ public class Service extends android.service.media.MediaBrowserService implement
         /* check if called from self */
         if (intent.getAction() == null) {
             var action = intent.getByteExtra(Launcher.TYPE, Launcher.NULL);
+            if (action == Launcher.HOST_SESSION) {
+                // Entering remote-receive mode (sent from the visible activity, so the promotion
+                // is allowed): pin this service to the foreground for the whole hosting session.
+                // Remote Bluetooth commands then always reach a foreground service — a background
+                // one can neither be started nor re-promoted on Android 14/15.
+                notifications.showIdleHostPlaceholder();
+                promoteToForeground();
+                return;
+            }
             if (audioPlayer == null) {
                 if (action == Launcher.KILL || action == Launcher.STOP) {
                     onPlaybackStoppedKeepAlive();
@@ -239,6 +253,20 @@ public class Service extends android.service.media.MediaBrowserService implement
             // branch below can skip it or block on I/O.
             ensureForeground();
             sBrowseMode = intent.getBooleanExtra(EXTRA_BROWSE_MODE, false);
+            // Replace-in-place restart (a track tapped while another is playing or fading): tear
+            // down the current player but stay foreground throughout. This used to be a KILL
+            // intent followed by this one, but the KILL's stopForeground() opened a gap the
+            // service could not close while the app was backgrounded — Android 14/15 DENIED the
+            // re-promotion and App Standby then stopped the demoted service ~1 minute later,
+            // cutting playback mid-song.
+            if (intent.getBooleanExtra(EXTRA_REPLACE_PLAYBACK, false) && audioPlayer != null) {
+                sFadeOutInProgress = false;
+                audioPlayer.onMediaPlayerDestroy();
+                audioPlayer = null;
+                playlist.clear();
+                playlistPosition = 0;
+                retriedAtPosition = -1;
+            }
             // Double-start race guard. playQueueFrom() starts this foreground service AND dispatches
             // a media-play key (the Android 14+ background-FGS-start workaround). If the media key
             // wins, it routes to playFromQueueStore(), which loads the already-persisted queue and
@@ -297,10 +325,38 @@ public class Service extends android.service.media.MediaBrowserService implement
      */
     private void ensureForeground() {
         notifications.ensurePlaceholder();
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
-            startForeground(Notifications.NOTIFICATION_ID, notifications.notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK);
-        else
-            startForeground(Notifications.NOTIFICATION_ID, notifications.notification);
+        promoteToForeground();
+    }
+
+    /**
+     * startForeground() throws ForegroundServiceStartNotAllowedException (an IllegalStateException)
+     * on Android 12+ when the process is background and holds no start exemption — e.g. a remote
+     * Bluetooth command arriving with the screen off after playback stopped. Left uncaught it
+     * crash-loops the process via START_STICKY redelivery, killing the app-scoped Bluetooth server
+     * with it. Degrade to running without the foreground promotion instead: playback still starts,
+     * and the next allowed start (media-key routed, or the activity returning) re-promotes.
+     */
+    private void promoteToForeground() {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
+                startForeground(Notifications.NOTIFICATION_ID, notifications.notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK);
+            else
+                startForeground(Notifications.NOTIFICATION_ID, notifications.notification);
+            sForegroundActive = true;
+        } catch (IllegalStateException | SecurityException ignored) {
+        }
+    }
+
+    /**
+     * True while this device hosts a remote-receive session (the app-scoped Bluetooth server is
+     * accepting/serving a client). Hosting pins this service to the foreground even when nothing
+     * is playing: Android 14/15 grant no FGS-start exemption for the app's own media-key dispatch
+     * (observed: tempAllowListReason:<null>, code:DENIED), so a service that ever drops foreground
+     * while the app is backgrounded cannot re-promote, and App Standby stops the demoted service
+     * about a minute after the screen turns off — cutting playback mid-song.
+     */
+    private boolean isRemoteHostSession() {
+        return ((App) getApplication()).getBluetoothBridge().isServerRunning();
     }
 
     private void playEntryFromPlaylist() {
@@ -324,11 +380,10 @@ public class Service extends android.service.media.MediaBrowserService implement
             /* create notification for playback control */
             notifications.getNotification(entry.title, hwListener.getSessionToken());
 
-            /* start service as foreground */
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
-                startForeground(Notifications.NOTIFICATION_ID, notifications.notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK);
-            else
-                startForeground(Notifications.NOTIFICATION_ID, notifications.notification);
+            /* start service as foreground; a denied promotion must not fail the track (and must
+             * not fall into this method's IllegalStateException catch, which would burn the
+             * retry budget), so the guarded call is factored out */
+            promoteToForeground();
 
             initializeProgressForTrack(entry.location);
             currentTrackTitle = entry.title != null ? entry.title : "";
@@ -640,12 +695,19 @@ public class Service extends android.service.media.MediaBrowserService implement
         // service and its MediaSession stay alive (no stopSelf) so a later media-button/remote
         // play can still resume without a fresh background foreground-service start.
         hwListener.setStopped();
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-            stopForeground(STOP_FOREGROUND_REMOVE);
+        if (isRemoteHostSession()) {
+            // Hosting: never leave the foreground state (see isRemoteHostSession). Swap the
+            // media notification for the idle placeholder so nothing playing-looking lingers.
+            notifications.showIdleHostPlaceholder();
         } else {
-            stopForeground(true);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                stopForeground(STOP_FOREGROUND_REMOVE);
+            } else {
+                stopForeground(true);
+            }
+            sForegroundActive = false;
+            notifications.onMediaPlayerReset();
         }
-        notifications.onMediaPlayerReset();
         notifyPlaybackState(false, -1, null);
     }
 
@@ -654,6 +716,7 @@ public class Service extends android.service.media.MediaBrowserService implement
      */
     @Override
     public void onDestroy() {
+        sForegroundActive = false;
         stopProgressTicks();
         if (queueChangeListener != null) {
             QueueStore.prefs(this).unregisterOnSharedPreferenceChangeListener(queueChangeListener);

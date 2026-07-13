@@ -102,6 +102,20 @@ class Notifications implements MediaPlayerStateListener {
     }
   }
 
+  /**
+   * Swap the media notification for an idle placeholder while a remote-host session keeps the
+   * service in the foreground with nothing playing (see Service#isRemoteHostSession). Rebuilds
+   * unconditionally — unlike ensurePlaceholder() — because the previous track's media-styled
+   * notification is still present and would linger looking playable.
+   */
+  void showIdleHostPlaceholder() {
+    sessionToken = null;
+    setupNotificationBuilder(service.getString(R.string.app_name));
+    builder.setContentText("Remote session active");
+    buildNotification();
+    update();
+  }
+
   private void update() {
     ((NotificationManager) service.getSystemService(Context.NOTIFICATION_SERVICE)).notify(NOTIFICATION_ID, notification);
   }

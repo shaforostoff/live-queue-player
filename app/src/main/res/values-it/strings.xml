@@ -39,8 +39,8 @@
   <string name="bluetooth_track_names">Nomi tracce via Bluetooth</string>
   <string name="dj_mode_button">Modalità DJ</string>
   <string name="explore_mode_button">Esplora</string>
-  <string name="remote_send_button">+ Controllo Remoto</string>
-  <string name="remote_receive_button">+ Ricevi</string>
+  <string name="remote_send_button">Controllo Remoto</string>
+  <string name="remote_receive_button">Controllabile da remoto</string>
   <string name="stop_after_current_button">Ferma dopo la traccia corrente</string>
   <string name="clear_queue_button">Svuota coda</string>
   <string name="fade_out_label">Durata dissolvenza: %d s</string>

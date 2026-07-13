@@ -42,8 +42,8 @@
   <string name="bluetooth_track_names">Track names via Bluetooth</string>
   <string name="dj_mode_button">DJ mode</string>
   <string name="explore_mode_button">Explore</string>
-  <string name="remote_send_button">+ Remote Control</string>
-  <string name="remote_receive_button">+ Receive</string>
+  <string name="remote_send_button">Remote Control</string>
+  <string name="remote_receive_button">Remote Controllable</string>
   <string name="stop_after_current_button">Stop after current track</string>
   <string name="clear_queue_button">Clear queue</string>
   <string name="fade_out_label">Fade out duration: %d s</string>

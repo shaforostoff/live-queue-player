@@ -1421,85 +1421,75 @@ public class FileBrowserQueueActivity extends Activity {
         tagReadProgressTotal += pendingEntries.size();
         applySortButtonLoadingState();
 
-        int threadCount = Math.min(4, pendingEntries.size());
-        AtomicInteger pending = new AtomicInteger(pendingEntries.size());
         MetadataExtractor.TagEntry[] results = new MetadataExtractor.TagEntry[pendingEntries.size()];
-        AtomicInteger workQueue = new AtomicInteger(0);
-        for (int t = 0; t < threadCount; t++) {
-            tagReadExecutor.submit(() -> {
-                int idx;
-                while ((idx = workQueue.getAndIncrement()) < pendingEntries.size()) {
+        runParallelTagReads(pendingEntries.size(),
+                idx -> {
                     try {
                         results[idx] = metadataExtractor.readSortTags(pendingEntries.get(idx).uri);
-                    } catch (Exception ignored) {
-                        // Leave results[idx] null: the completion pass treats a null tag as a failed
-                        // read and resets that entry to UNKNOWN. Falling through the finally below
-                        // keeps the progress/pending counters honest so the batch never stalls in
-                        // LOADING (which would also freeze the sort-button progress bar forever).
+                    } finally {
+                        // Ticks even when the read throws (results[idx] stays null: the completion
+                        // pass treats that as a failed read and resets the entry to UNKNOWN), so
+                        // the sort-button progress bar never stalls.
+                        int done = tagReadProgressDone.incrementAndGet();
+                        if (done % 8 == 0 && progressRedrawPending.compareAndSet(false, true)) {
+                            runOnUiThread(() -> {
+                                progressRedrawPending.set(false);
+                                applySortButtonLoadingState();
+                            });
+                        }
                     }
-                    int done = tagReadProgressDone.incrementAndGet();
-                    if (done % 8 == 0 && progressRedrawPending.compareAndSet(false, true)) {
-                        runOnUiThread(() -> {
-                            progressRedrawPending.set(false);
-                            applySortButtonLoadingState();
-                        });
+                },
+                () -> runOnUiThread(() -> {
+                    activeTagReadJobs = Math.max(0, activeTagReadJobs - 1);
+                    if (activeTagReadJobs == 0) {
+                        tagReadProgressTotal = 0;
+                        tagReadProgressDone.set(0);
                     }
-                    if (pending.decrementAndGet() == 0) {
-                        runOnUiThread(() -> {
-                            activeTagReadJobs = Math.max(0, activeTagReadJobs - 1);
-                            if (activeTagReadJobs == 0) {
-                                tagReadProgressTotal = 0;
-                                tagReadProgressDone.set(0);
-                            }
-                            applySortButtonLoadingState();
+                    applySortButtonLoadingState();
 
-                            if (versionAtStart != fileEntriesVersion) {
-                                for (FileEntry e : pendingEntries) {
-                                    e.sortDateState   = TagState.UNKNOWN;
-                                    e.sortGenreState  = TagState.UNKNOWN;
-                                    e.sortArtistState = TagState.UNKNOWN;
-                                    e.sortBpmState    = TagState.UNKNOWN;
-                                }
-                                return;
-                            }
-
-                            boolean changed = false;
-                            for (int j = 0; j < pendingEntries.size(); j++) {
-                                MetadataExtractor.TagEntry tag = results[j];
-                                FileEntry e = pendingEntries.get(j);
-                                if (tag == null) {
-                                    // Read threw for this file — reset to UNKNOWN so a later pass
-                                    // (folder revisit / re-sort) can retry it, instead of leaving the
-                                    // row wedged in LOADING and skipped forever.
-                                    e.sortDateState   = TagState.UNKNOWN;
-                                    e.sortGenreState  = TagState.UNKNOWN;
-                                    e.sortArtistState = TagState.UNKNOWN;
-                                    e.sortBpmState    = TagState.UNKNOWN;
-                                    continue;
-                                }
-                                e.sortDate   = tag.date;
-                                e.sortGenre  = tag.genre;
-                                e.sortArtist = tag.artist;
-                                e.sortTitle  = tag.title;
-                                e.sortBpm    = tag.bpm;
-                                e.sortDateState   = TagState.RESOLVED;
-                                e.sortGenreState  = TagState.RESOLVED;
-                                e.sortArtistState = TagState.RESOLVED;
-                                e.sortBpmState    = TagState.RESOLVED;
-                                changed = true;
-                            }
-
-                            if (changed) {
-                                if (isTagSortMode(fileSortMode) && currentBrowsePlaylistEntry == null) {
-                                    Collections.sort(fileEntries, FileBrowserQueueActivity.this::compareFileEntries);
-                                }
-                                applyFileFilter();
-                            }
-                        });
+                    if (versionAtStart != fileEntriesVersion) {
+                        for (FileEntry e : pendingEntries) {
+                            e.sortDateState   = TagState.UNKNOWN;
+                            e.sortGenreState  = TagState.UNKNOWN;
+                            e.sortArtistState = TagState.UNKNOWN;
+                            e.sortBpmState    = TagState.UNKNOWN;
+                        }
+                        return;
                     }
-                }
-            });
-        }
+
+                    boolean changed = false;
+                    for (int j = 0; j < pendingEntries.size(); j++) {
+                        MetadataExtractor.TagEntry tag = results[j];
+                        FileEntry e = pendingEntries.get(j);
+                        if (tag == null) {
+                            // Read threw for this file — reset to UNKNOWN so a later pass
+                            // (folder revisit / re-sort) can retry it, instead of leaving the
+                            // row wedged in LOADING and skipped forever.
+                            e.sortDateState   = TagState.UNKNOWN;
+                            e.sortGenreState  = TagState.UNKNOWN;
+                            e.sortArtistState = TagState.UNKNOWN;
+                            e.sortBpmState    = TagState.UNKNOWN;
+                            continue;
+                        }
+                        e.sortDate   = tag.date;
+                        e.sortGenre  = tag.genre;
+                        e.sortArtist = tag.artist;
+                        e.sortTitle  = tag.title;
+                        e.sortBpm    = tag.bpm;
+                        e.sortDateState   = TagState.RESOLVED;
+                        e.sortGenreState  = TagState.RESOLVED;
+                        e.sortArtistState = TagState.RESOLVED;
+                        e.sortBpmState    = TagState.RESOLVED;
+                        changed = true;
+                    }
+
+                    if (changed) {
+                        if (isTagSortMode(fileSortMode) && currentBrowsePlaylistEntry == null) {
+                            Collections.sort(fileEntries, this::compareFileEntries);
+                        }
+                        applyFileFilter();
+                    }
+                }));
     }
 
     private void applySortButtonLoadingState() {

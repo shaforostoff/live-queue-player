@@ -47,7 +47,6 @@
       a:layout_height="wrap_content"
       a:layout_gravity="center_vertical"
       a:layout_marginEnd="8dp"
-      a:layout_marginRight="8dp"
       a:textSize="20sp" />
 
     <LinearLayout

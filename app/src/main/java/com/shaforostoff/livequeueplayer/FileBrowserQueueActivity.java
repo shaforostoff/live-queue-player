@@ -17,6 +17,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
 import android.os.Handler;
+import android.os.Looper;
 import android.os.SystemClock;
 import android.view.KeyEvent;
 import android.text.Editable;
@@ -295,7 +296,7 @@ public class FileBrowserQueueActivity extends Activity {
         }
     };
     private boolean playbackReceiverRegistered;
-    private final Handler uiHandler = new Handler();
+    private final Handler uiHandler = new Handler(Looper.getMainLooper());
     private final Runnable playbackStateSyncRunnable = new Runnable() {
         @Override
         public void run() {

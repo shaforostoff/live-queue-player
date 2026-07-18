@@ -5,6 +5,7 @@ import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.drawable.ColorDrawable;
 import android.os.Handler;
+import android.os.Looper;
 import android.util.SparseArray;
 import android.util.TypedValue;
 import android.view.HapticFeedbackConstants;
@@ -84,7 +85,7 @@ final class RemoteQueueController {
     private final SparseArray<TrackEntry> metaCache    = new SparseArray<>();
 
     private final QueueAdapter adapter;
-    private final Handler uiHandler = new Handler();
+    private final Handler uiHandler = new Handler(Looper.getMainLooper());
 
     private int     currentId     = -1;
     private int     anchorId      = 0;     // entry id of the remote insert anchor (0 = none)

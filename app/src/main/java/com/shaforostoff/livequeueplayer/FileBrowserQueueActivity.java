@@ -190,6 +190,7 @@ public class FileBrowserQueueActivity extends Activity {
     // Active swipe state for the queue list. Held as a field (not a local in the gesture handler)
     // so per-row refreshes can skip the row currently being swiped instead of clobbering it.
     private final SwipeState queueSwipeState = new SwipeState();
+    private final SwipeState fileSwipeState = new SwipeState();
     // swipe slop thresholds (px), resolved once from display density
     private float swipeVerticalSlop;
     private float swipeHorizontalSlop;
@@ -226,6 +227,10 @@ public class FileBrowserQueueActivity extends Activity {
     private PreviewManager audioPreviewManager;
     private Uri fileBrowserPreviewingUri;
     private Uri fileBrowserPreviewingEntryUri;
+    // rows painted with a progress highlight on the last refreshFilePlaybackRows() pass, so the
+    // highlight can be cleared with a single-row rebind when it moves or playback stops
+    private Uri lastHighlightedBrowseUri;
+    private Uri lastHighlightedPreviewUri;
     private ListView fileBrowserList;
     private final BroadcastReceiver playbackStateReceiver = new BroadcastReceiver() {
         @Override
@@ -273,7 +278,6 @@ public class FileBrowserQueueActivity extends Activity {
                     browseFileUri = browseNextUri;
                     browseNextQueued = false;
                     browseNextUri = null;
-                    if (fileAdapter != null) fileAdapter.notifyDataSetChanged();
                 }
             } else {
                 queueTransitionActive = false;
@@ -285,6 +289,7 @@ public class FileBrowserQueueActivity extends Activity {
 
             clearAnchorIfPlaybackReached();
             refreshQueuePlaybackRows(prevPlayingIndex);
+            refreshFilePlaybackRows();
             maybeQueueNextBrowseTrack();
             pushPlayStateIfChanged();
         }
@@ -2287,6 +2292,46 @@ public class FileBrowserQueueActivity extends Activity {
         rebindQueueRow(currentPlayingQueueIndex);
     }
 
+    /**
+     * Re-binds the visible file-browser row showing {@code uri} in place, if any; the file-list
+     * counterpart of {@link #rebindQueueRow(int)}. Only visible children are scanned, so this is
+     * O(rows on screen) regardless of folder size. Skips the row currently being swiped.
+     */
+    private void rebindFileRowForUri(Uri uri) {
+        if (uri == null || fileAdapter == null || fileBrowserList == null) return;
+        int first = fileBrowserList.getFirstVisiblePosition();
+        for (int child = 0; child < fileBrowserList.getChildCount(); child++) {
+            int pos = first + child;
+            if (pos >= filteredFileEntries.size()) return;
+            if (!uri.equals(filteredFileEntries.get(pos).uri)) continue;
+            if (fileSwipeState.swiping && pos == fileSwipeState.startPosition) return;
+            fileAdapter.getView(pos, fileBrowserList.getChildAt(child), fileBrowserList);
+            return;
+        }
+    }
+
+    /**
+     * Refreshes only the file-browser rows a playback-state update can change: the browse-playing
+     * and preview rows (progress fill + remaining time), plus whichever rows held those highlights
+     * on the previous update (browse next-track handoff, preview/browse stop). The file-list
+     * counterpart of {@link #refreshQueuePlaybackRows(int)}: avoids a whole-list
+     * notifyDataSetChanged every second, which also clobbered in-progress swipes.
+     */
+    private void refreshFilePlaybackRows() {
+        Uri browseUri = Service.sBrowseMode ? browseFileUri : null;
+        Uri previewUri = fileBrowserPreviewingEntryUri;
+        if (lastHighlightedBrowseUri != null && !lastHighlightedBrowseUri.equals(browseUri)) {
+            rebindFileRowForUri(lastHighlightedBrowseUri);
+        }
+        if (lastHighlightedPreviewUri != null && !lastHighlightedPreviewUri.equals(previewUri)) {
+            rebindFileRowForUri(lastHighlightedPreviewUri);
+        }
+        rebindFileRowForUri(browseUri);
+        rebindFileRowForUri(previewUri);
+        lastHighlightedBrowseUri = browseUri;
+        lastHighlightedPreviewUri = previewUri;
+    }
+
     private void installQueueGestureHandler(ListView list) {
         SwipeState swipeState = queueSwipeState;
         DragState dragState = new DragState();
@@ -2443,10 +2488,9 @@ public class FileBrowserQueueActivity extends Activity {
         });
     }
 
-    private void installSwipeListener(ListView list, SwipePredicate canSwipe,
+    private void installSwipeListener(ListView list, SwipeState state, SwipePredicate canSwipe,
                                       String rightHint, String leftHint,
                                       SwipeAction onRightSwipe, SwipeAction onLeftSwipe) {
-        SwipeState state = new SwipeState();
         list.setOnTouchListener((v, event) -> {
             switch (event.getAction()) {
                 case MotionEvent.ACTION_DOWN:
@@ -2497,7 +2541,7 @@ public class FileBrowserQueueActivity extends Activity {
     }
 
     private void installFileBrowserSwipeAdd(ListView fileBrowserList) {
-        installSwipeListener(fileBrowserList,
+        installSwipeListener(fileBrowserList, fileSwipeState,
             pos -> pos < filteredFileEntries.size(),
             null, null,
             this::handleFileBrowserSwipe,
@@ -4019,7 +4063,7 @@ public class FileBrowserQueueActivity extends Activity {
         }
         clearAnchorIfPlaybackReached();
         refreshQueuePlaybackRows(prevPlayingIndex);
-        if (fileAdapter != null && (fileBrowserPreviewingUri != null || Service.sBrowseMode)) fileAdapter.notifyDataSetChanged();
+        refreshFilePlaybackRows();
         updateEqButtonVisibility();
         maybeQueueNextBrowseTrack();
         pushPlayStateIfChanged();

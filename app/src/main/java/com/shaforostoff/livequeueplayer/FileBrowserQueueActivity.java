@@ -334,7 +334,6 @@ public class FileBrowserQueueActivity extends Activity {
 
         fileBrowserList = findViewById(R.id.file_browser_list);
         queueList                = findViewById(R.id.queue_list);
-        View     queueContainer  = findViewById(R.id.queue_container);
         localQueuePanel  = findViewById(R.id.local_queue_panel);
         remoteQueuePanel = findViewById(R.id.remote_queue_panel);
         remoteQueuePanel.setVisibility(View.GONE);
@@ -2761,10 +2760,6 @@ public class FileBrowserQueueActivity extends Activity {
         } else {
             queueEmptyHint.setVisibility(View.GONE);
         }
-    }
-
-    private void playQueue() {
-        playQueueFrom(0);
     }
 
     private void playQueueFrom(int position) {

@@ -76,7 +76,6 @@
     a:layout_height="0dp"
     a:layout_weight="1"
     a:divider="@color/buttonBackground"
-    a:dividerHeight="1dp"
-    a:listSelector="@android:color/transparent" />
+    a:dividerHeight="1dp" />
 
 </LinearLayout>

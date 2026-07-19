@@ -4009,7 +4009,9 @@ public class FileBrowserQueueActivity extends Activity {
     }
 
     static final class QueueEntry {
-        private static int sNextId = 1;
+        // Atomic because entries are also minted off the main thread (e.g. the remote-request
+        // resolver builds them on a background thread) and ids are the queue's identity key.
+        private static final AtomicInteger sNextId = new AtomicInteger(1);
 
         final int    id;
         final String name;
@@ -4028,9 +4030,12 @@ public class FileBrowserQueueActivity extends Activity {
         QueueEntry(String name, Uri uri, int storedId) {
             if (storedId > 0) {
                 this.id = storedId;
-                if (storedId >= sNextId) sNextId = storedId + 1;
+                int cur;
+                while ((cur = sNextId.get()) <= storedId) {
+                    if (sNextId.compareAndSet(cur, storedId + 1)) break;
+                }
             } else {
-                this.id = sNextId++;
+                this.id = sNextId.getAndIncrement();
             }
             this.name = name;
             this.uri  = uri;

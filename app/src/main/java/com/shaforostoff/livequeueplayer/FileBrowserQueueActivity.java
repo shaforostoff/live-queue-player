@@ -3378,12 +3378,7 @@ public class FileBrowserQueueActivity extends Activity {
      */
     private List<Uri> findAllInTagCache(List<BluetoothQueueBridge.TrackRequest> requests,
                                         List<Map.Entry<String, MetadataExtractor.TagEntry>> snapshot) {
-        int n = requests.size();
-        Uri[] hintMatches = new Uri[n];
-        Uri[] nameMatches = new Uri[n];
-        Uri[] extMatches  = new Uri[n];
-        String[] hints = TrackMatcher.parentHints(requests);
-
+        TrackMatcher.Accumulator matcher = new TrackMatcher.Accumulator(requests);
         for (Map.Entry<String, MetadataExtractor.TagEntry> e : snapshot) {
             Uri childUri = Uri.parse(MetadataExtractor.keyToUri(e.getKey()));
             // For SAF the document id is a single path segment holding the whole "/"-separated
@@ -3400,10 +3395,9 @@ public class FileBrowserQueueActivity extends Activity {
                 int prevSlash = docPath.lastIndexOf('/', lastSlash - 1);
                 dirName = docPath.substring(prevSlash + 1, lastSlash);
             }
-            TrackMatcher.matchByNameAndHint(childName, dirName, childUri,
-                    requests, hints, hintMatches, nameMatches, extMatches);
+            matcher.match(childName, dirName, childUri);
         }
-        return TrackMatcher.mergeMatchResults(hintMatches, nameMatches, extMatches);
+        return matcher.result();
     }
 
     private void startRecursiveTagScanAsync() {
@@ -3439,12 +3433,7 @@ public class FileBrowserQueueActivity extends Activity {
      * which take priority over extension-stripped matches.
      */
     private List<Uri> findAllInFileDirectory(File root, List<BluetoothQueueBridge.TrackRequest> requests) {
-        int n = requests.size();
-        Uri[] hintMatches = new Uri[n];
-        Uri[] nameMatches = new Uri[n];
-        Uri[] extMatches  = new Uri[n];
-        String[] hints = TrackMatcher.parentHints(requests);
-
+        TrackMatcher.Accumulator matcher = new TrackMatcher.Accumulator(requests);
         ArrayList<File> stack = new ArrayList<>();
         stack.add(root);
         while (!stack.isEmpty()) {
@@ -3455,14 +3444,11 @@ public class FileBrowserQueueActivity extends Activity {
             for (File child : children) {
                 if (child == null) continue;
                 if (child.isDirectory()) { stack.add(child); continue; }
-                String childName = child.getName();
-                Uri childUri = Uri.fromFile(child);
-                TrackMatcher.matchByNameAndHint(childName, dirName, childUri,
-                        requests, hints, hintMatches, nameMatches, extMatches);
+                matcher.match(child.getName(), dirName, Uri.fromFile(child));
             }
         }
 
-        return TrackMatcher.mergeMatchResults(hintMatches, nameMatches, extMatches);
+        return matcher.result();
     }
 
     /**
@@ -3471,20 +3457,14 @@ public class FileBrowserQueueActivity extends Activity {
      * name matches, which take priority over extension-stripped matches.
      */
     private List<Uri> findAllInDocumentTree(Uri rootDocumentUri, List<BluetoothQueueBridge.TrackRequest> requests) {
-        int n = requests.size();
         Uri treeUri = storageBrowser.getCurrentTreeUri();
-        Uri[] hintMatches = new Uri[n];
-        Uri[] nameMatches = new Uri[n];
-        Uri[] extMatches  = new Uri[n];
-        String[] hints = TrackMatcher.parentHints(requests);
+        TrackMatcher.Accumulator matcher = new TrackMatcher.Accumulator(requests);
 
         String rootDocId;
         try {
             rootDocId = DocumentsContract.getDocumentId(rootDocumentUri);
         } catch (Exception ignored) {
-            List<Uri> nulls = new ArrayList<>(n);
-            for (int i = 0; i < n; i++) nulls.add(null);
-            return nulls;
+            return matcher.result(); // nothing matched: one null per request
         }
 
         String[] projection = {
@@ -3512,15 +3492,14 @@ public class FileBrowserQueueActivity extends Activity {
                         stack.add(new String[]{childDocId, childName});
                         continue;
                     }
-                    Uri childUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, childDocId);
-                    TrackMatcher.matchByNameAndHint(childName, dirName, childUri,
-                            requests, hints, hintMatches, nameMatches, extMatches);
+                    matcher.match(childName, dirName,
+                            DocumentsContract.buildDocumentUriUsingTree(treeUri, childDocId));
                 }
             } catch (Exception ignored) {
             }
         }
 
-        return TrackMatcher.mergeMatchResults(hintMatches, nameMatches, extMatches);
+        return matcher.result();
     }
 
     private boolean isPlaybackActiveOrFading() {

@@ -87,7 +87,7 @@ final class TrackMatcher {
         return sb.toString();
     }
 
-    static String[] parentHints(List<BluetoothQueueBridge.TrackRequest> requests) {
+    private static String[] parentHints(List<BluetoothQueueBridge.TrackRequest> requests) {
         String[] hints = new String[requests.size()];
         for (int i = 0; i < hints.length; i++) hints[i] = parentFolderFromPath(requests.get(i).path);
         return hints;
@@ -113,7 +113,7 @@ final class TrackMatcher {
      * matches, which outrank extension-stripped matches (see {@link #mergeMatchResults}). Shared by
      * the SAF tree walk, the file walk, and the in-memory tag-cache lookup.
      */
-    static void matchByNameAndHint(String childName, String dirName, Uri childUri,
+    private static void matchByNameAndHint(String childName, String dirName, Uri childUri,
             List<BluetoothQueueBridge.TrackRequest> requests, String[] hints,
             Uri[] hintMatches, Uri[] nameMatches, Uri[] extMatches) {
         for (int i = 0; i < requests.size(); i++) {
@@ -136,7 +136,7 @@ final class TrackMatcher {
         }
     }
 
-    static List<Uri> mergeMatchResults(Uri[] hintMatches, Uri[] nameMatches, Uri[] extMatches) {
+    private static List<Uri> mergeMatchResults(Uri[] hintMatches, Uri[] nameMatches, Uri[] extMatches) {
         List<Uri> results = new ArrayList<>(hintMatches.length);
         for (int i = 0; i < hintMatches.length; i++) {
             Uri r = hintMatches[i];
@@ -145,5 +145,37 @@ final class TrackMatcher {
             results.add(r);
         }
         return results;
+    }
+
+    /**
+     * Stateful scaffold shared by the library walks (SAF tree, file tree, tag cache): owns the
+     * per-request priority arrays and parent hints, takes one library file at a time via
+     * {@link #match}, and {@link #result} merges the priorities into one URI per request
+     * (null where unmatched).
+     */
+    static final class Accumulator {
+        private final List<BluetoothQueueBridge.TrackRequest> requests;
+        private final String[] hints;
+        private final Uri[] hintMatches;
+        private final Uri[] nameMatches;
+        private final Uri[] extMatches;
+
+        Accumulator(List<BluetoothQueueBridge.TrackRequest> requests) {
+            this.requests = requests;
+            int n = requests.size();
+            hints = parentHints(requests);
+            hintMatches = new Uri[n];
+            nameMatches = new Uri[n];
+            extMatches  = new Uri[n];
+        }
+
+        void match(String childName, String dirName, Uri childUri) {
+            matchByNameAndHint(childName, dirName, childUri,
+                    requests, hints, hintMatches, nameMatches, extMatches);
+        }
+
+        List<Uri> result() {
+            return mergeMatchResults(hintMatches, nameMatches, extMatches);
+        }
     }
 }

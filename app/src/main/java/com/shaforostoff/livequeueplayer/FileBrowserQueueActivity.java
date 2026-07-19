@@ -962,7 +962,7 @@ public class FileBrowserQueueActivity extends Activity {
                 if (name != null && name.length() > 0) return name;
             }
         } catch (Exception ignored) {}
-        return fileName(DocumentsContract.getDocumentId(docUri));
+        return baseName(DocumentsContract.getDocumentId(docUri));
     }
 
     /** Builds an #EXTM3U playlist from the queue, or returns null if no entry yields a path. */
@@ -1170,7 +1170,7 @@ public class FileBrowserQueueActivity extends Activity {
 
             String entryParentPath = parentPath(entryPath);
             if (entryParentPath != null && entryParentPath.equals(currentPath)) {
-                return fileName(entryPath);
+                return baseName(entryPath);
             }
             return computeRelativePath(currentPath, entryPath);
         } catch (Exception ignored) {
@@ -1194,7 +1194,7 @@ public class FileBrowserQueueActivity extends Activity {
         return path.substring(0, slash);
     }
 
-    private String fileName(String path) {
+    private static String baseName(String path) {
         if (path == null || path.length() == 0) {
             return null;
         }
@@ -2565,7 +2565,7 @@ public class FileBrowserQueueActivity extends Activity {
 
         queueTransitionActive = true;
         queueTransitionStartedAtMs = SystemClock.elapsedRealtime();
-        resetStopButtonState();
+        applyStopButtonState();
         if (forceImmediateRestart) {
             // Replace inside the Service rather than the old KILL + play intent pair: the KILL's
             // stopForeground() opened a foreground gap that cannot be re-closed from the
@@ -3033,7 +3033,7 @@ public class FileBrowserQueueActivity extends Activity {
 
         // Do not show fading UI when nothing is currently playing.
         if ((!Service.sIsPlaying && !isQueueTransitionActive()) || (currentPlayingQueueIndex < 0 && !Service.sBrowseMode)) {
-            resetStopButtonState();
+            applyStopButtonState();
             return;
         }
 
@@ -3044,7 +3044,7 @@ public class FileBrowserQueueActivity extends Activity {
         // rather than "playing" — the Service does the same in its STOP handler, but
         // that runs asynchronously and would still show the old state at push time.
         Service.sFadeOutInProgress = true;
-        showStopButtonFadingState();
+        applyStopButtonState();
     }
 
     private void cancelFadeOutAndContinue() {
@@ -3065,7 +3065,7 @@ public class FileBrowserQueueActivity extends Activity {
         // does the same thing in its PLAY branch of onStartCommand(), but that runs
         // asynchronously — the flag would still be true by the time we push state.
         Service.sFadeOutInProgress = false;
-        resetStopButtonState();
+        applyStopButtonState();
         queueAdapter.notifyDataSetChanged();
     }
 
@@ -3131,7 +3131,7 @@ public class FileBrowserQueueActivity extends Activity {
 
         browseTransitionActive = true;
         sendStopNowCommand();
-        resetStopButtonState();
+        applyStopButtonState();
         startPlaybackService(intent);
 
         browseFileUri = uri;
@@ -3705,13 +3705,6 @@ public class FileBrowserQueueActivity extends Activity {
         browserStopButton.setVisibility(browseServicePlaying || previewPlaying ? View.VISIBLE : View.GONE);
     }
 
-    private void showStopButtonFadingState() {
-        // The button text/colour is read from Service.sFadeOutInProgress (via
-        // isStopFadeInProgress()), so this just re-renders once the Service has flipped the
-        // flag in response to the STOP intent.
-        applyStopButtonState();
-    }
-
     private void onFadeOutFinished() {
         resetFileBrowserPreview();
         applyStoppedState();
@@ -3840,10 +3833,6 @@ public class FileBrowserQueueActivity extends Activity {
             SilenceStreamer.fadeOutAndRelease();
         }
         super.onStop();
-    }
-
-    private void resetStopButtonState() {
-        applyStopButtonState();
     }
 
     private void ensureSilenceStreamer() {

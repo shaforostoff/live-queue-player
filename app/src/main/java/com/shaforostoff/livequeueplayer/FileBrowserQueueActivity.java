@@ -2081,6 +2081,34 @@ public class FileBrowserQueueActivity extends Activity {
         lastHighlightedPreviewUri = previewUri;
     }
 
+    /**
+     * Cancels the swipe when the finger has moved dominantly vertically past the slop — the
+     * gesture is a list scroll, not a swipe. Returns true if cancelled.
+     */
+    private boolean cancelSwipeIfVerticalScroll(SwipeState s, float dx, float dy) {
+        if (Math.abs(dy) > swipeVerticalSlop && Math.abs(dy) > Math.abs(dx)) {
+            s.resetView();
+            s.startPosition = -1;
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * Shared ACTION_UP/ACTION_CANCEL tail of both swipe listeners: suppresses the pending item
+     * click after a real swipe, forwards the click otherwise, and resets the gesture state.
+     * Returns what the touch listener should return (whether the gesture was handled).
+     */
+    private boolean finishSwipe(SwipeState s, View v) {
+        if (s.swiping) suppressItemClick = true;
+        if (!s.handled) v.performClick();
+        s.resetView();
+        boolean handled = s.handled;
+        s.startPosition = -1;
+        s.handled = false;
+        return handled;
+    }
+
     private void installQueueGestureHandler(ListView list) {
         SwipeState swipeState = queueSwipeState;
         DragState dragState = new DragState();
@@ -2180,9 +2208,7 @@ public class FileBrowserQueueActivity extends Activity {
                             longPressRunnable[0] = null;
                         }
                     }
-                    if (Math.abs(dy) > swipeVerticalSlop && Math.abs(dy) > Math.abs(dx)) {
-                        swipeState.resetView();
-                        swipeState.startPosition = -1;
+                    if (cancelSwipeIfVerticalScroll(swipeState, dx, dy)) {
                         return false;
                     }
                     // Left swipe removes; mirror the change to a connected client (no-op off-host).
@@ -2222,13 +2248,7 @@ public class FileBrowserQueueActivity extends Activity {
                         notifyRemoteQueueChanged();
                         return true;
                     }
-                    if (swipeState.swiping) suppressItemClick = true;
-                    if (!swipeState.handled) v.performClick();
-                    swipeState.resetView();
-                    boolean handled = swipeState.handled;
-                    swipeState.startPosition = -1;
-                    swipeState.handled = false;
-                    return handled;
+                    return finishSwipe(swipeState, v);
                 }
 
                 default:
@@ -2260,9 +2280,7 @@ public class FileBrowserQueueActivity extends Activity {
                     if (state.handled || state.startPosition < 0) return state.handled;
                     float dx = event.getX() - state.downX;
                     float dy = event.getY() - state.downY;
-                    if (Math.abs(dy) > swipeVerticalSlop && Math.abs(dy) > Math.abs(dx)) {
-                        state.resetView();
-                        state.startPosition = -1;
+                    if (cancelSwipeIfVerticalScroll(state, dx, dy)) {
                         return false;
                     }
                     if (applySwipeMove(list, state, dx, swipeHorizontalSlop, false, onRightSwipe)) {
@@ -2275,13 +2293,7 @@ public class FileBrowserQueueActivity extends Activity {
 
                 case MotionEvent.ACTION_UP:
                 case MotionEvent.ACTION_CANCEL:
-                    if (state.swiping) suppressItemClick = true;
-                    if (!state.handled) v.performClick();
-                    state.resetView();
-                    boolean handled = state.handled;
-                    state.startPosition = -1;
-                    state.handled = false;
-                    return handled;
+                    return finishSwipe(state, v);
 
                 default:
                     return false;

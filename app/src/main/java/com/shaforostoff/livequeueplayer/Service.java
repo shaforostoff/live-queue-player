@@ -1,7 +1,10 @@
 package com.shaforostoff.livequeueplayer;
 
 import android.annotation.SuppressLint;
+import android.content.BroadcastReceiver;
+import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.content.pm.ServiceInfo;
 import android.media.MediaDescription;
@@ -13,6 +16,7 @@ import android.os.Handler;
 import android.os.Looper;
 import android.os.PowerManager;
 import android.os.SystemClock;
+import android.util.Log;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -78,6 +82,14 @@ public class Service extends android.service.media.MediaBrowserService implement
     // Set once onDestroy() begins tearing the service down. The boundary invariants (Step 5) are only
     // meaningful while the service is live, so the debug tripwire stops checking past this point.
     private boolean destroyed = false;
+
+    // Step 4 — debug-only chaos control. Lets an off-device harness drive real boundary scenarios
+    // (seek-to-boundary, stop/resume, add-below-current, reorder, fade length) over ADB. Registered
+    // and referenced only under BuildConfig.DEBUG, so it is stripped from release builds entirely.
+    static final String CHAOS_ACTION = "com.shaforostoff.livequeueplayer.CHAOS";
+    private static final String CHAOS_TAG = "LqpChaos";
+    private BroadcastReceiver chaosReceiver;
+    private int chaosIdSeq = 0;
     private int progressAnchorPositionMs = 0;
     private long progressAnchorElapsedMs = 0L;
     private final Handler progressHandler = new Handler(Looper.getMainLooper());
@@ -121,7 +133,127 @@ public class Service extends android.service.media.MediaBrowserService implement
         };
         QueueStore.prefs(this).registerOnSharedPreferenceChangeListener(queueChangeListener);
         notifications.create();
+
+        if (BuildConfig.DEBUG) registerChaosReceiver();
     }
+
+    // ============================ Step 4 — debug chaos control ============================
+    // Everything below is compiled out of release builds (guarded by / only reachable through
+    // BuildConfig.DEBUG). It translates am-friendly string commands into the exact intents the UI
+    // sends, so an off-device harness exercises the real production code paths. See
+    // docs/testing-race-conditions.md and scripts/boundary-chaos.sh.
+
+    private void registerChaosReceiver() {
+        chaosReceiver = new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context context, Intent intent) {
+                handleChaosCommand(intent.getStringExtra("cmd"),
+                        intent.getIntExtra("arg", -1), intent.getIntExtra("arg2", -1));
+            }
+        };
+        IntentFilter filter = new IntentFilter(CHAOS_ACTION);
+        // Exported so `adb shell am broadcast` (shell uid) can reach this registered receiver.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(chaosReceiver, filter, Context.RECEIVER_EXPORTED);
+        } else {
+            registerReceiver(chaosReceiver, filter);
+        }
+    }
+
+    /** Handle one chaos command on the main thread, dispatching real Service intents. */
+    private void handleChaosCommand(String cmd, int arg, int arg2) {
+        if (cmd == null) return;
+        Log.i(CHAOS_TAG, "CMD " + cmd + " arg=" + arg + " arg2=" + arg2);
+        switch (cmd) {
+            case "status" -> Log.i(CHAOS_TAG, "STATUS idx=" + sCurrentIndex + " playing=" + sIsPlaying
+                    + " pending=" + sHasPendingTracks + " fade=" + sFadeOutInProgress
+                    + " pos=" + sPlaybackPositionMs + " dur=" + sPlaybackDurationMs
+                    + " playlistPos=" + playlistPosition + " size=" + (playlist != null ? playlist.size() : 0)
+                    + " hasPlayer=" + (audioPlayer != null));
+            case "set_fade" -> AudioOutputRouter.setFadeOutSeconds(this, Math.max(1, Math.min(10, arg)));
+            case "seek_lead" -> chaosSeekLead(arg);
+            case "stop" -> chaosSend(Launcher.STOP);
+            case "resume", "play" -> chaosSend(Launcher.PLAY);
+            case "pause" -> chaosSend(Launcher.PAUSE);
+            case "play_pause" -> chaosSend(Launcher.PLAY_PAUSE);
+            case "skip" -> chaosSend(Launcher.SKIP);
+            case "kill" -> chaosSend(Launcher.KILL);
+            case "clear_played" -> chaosSend(Launcher.CLEAR_PLAYED_QUEUE);
+            case "add_below" -> chaosAddBelowCurrent();
+            case "reorder" -> chaosReorderPending(arg, arg2);
+            default -> Log.w(CHAOS_TAG, "unknown cmd: " + cmd);
+        }
+    }
+
+    /** Seek the current track to {@code leadMs} before its end, so the boundary arrives on demand. */
+    private void chaosSeekLead(int leadMs) {
+        if (sPlaybackDurationMs <= 0) { Log.i(CHAOS_TAG, "seek_lead: duration unknown, skipping"); return; }
+        int target = Math.max(0, sPlaybackDurationMs - Math.max(0, leadMs));
+        Intent i = new Intent(this, Service.class);
+        i.putExtra(Launcher.TYPE, Launcher.SEEK);
+        i.putExtra(EXTRA_SEEK_TO_MS, target);
+        chaosStart(i);
+    }
+
+    private void chaosSend(byte action) {
+        Intent i = new Intent(this, Service.class);
+        i.putExtra(Launcher.TYPE, action);
+        chaosStart(i);
+    }
+
+    /** Insert a playable track directly below the current one, via the real SET_PENDING_QUEUE path. */
+    private void chaosAddBelowCurrent() {
+        if (playlist == null || sCurrentIndex < 0 || sCurrentIndex >= playlist.size()) return;
+        ArrayList<Uri> uris = new ArrayList<>();
+        ArrayList<Integer> ids = new ArrayList<>();
+        // The new below-current track reuses the current track's (already durable) URI.
+        uris.add(playlist.get(sCurrentIndex).location);
+        ids.add(1_000_000 + (chaosIdSeq++));
+        collectPending(uris, ids);
+        chaosDispatchSetPending(uris, ids);
+    }
+
+    /** Move a pending track from index {@code from} to {@code to} (both within the pending sublist). */
+    private void chaosReorderPending(int from, int to) {
+        ArrayList<Uri> uris = new ArrayList<>();
+        ArrayList<Integer> ids = new ArrayList<>();
+        collectPending(uris, ids);
+        if (from < 0 || from >= uris.size() || to < 0 || to >= uris.size()) {
+            Log.i(CHAOS_TAG, "reorder: indices out of range for pending size " + uris.size());
+            return;
+        }
+        uris.add(to, uris.remove(from));
+        ids.add(to, ids.remove(from));
+        chaosDispatchSetPending(uris, ids);
+    }
+
+    /** Append the current pending tracks (everything after the current one) to the given lists. */
+    private void collectPending(ArrayList<Uri> uris, ArrayList<Integer> ids) {
+        for (int i = playlistPosition; i < playlist.size(); i++) {
+            uris.add(playlist.get(i).location);
+            ids.add(playlist.get(i).queueEntryId);
+        }
+    }
+
+    /** Build and dispatch the real SET_PENDING_QUEUE intent (mirrors the activity's syncServicePendingQueue). */
+    private void chaosDispatchSetPending(ArrayList<Uri> uris, ArrayList<Integer> ids) {
+        int[] idArray = new int[ids.size()];
+        for (int i = 0; i < ids.size(); i++) idArray[i] = ids.get(i);
+        Intent i = new Intent(this, Service.class);
+        i.putExtra(Launcher.TYPE, Launcher.SET_PENDING_QUEUE);
+        i.putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris);
+        i.putExtra(EXTRA_ENTRY_IDS, idArray);
+        chaosStart(i);
+    }
+
+    private void chaosStart(Intent i) {
+        try {
+            startService(i);
+        } catch (RuntimeException e) {
+            Log.w(CHAOS_TAG, "startService rejected (background?): " + e);
+        }
+    }
+    // ========================== end Step 4 — debug chaos control ==========================
 
     @Override
     public BrowserRoot onGetRoot(String clientPackageName, int clientUid, Bundle rootHints) {
@@ -741,6 +873,10 @@ public class Service extends android.service.media.MediaBrowserService implement
     public void onDestroy() {
         destroyed = true;
         sForegroundActive = false;
+        if (BuildConfig.DEBUG && chaosReceiver != null) {
+            unregisterReceiver(chaosReceiver);
+            chaosReceiver = null;
+        }
         stopProgressTicks();
         if (queueChangeListener != null) {
             QueueStore.prefs(this).unregisterOnSharedPreferenceChangeListener(queueChangeListener);

@@ -18,7 +18,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 /**
  * audio playing logic class
  */
-class AudioPlayer extends Thread implements MediaPlayer.OnCompletionListener, MediaPlayerStateListener {
+class AudioPlayer extends Thread implements MediaPlayer.OnCompletionListener, MediaPlayerStateListener, PlaybackEngine {
 
   private final Service service;
   private final MediaPlayer mediaPlayer;
@@ -206,7 +206,7 @@ class AudioPlayer extends Thread implements MediaPlayer.OnCompletionListener, Me
     }
   }
 
-  void cancelFadeOutAndResume() {
+  public void cancelFadeOutAndResume() {
     if (released) return;
 
     fadeToken.incrementAndGet();
@@ -220,11 +220,11 @@ class AudioPlayer extends Thread implements MediaPlayer.OnCompletionListener, Me
     }
   }
 
-  boolean isFadeOutInProgress() {
+  public boolean isFadeOutInProgress() {
     return fadeOutInProgress;
   }
 
-  void seekTo(int positionMs) {
+  public void seekTo(int positionMs) {
     if (!released) {
       try { mediaPlayer.seekTo(positionMs); }
       catch (IllegalStateException ignored) {}
@@ -232,7 +232,7 @@ class AudioPlayer extends Thread implements MediaPlayer.OnCompletionListener, Me
   }
 
   /** Re-read persisted equalizer settings and push them to the live effect. */
-  void applyEqualizerSettings() {
+  public void applyEqualizerSettings() {
     if (equalizer != null) equalizer.applySettings(service);
   }
 

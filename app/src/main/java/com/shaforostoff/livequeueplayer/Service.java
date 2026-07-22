@@ -58,7 +58,7 @@ public class Service extends android.service.media.MediaBrowserService implement
 
     private HWListener hwListener;
     private Notifications notifications;
-    private AudioPlayer audioPlayer;
+    private PlaybackEngine audioPlayer;
     // Strong ref required: SharedPreferences holds change listeners weakly. Fires the
     // MediaBrowser/Android Auto queue-list refresh whenever the persisted queue changes.
     private SharedPreferences.OnSharedPreferenceChangeListener queueChangeListener;
@@ -355,8 +355,17 @@ public class Service extends android.service.media.MediaBrowserService implement
      * while the app is backgrounded cannot re-promote, and App Standby stops the demoted service
      * about a minute after the screen turns off — cutting playback mid-song.
      */
-    private boolean isRemoteHostSession() {
+    protected boolean isRemoteHostSession() {
         return ((App) getApplication()).getBluetoothBridge().isServerRunning();
+    }
+
+    /**
+     * Factory for the audio engine, isolated behind {@link PlaybackEngine} so tests can substitute a
+     * fake that is driven on the paused main looper. Production returns the real {@link AudioPlayer};
+     * see docs/testing-race-conditions.md.
+     */
+    protected PlaybackEngine createPlaybackEngine(Uri location) throws IOException {
+        return new AudioPlayer(this, location);
     }
 
     private void playEntryFromPlaylist() {
@@ -374,7 +383,7 @@ public class Service extends android.service.media.MediaBrowserService implement
             // mid-track when outputs are plugged or unplugged.
             AudioOutputRouter.snapshotAudioPreviewAvailability(this);
             /* get audio playback logic and start async */
-            audioPlayer = new AudioPlayer(this, entry.location);
+            audioPlayer = createPlaybackEngine(entry.location);
             audioPlayer.start();
 
             /* create notification for playback control */
@@ -782,7 +791,7 @@ public class Service extends android.service.media.MediaBrowserService implement
      * stale report from a superseded player (e.g. the user skipped while a slow prepare was still
      * running), so a late duration can never clobber the track that replaced it.
      */
-    void onTrackDurationResolved(AudioPlayer reporter, int durationMs) {
+    void onTrackDurationResolved(PlaybackEngine reporter, int durationMs) {
         progressHandler.post(() -> {
             if (reporter != audioPlayer) return;
             sPlaybackDurationMs = Math.max(0, durationMs);

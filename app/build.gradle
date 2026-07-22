@@ -43,4 +43,20 @@ android {
     sourceCompatibility JavaVersion.VERSION_17
     targetCompatibility JavaVersion.VERSION_17
   }
+
+  testOptions {
+    unitTests {
+      // Robolectric (Step 2) reads the merged manifest/resources from the built variant.
+      includeAndroidResources = true
+      // Let the few framework calls we don't drive return sane defaults instead of throwing.
+      returnDefaultValues = true
+    }
+  }
+}
+
+dependencies {
+  // Step 3 — pure-JVM model fuzzing. No Android on the classpath; runs on plain JUnit.
+  testImplementation 'junit:junit:4.13.2'
+  // Step 2 — Robolectric drives the real Service on a paused main looper, on the JVM.
+  testImplementation 'org.robolectric:robolectric:4.13'
 }

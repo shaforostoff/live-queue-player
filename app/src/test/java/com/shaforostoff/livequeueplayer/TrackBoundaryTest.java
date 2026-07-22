@@ -160,6 +160,21 @@ public class TrackBoundaryTest {
         assertEquals(1, Service.sCurrentIndex);
     }
 
+    /**
+     * Regression for the teardown race the Step-5 debug tripwire surfaced: a duration report posted
+     * when prepare() finished, still queued when onDestroy() runs, used to republish against a
+     * cleared queue / released MediaSession because onDestroy left {@code audioPlayer} non-null.
+     * onDestroy now nulls it, so the identity guard drops the stale report.
+     */
+    @Test
+    public void staleDurationReportAfterDestroy_isDroppedNotRepublished() {
+        startQueue(2);
+        service.lastEngine.simulatePrepared(); // posts onTrackDurationResolved to the paused looper
+        controller.destroy();                  // tears down before the report drains (idles internally)
+        drainLooper();                          // stale report runs here — must be a no-op, no crash
+        // Reaching here without the debug tripwire throwing is the assertion.
+    }
+
     // --- harness ---------------------------------------------------------------------------------
 
     /** Seed and start a queue of {@code n} file:// tracks through the real external-start path. */

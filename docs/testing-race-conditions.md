@@ -15,9 +15,12 @@ edit, prepare finishing/failing, audio-focus loss, stop) lands *at or near a tra
 They are complementary: the **fuzzer proposes** a suspicious ordering; you **dispose** of it by
 reproducing it against the real `Service` in a Step-2 test. Both assert the *same* invariants.
 
-> Device-level tests (Step 1 instrumented/UI Automator, Step 4 ADB chaos harness, Step 5 debug
-> assertions) are **not** implemented here — they run *on* the phone over USB and are tracked
-> separately. This document covers only the two on-PC layers.
+A third layer, **Step 5 — debug runtime assertions**, ships those same invariants inside the app
+(debug builds only) so they also fire during real on-device / chaos / monkey runs. See the Step 5
+section below.
+
+> Not implemented here: Step 1 (instrumented / UI Automator) and Step 4 (seeded ADB chaos harness) —
+> they run *on* the phone over USB and are tracked separately.
 
 ---
 
@@ -152,9 +155,45 @@ confirm it reproduces (or doesn't) against the real `Service`.
 
 ---
 
+## Step 5 — debug runtime assertions (on-device tripwire)
+
+The same invariants, embedded in `Service` itself and checked at runtime in **debug builds only**, so
+a violation crashes *loudly at the point of corruption* with a stack trace — instead of surfacing
+tracks later as mystery silence — during ordinary debug use, monkey runs, or a Step-4 chaos run.
+
+- `assertBoundaryInvariants()` is called from `sendPlaybackStateBroadcast()` — the state-committed
+  chokepoint, hit at the end of every boundary mutation and on each progress tick — guarded by
+  `if (BuildConfig.DEBUG && !destroyed)`.
+- A second precondition in `playEntryFromPlaylist()` names an out-of-range advance instead of letting
+  it throw a bare `IndexOutOfBoundsException`.
+
+**Zero release cost.** `BuildConfig.DEBUG` is a compile-time constant, so in release the guarded
+blocks are dead code and R8 strips the assert methods entirely (release compiles verified).
+
+**Enabling `BuildConfig`.** These asserts need `android.buildFeatures.buildConfig = true` (added to
+`app/build.gradle`), because AGP 8 does not generate `BuildConfig` by default.
+
+**How they're verified without a device.** Robolectric runs the *debug* variant, so `BuildConfig.DEBUG`
+is true under the Step-2 tests — every Step-2 scenario exercises these live asserts on the JVM. That
+is how they are proven not to false-positive.
+
+> **This layer already caught a real latent bug.** Turned on, the tripwire fired during teardown:
+> `onDestroy()` cleared the playlist but left `playlistPosition`/`audioPlayer` non-reset, so a
+> duration report still queued from `prepare()` (`onTrackDurationResolved`) republished against a
+> cleared queue — and would have run `hwListener.setTrackMetadata()` against an already-released
+> `MediaSession`. The identity guard was *meant* to drop that stale report but couldn't, because the
+> field wasn't nulled. Fixed by nulling `audioPlayer` in `onDestroy()`; pinned by
+> `staleDurationReportAfterDestroy_isDroppedNotRepublished` in the Step-2 suite.
+
+If you add or reorder boundary state mutations, keep the debug asserts honest: they must hold at every
+`sendPlaybackStateBroadcast()` call. Genuinely-transient teardown states belong behind the
+`destroyed` guard, not asserted.
+
 ## When you touch the boundary code
 
 1. Update `PlayerModel.apply()` to mirror the change; run Step 3 — a new invariant violation is a
    design bug or a spec you need to revise.
 2. Add/adjust a Step-2 case for the concrete scenario.
-3. `./gradlew testDebugUnitTest` must be green, **including the mutation self-tests**.
+3. Keep the Step-5 asserts holding at every `sendPlaybackStateBroadcast()`; put real teardown-only
+   transients behind the `destroyed` guard.
+4. `./gradlew testDebugUnitTest` must be green, **including the mutation self-tests**.

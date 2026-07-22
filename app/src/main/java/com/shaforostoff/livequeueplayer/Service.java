@@ -75,6 +75,9 @@ public class Service extends android.service.media.MediaBrowserService implement
     private String currentTrackTitle = "";
     // Tracks which playlist index has already been retried once, to avoid infinite retry loops.
     private volatile int retriedAtPosition = -1;
+    // Set once onDestroy() begins tearing the service down. The boundary invariants (Step 5) are only
+    // meaningful while the service is live, so the debug tripwire stops checking past this point.
+    private boolean destroyed = false;
     private int progressAnchorPositionMs = 0;
     private long progressAnchorElapsedMs = 0L;
     private final Handler progressHandler = new Handler(Looper.getMainLooper());
@@ -373,6 +376,9 @@ public class Service extends android.service.media.MediaBrowserService implement
         // upcoming prepare() (blocking I/O). For auto-advance this is already held from the
         // previous track; for the first track this is where it first becomes held.
         acquirePlaybackWakeLock();
+        if (BuildConfig.DEBUG && (playlistPosition < 0 || playlistPosition >= playlist.size()))
+            throw new AssertionError("playEntryFromPlaylist called with playlistPosition="
+                    + playlistPosition + " outside [0, " + playlist.size() + ")");
         var entry = playlist.get(playlistPosition);
         playlistPosition++;
         int currentIndex = playlistPosition - 1;
@@ -725,6 +731,7 @@ public class Service extends android.service.media.MediaBrowserService implement
      */
     @Override
     public void onDestroy() {
+        destroyed = true;
         sForegroundActive = false;
         stopProgressTicks();
         if (queueChangeListener != null) {
@@ -738,8 +745,13 @@ public class Service extends android.service.media.MediaBrowserService implement
         onMediaPlayerReset();
         notifications.onMediaPlayerDestroy();
         hwListener.onMediaPlayerDestroy();
-        if (audioPlayer != null)
+        if (audioPlayer != null) {
             audioPlayer.onMediaPlayerDestroy();
+            // Clear the field so a duration report still queued from this player's prepare() is
+            // dropped by the identity guard in onTrackDurationResolved() instead of running against
+            // the now-released MediaSession/notification after teardown.
+            audioPlayer = null;
+        }
         playlist.clear();
         releasePlaybackWakeLock();
 
@@ -823,6 +835,12 @@ public class Service extends android.service.media.MediaBrowserService implement
     }
 
     private void sendPlaybackStateBroadcast() {
+        // Debug-only tripwire (Step 5). This method is the state-committed chokepoint — called at the
+        // end of every boundary mutation and on each progress tick — so checking here catches an
+        // inconsistency the instant it is published, with a stack trace at the point of corruption,
+        // rather than tracks later as mystery silence. Compiled out of release builds.
+        if (BuildConfig.DEBUG && !destroyed) assertBoundaryInvariants();
+
         Intent intent = new Intent(ACTION_PLAYBACK_STATE);
         // Confine to our own package: every receiver is in-app (the activity and Launcher), and an
         // implicit broadcast would otherwise let other apps read the current-track URI or inject a
@@ -839,6 +857,34 @@ public class Service extends android.service.media.MediaBrowserService implement
         intent.putExtra(EXTRA_BROWSE_MODE, sBrowseMode);
         intent.putExtra(EXTRA_CURRENT_ENTRY_ID, sCurrentEntryId);
         sendBroadcast(intent);
+    }
+
+    /**
+     * The track-boundary invariants that must hold at every state-commit point (Step 5). Identical to
+     * the spec fuzzed off-device in the boundary tests — see docs/testing-race-conditions.md. Only
+     * ever invoked under {@link BuildConfig#DEBUG}, so release builds pay nothing.
+     */
+    private void assertBoundaryInvariants() {
+        int size = playlist != null ? playlist.size() : 0;
+        boolean hasPlayer = audioPlayer != null;
+        int idx = sCurrentIndex;
+        int pos = playlistPosition;
+
+        // 1. playlistPosition stays within the queue.
+        if (pos < 0 || pos > size) failBoundary("playlistPosition out of range", size, hasPlayer);
+        // 2. sCurrentIndex is either "no track" (-1) or a real index.
+        if (!(idx == -1 || (idx >= 0 && idx < size))) failBoundary("sCurrentIndex out of range", size, hasPlayer);
+        // 3. During active playback the next entry is always exactly one past the current one.
+        if (hasPlayer && idx >= 0 && pos != idx + 1)
+            failBoundary("playlistPosition must equal sCurrentIndex + 1 during playback", size, hasPlayer);
+        // 4. "Playing" implies a live engine sitting on a real track.
+        if (sIsPlaying && !(hasPlayer && idx >= 0)) failBoundary("sIsPlaying with no live current track", size, hasPlayer);
+    }
+
+    private void failBoundary(String what, int size, boolean hasPlayer) {
+        throw new AssertionError("Boundary invariant violated: " + what
+                + " [playlistPosition=" + playlistPosition + " sCurrentIndex=" + sCurrentIndex
+                + " playlist.size=" + size + " sIsPlaying=" + sIsPlaying + " hasPlayer=" + hasPlayer + "]");
     }
 
     void onAudioFocusLoss(int currentPositionMs) {

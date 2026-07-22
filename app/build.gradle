@@ -12,6 +12,12 @@ android {
     targetSdk 36
   }
 
+  buildFeatures {
+    // Generates BuildConfig.DEBUG, used to gate the boundary runtime assertions to debug builds
+    // (stripped from release). See docs/testing-race-conditions.md (Step 5).
+    buildConfig true
+  }
+
   /* just delete the signing configs if it doesn't work */
   signingConfigs {
     def keystorePropertiesFiles = rootProject.file("keystore.properties")

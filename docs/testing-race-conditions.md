@@ -41,10 +41,14 @@ First run downloads Robolectric (~one-time, needs network); afterwards everythin
 
 HTML report on failure: `app/build/reports/tests/testDebugUnitTest/index.html`.
 
-The on-device chaos harness (Step 4) is separate — it needs the phone:
+The on-device chaos harnesses (Step 4) are separate — they need the phone(s):
 
 ```bash
-scripts/boundary-chaos.sh [SEED] [ITERATIONS]     # e.g. scripts/boundary-chaos.sh 42 25
+./gradlew assembleDebug
+./gradlew installDebug
+
+scripts/boundary-chaos.sh [SEED] [ITERATIONS]              # single phone
+scripts/bluetooth-boundary-chaos.sh [SEED] [ITERATIONS]   # two phones over Bluetooth
 ```
 
 ---
@@ -248,6 +252,41 @@ so the minimum effective lead is ~1s — a real app behavior, tested as-is.)
   final command, but if interrupted, reset it in Settings.
 - The chaos receiver is **exported in debug builds** so `adb` can reach it — fine for a test device,
   and absent from release entirely.
+
+## Step 4 (Bluetooth) — two-phone chaos harness
+
+`scripts/bluetooth-boundary-chaos.sh` drives the **remote-queue feature across two USB-connected
+phones**: a **receiver** (remote_receive — hosts playback) and a **sender** (remote_send — controls
+it over classic Bluetooth). It forces boundaries on the receiver and makes the sender fire **real
+remote commands** that arrive over the BT link right at the receiver's boundary — the genuine race,
+where the BT read thread delivers a command onto the receiver's main thread while its Service is
+auto-advancing. Detection is again the receiver's Step-5 tripwire (+ FATAL EXCEPTION / process death
+on **both** phones).
+
+**App-side hooks (debug only).** The sender gets a relay in `App` (`CHAOS_BT` receiver) that emits
+real remote-queue JSON over the **live app-scoped socket** — the exact path the send-mode UI uses.
+The receiver reuses its `Service` `CHAOS` hook, with `status` extended to report the BT link state
+and the pending tracks' stable ids (`bt=…`, `pendingIds=[…]`) so the harness can target `move_track`
+/ `remove_track`. On the receiver, `stop_playback`/`resume_playback` map to the *same*
+`stopPlaybackWithFadeout()` / `cancelFadeOutAndContinue()` paths as the local Stop/Resume — so this
+reuses all of Step 5.
+
+**Scenarios (seeded), each at a forced boundary:**
+- **Remote Stop → Resume** across every fade length (1–10s) × resume-timing (during / at-end / after).
+- **Remote move-below-current** — `move_track` to just under the playing track (reorder / "appears
+  below current"), via the receiver's real `SET_PENDING_QUEUE` sync.
+- **Remote remove** of a pending track at the boundary.
+
+**Prerequisite the harness can't script.** The two-phone link needs the UI: the queue-host activity
+is non-exported (so `adb` can't launch the remote modes) and BT pairing/device-selection is
+interactive. Establish it once by hand — **phone1: remote receive; phone2: remote send → connect** —
+and load/start a queue on phone1. The harness auto-detects roles by model (override with
+`RECV_SERIAL=` / `SEND_SERIAL=`), then **verifies the link is up and refuses to run without it**
+(reinstalling the debug APK drops the link, so re-establish after any reinstall).
+
+**Status.** App hooks built and verified responding on both phones (Xperia 10 V / A15 receiver,
+XQ-BQ52 / A13 sender); the harness resolves roles, bootstraps receiver playback, and gates on a live
+link. A full seeded run requires the manually-established BT connection described above.
 
 ## When you touch the boundary code
 

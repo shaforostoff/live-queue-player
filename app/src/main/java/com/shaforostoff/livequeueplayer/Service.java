@@ -169,7 +169,8 @@ public class Service extends android.service.media.MediaBrowserService implement
                     + " pending=" + sHasPendingTracks + " fade=" + sFadeOutInProgress
                     + " pos=" + sPlaybackPositionMs + " dur=" + sPlaybackDurationMs
                     + " playlistPos=" + playlistPosition + " size=" + (playlist != null ? playlist.size() : 0)
-                    + " hasPlayer=" + (audioPlayer != null));
+                    + " hasPlayer=" + (audioPlayer != null)
+                    + " entryId=" + sCurrentEntryId + " bt=" + chaosBtState() + " pendingIds=" + chaosPendingIds());
             case "set_fade" -> AudioOutputRouter.setFadeOutSeconds(this, Math.max(1, Math.min(10, arg)));
             case "seek_lead" -> chaosSeekLead(arg);
             case "stop" -> chaosSend(Launcher.STOP);
@@ -252,6 +253,23 @@ public class Service extends android.service.media.MediaBrowserService implement
         } catch (RuntimeException e) {
             Log.w(CHAOS_TAG, "startService rejected (background?): " + e);
         }
+    }
+
+    /** Bluetooth link state (host/receiver role), for the two-phone chaos harness. */
+    private String chaosBtState() {
+        BluetoothQueueBridge bridge = ((App) getApplication()).getBluetoothBridge();
+        return "server=" + bridge.isServerRunning() + ",connected=" + bridge.isConnected();
+    }
+
+    /** Stable queue-entry ids of the current track and the next few pending tracks, for remote targeting. */
+    private String chaosPendingIds() {
+        if (playlist == null) return "[]";
+        StringBuilder sb = new StringBuilder("[");
+        for (int i = playlistPosition; i < playlist.size() && i < playlistPosition + 6; i++) {
+            if (sb.length() > 1) sb.append(',');
+            sb.append(playlist.get(i).queueEntryId);
+        }
+        return sb.append(']').toString();
     }
     // ========================== end Step 4 — debug chaos control ==========================
 

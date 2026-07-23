@@ -158,6 +158,15 @@ skip?" is a decision the test makes, not a race — that's what makes these dete
 - Assertions read observable statics plus `playlistPosition`/`playlist` via reflection (private
   fields — if you rename them, the reflection helper fails loudly telling you so).
 
+**Regression tests for specific fixes.** Both halves of 5da8d45 ("fade-out volume race leaving
+playback silent") are pinned here:
+- `TrackBoundaryTest.newTrackDuringFade_replacesFadingPlayer_notAppended` — the Service half: a track
+  started while the current player is fading must *replace* it (keyed off the authoritative
+  `isFadeOutInProgress()`), not be appended after the faded-to-silent one.
+- `boundary/FadeVolumeRaceTest` — the AudioPlayer half, as a pure-JVM model of the fade-vs-resume
+  locking protocol: with the shared `fadeLock` a resume always ends at `baseGain`; its mutation
+  self-test proves the pre-fix (unsynchronized) protocol could end silent, so the test has teeth.
+
 **Adding a case.** Copy one of the `@Test` methods, arrange the interleaving with `startQueue`,
 `prepareCurrent`, `sendSelf(...)`, `service.onMediaPlayerComplete()`, and `drainLooper()`, then call
 `invariants()` after each step plus any case-specific asserts. Pair a fuzzer-found trace here to
@@ -216,8 +225,10 @@ cannot send the byte / `Uri[]` extras those intents use, which is why the in-app
 
 Commands: `status`, `set_fade <1..10>`, `seek_lead <ms>` (seek to `ms` before the end — the boundary
 generator), `stop`/`resume`/`play`/`pause`/`play_pause`/`skip`/`kill`, `add_below` (insert a track
-directly below the current one), `reorder <from> <to>` (within the pending sublist), `clear_played`.
-Drive one by hand with:
+directly below the current one), `reorder <from> <to>` (within the pending sublist), `play_index <n>`
+(jump to a random track), `remove_pending <k>` (remove a below-current track), `clear_played`.
+`status` also reports the live gain (`vol=`/`base=`) and the queue ids above and below the current
+track (`aboveIds=`/`pendingIds=`). Drive one by hand with:
 
 ```bash
 adb shell am broadcast -a com.shaforostoff.livequeueplayer.CHAOS \
@@ -231,6 +242,14 @@ adb shell am broadcast -a com.shaforostoff.livequeueplayer.CHAOS \
 - **Add-below-current** — a track inserted directly under the playing one via the real
   `SET_PENDING_QUEUE` path, optionally letting the boundary fire so playback advances into it.
 - **Reorder** — moving a pending track at the boundary (also via `SET_PENDING_QUEUE`).
+- **Play-random** — jump to a random queue track at the boundary (real `PLAY_FROM_QUEUE_INDEX`).
+- **Remove-below** — remove a random pending track at the boundary. (Removing a random track *above*
+  the current one is a receiver-side op reachable only over the remote link — see the Bluetooth
+  harness; the Service has no single-above-remove intent.)
+
+After every stop→resume the harness also runs a **silent-playback check** (`vol` vs `base` from
+`status`) — the on-device regression detector for 5da8d45: if a resume ends with the track playing
+but near-zero gain, it fails with the reproducing seed.
 
 **Why "boundary on demand" works.** `seek_lead` seeks to ~1–2.5s before the end, so a boundary
 arrives in ~1s instead of minutes. Sub-100ms placement isn't achievable over ADB, but it isn't
@@ -275,7 +294,13 @@ reuses all of Step 5.
 - **Remote Stop → Resume** across every fade length (1–10s) × resume-timing (during / at-end / after).
 - **Remote move-below-current** — `move_track` to just under the playing track (reorder / "appears
   below current"), via the receiver's real `SET_PENDING_QUEUE` sync.
-- **Remote remove** of a pending track at the boundary.
+- **Remote remove** of a random track **above or below** the current one (`remove_track` by id — the
+  receiver resolves it by position, so either side works).
+- **Remote play-random** — Stop (play_track is honored only when stopped), then remote-jump to a
+  random queue track by id.
+
+After remote stop→resume the receiver's `vol`/`base` are checked for the same **silent-playback
+regression** (5da8d45) as the single-phone harness.
 
 **Prerequisite the harness can't script.** The two-phone link needs the UI: the queue-host activity
 is non-exported (so `adb` can't launch the remote modes) and BT pairing/device-selection is

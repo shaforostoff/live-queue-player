@@ -38,6 +38,9 @@ class AudioPlayer extends Thread implements MediaPlayer.OnCompletionListener, Me
   // playback running but silent. See fadeOutAndStop()/cancelFadeOutAndResume().
   private final Object fadeLock = new Object();
   private final float baseGain;
+  // Last gain written to the native player. Read by the debug chaos harness to catch the
+  // fade-out-vs-resume race (5da8d45): a resumed track must sit at baseGain, not near-silent.
+  volatile float debugLastVolume = 1f;
   private PowerManager.WakeLock transitionWakeLock;
   private EqController equalizer;
 
@@ -114,6 +117,7 @@ class AudioPlayer extends Thread implements MediaPlayer.OnCompletionListener, Me
     try {
       mediaPlayer.prepare();
       mediaPlayer.setVolume(baseGain, baseGain);
+      debugLastVolume = baseGain;
       // Attach the equalizer to this session and apply persisted settings. Guarded internally,
       // so an unsupported device just skips EQ rather than failing playback. Skip it entirely when
       // a second output is available: the EQ is a single global effect that can't be confined to
@@ -222,6 +226,7 @@ class AudioPlayer extends Thread implements MediaPlayer.OnCompletionListener, Me
       fadeOutInProgress = false;
       try {
         mediaPlayer.setVolume(baseGain, baseGain);
+        debugLastVolume = baseGain;
         if (!mediaPlayer.isPlaying()) {
           mediaPlayer.start();
         }
@@ -240,6 +245,9 @@ class AudioPlayer extends Thread implements MediaPlayer.OnCompletionListener, Me
       catch (IllegalStateException ignored) {}
     }
   }
+
+  @Override public float debugLastVolume() { return debugLastVolume; }
+  @Override public float debugBaseGain() { return baseGain; }
 
   /** Re-read persisted equalizer settings and push them to the live effect. */
   public void applyEqualizerSettings() {
@@ -308,6 +316,7 @@ class AudioPlayer extends Thread implements MediaPlayer.OnCompletionListener, Me
             float volume = (t == 0f) ? 0f : baseGain * (float) Math.pow(10.0, -40.0 * (1.0 - t) / 20.0);
             try {
               mediaPlayer.setVolume(volume, volume);
+              debugLastVolume = volume;
             } catch (IllegalStateException ignored) {
               break;
             }

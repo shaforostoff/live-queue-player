@@ -161,6 +161,35 @@ public class TrackBoundaryTest {
     }
 
     /**
+     * Regression for 5da8d45 (Service half): a new track started while the current player is fading
+     * out must REPLACE the fading player, not be appended after it. The replace decision keys off the
+     * authoritative {@code audioPlayer.isFadeOutInProgress()}, not the optimistic sFadeOutInProgress
+     * static — so even without EXTRA_REPLACE_PLAYBACK, a fading player is torn down and the new track
+     * takes over. Before the fix the new tracks were appended and the faded-to-silent player stayed
+     * "current".
+     */
+    @Test
+    public void newTrackDuringFade_replacesFadingPlayer_notAppended() {
+        startQueue(2);
+        prepareCurrent();
+        sendSelf(Launcher.STOP);                 // begin fade-out
+        FakeEngine fading = service.lastEngine;
+        assertTrue("fade must be in progress", fading.isFadeOutInProgress());
+
+        // A brand-new external queue arrives mid-fade WITHOUT asking for replacement.
+        Intent i = new Intent(Intent.ACTION_SEND_MULTIPLE);
+        i.putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris(2));
+        service.onStartCommand(i, 0, nextId());
+        invariants();
+
+        assertTrue("fading player must be torn down", fading.released);
+        assertTrue("a new engine must take over (not append onto the fading one)",
+                service.lastEngine != fading);
+        assertEquals("new track becomes current", 0, Service.sCurrentIndex);
+        assertTrue(Service.sIsPlaying);
+    }
+
+    /**
      * Regression for the teardown race the Step-5 debug tripwire surfaced: a duration report posted
      * when prepare() finished, still queued when onDestroy() runs, used to republish against a
      * cleared queue / released MediaSession because onDestroy left {@code audioPlayer} non-null.

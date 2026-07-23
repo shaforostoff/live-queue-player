@@ -53,7 +53,7 @@ sleep_ms() { sleep "$(awk "BEGIN{print $1/1000}")"; }
 pid_of()   { adb -s "$1" shell pidof "$PKG" 2>/dev/null | tr -d '\r'; }
 
 # receiver playback + link state
-RX_PLAYING=""; RX_DUR=0; RX_IDX=-1; RX_SIZE=0; RX_BT=""; RX_IDS=()
+RX_PLAYING=""; RX_DUR=0; RX_IDX=-1; RX_SIZE=0; RX_BT=""; RX_IDS=(); RX_ABOVE=(); RX_VOL=-1; RX_BASE=-1
 read_status() {
   rx status
   local line=""
@@ -67,8 +67,19 @@ read_status() {
   RX_IDX=$(sed -n  's/.* idx=\(-\{0,1\}[0-9]*\).*/\1/p' <<<"$line"); RX_IDX=${RX_IDX:--1}
   RX_SIZE=$(sed -n 's/.* size=\([0-9]*\).*/\1/p' <<<"$line"); RX_SIZE=${RX_SIZE:-0}
   RX_BT=$(sed -n 's/.* bt=\([^ ]*\).*/\1/p' <<<"$line")
+  RX_VOL=$(sed -n  's/.* vol=\(-\{0,1\}[0-9.]*\).*/\1/p' <<<"$line"); RX_VOL=${RX_VOL:--1}
+  RX_BASE=$(sed -n 's/.* base=\(-\{0,1\}[0-9.]*\).*/\1/p' <<<"$line"); RX_BASE=${RX_BASE:--1}
   local ids; ids=$(sed -n 's/.*pendingIds=\[\([0-9,]*\)\].*/\1/p' <<<"$line")
   IFS=',' read -ra RX_IDS <<<"$ids"
+  local above; above=$(sed -n 's/.*aboveIds=\[\([0-9,]*\)\].*/\1/p' <<<"$line")
+  IFS=',' read -ra RX_ABOVE <<<"$above"
+}
+
+# Detect the 5da8d45 "silent playback" regression on the receiver after a remote resume.
+check_not_silent() {
+  read_status
+  awk -v p="$RX_PLAYING" -v d="$RX_DUR" -v v="$RX_VOL" -v b="$RX_BASE" \
+    'BEGIN{ if(p=="true" && d>0 && b>0 && v>=0 && v < b*0.5){ exit 1 } exit 0 }'
 }
 # sender BT link state
 TX_CONN=""
@@ -124,6 +135,13 @@ health_check() {
 # pick a pending track id further down the queue (so moving it below current is a real reorder)
 pending_id() { local n=${#RX_IDS[@]}; [ "$n" -ge 3 ] && echo "${RX_IDS[2]}" || { [ "$n" -ge 1 ] && echo "${RX_IDS[$((n-1))]}"; }; }
 
+# A random queue-entry id ABOVE or BELOW the current track (played + pending), for remove/play targeting.
+any_id() {
+  local pool=("${RX_ABOVE[@]}" "${RX_IDS[@]}") clean=()
+  local x; for x in "${pool[@]}"; do [ -n "$x" ] && clean+=("$x"); done
+  local n=${#clean[@]}; [ "$n" -ge 1 ] && echo "${clean[$(( RANDOM % n ))]}"
+}
+
 # --- scenarios (all fired close to a forced boundary on the receiver) ------------------------------
 
 # Remote Stop close to the boundary, then remote Resume — swept over fade length + resume timing.
@@ -161,17 +179,45 @@ scen_remote_move_below() {
 }
 
 # Remote remove of a pending track at the boundary.
+# Remote remove of a RANDOM track above OR below the currently-playing one, at the boundary.
 scen_remote_remove() {
   local lead=$1
-  dbg "SCENARIO bt_remove lead=${lead}ms"
   ensure_playing || return 0
   read_status
-  local id; id=$(pending_id)
+  local id; id=$(any_id)
   [ -z "$id" ] && return 0
+  dbg "SCENARIO bt_remove lead=${lead}ms id=$id (above=[${RX_ABOVE[*]}] below=[${RX_IDS[*]}])"
   rx seek_lead "$lead"
   sleep_ms 500
   tx remove_track "$id"
   sleep_ms 1800
+}
+
+# Remote "play a random track": Stop first (play_track is honored only when stopped), then jump to a
+# random queue track by id.
+scen_remote_play_random() {
+  local lead=$1
+  ensure_playing || return 0
+  read_status
+  local id; id=$(any_id)
+  [ -z "$id" ] && return 0
+  dbg "SCENARIO bt_play_random lead=${lead}ms id=$id"
+  rx set_fade 1               # short fade so the stop completes quickly before the jump
+  rx seek_lead "$lead"
+  sleep_ms 400
+  tx stop_playback
+  sleep_ms 2500               # let the fade finish and playback fully stop
+  tx play_track "$id"         # remote jump to a random track
+  sleep_ms 2500
+}
+
+report_silent() {
+  echo
+  echo "################  FAILURE DETECTED  ################"
+  echo "  SILENT PLAYBACK after remote resume (regression of 5da8d45): playing but vol=$RX_VOL << base=$RX_BASE"
+  echo "  reproduce: scripts/bluetooth-boundary-chaos.sh $SEED $ITERS"
+  grep -E "LqpHarness: SCENARIO|LqpChaos: (CMD|STATUS)" "$RX_LOG" | tail -25
+  echo "  logs: $RX_LOG  $TX_LOG"
 }
 
 # --- main ------------------------------------------------------------------------------------------
@@ -204,7 +250,7 @@ RANDOM=$SEED
 for ((i=1; i<=ITERS; i++)); do
   fade=${FADES[$(( RANDOM % ${#FADES[@]} ))]}
   lead=$(( 1000 + RANDOM % 1500 ))
-  case $(( RANDOM % 4 )) in
+  case $(( RANDOM % 5 )) in
     0|1) # remote stop/resume — the primary scenario, sweeping fade + resume timing
       stopWait=$(( 250 + RANDOM % 800 ))
       case $(( RANDOM % 3 )) in
@@ -213,13 +259,17 @@ for ((i=1; i<=ITERS; i++)); do
         *) resumeWait=$(( fade * 1000 + 1500 )); d=resume-after-stop ;;
       esac
       echo "[$i/$ITERS] bt_stop_resume fade=${fade}s lead=${lead}ms $d"
-      scen_remote_stop_resume "$fade" "$lead" "$stopWait" "$resumeWait" ;;
+      scen_remote_stop_resume "$fade" "$lead" "$stopWait" "$resumeWait"
+      check_not_silent || { report_silent; exit 1; } ;;
     2)
       echo "[$i/$ITERS] bt_move_below lead=${lead}ms"
       scen_remote_move_below "$lead" ;;
     3)
-      echo "[$i/$ITERS] bt_remove lead=${lead}ms"
+      echo "[$i/$ITERS] bt_remove (above|below) lead=${lead}ms"
       scen_remote_remove "$lead" ;;
+    4)
+      echo "[$i/$ITERS] bt_play_random lead=${lead}ms"
+      scen_remote_play_random "$lead" ;;
   esac
   health_check || exit 1
 done

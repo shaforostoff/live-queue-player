@@ -34,7 +34,7 @@ app_pid()  { adb shell pidof "$PKG" 2>/dev/null | tr -d '\r'; }
 sleep_ms() { sleep "$(awk "BEGIN{print $1/1000}")"; }
 
 # --- status readback -------------------------------------------------------------------------------
-S_PLAYING=""; S_DUR=0; S_IDX=-1; S_SIZE=0; S_PENDING=""; S_HASPLAYER=""
+S_PLAYING=""; S_DUR=0; S_IDX=-1; S_SIZE=0; S_PENDING=""; S_HASPLAYER=""; S_VOL=-1; S_BASE=-1
 read_status() {
   c status
   local line=""
@@ -49,7 +49,17 @@ read_status() {
   S_DUR=$(sed -n  's/.* dur=\(-\{0,1\}[0-9]*\).*/\1/p'  <<<"$line")
   S_IDX=$(sed -n  's/.* idx=\(-\{0,1\}[0-9]*\).*/\1/p'  <<<"$line")
   S_SIZE=$(sed -n 's/.* size=\([0-9]*\).*/\1/p'         <<<"$line")
+  S_VOL=$(sed -n  's/.* vol=\(-\{0,1\}[0-9.]*\).*/\1/p' <<<"$line"); S_VOL=${S_VOL:--1}
+  S_BASE=$(sed -n 's/.* base=\(-\{0,1\}[0-9.]*\).*/\1/p' <<<"$line"); S_BASE=${S_BASE:--1}
   S_DUR=${S_DUR:-0}; S_IDX=${S_IDX:--1}; S_SIZE=${S_SIZE:-0}
+}
+
+# Detect the 5da8d45 "silent playback" regression: playing, but the live gain sits well below the
+# track's base gain (a resume clobbered by a stale fade step). Returns 1 (fail) if silent.
+check_not_silent() {
+  read_status
+  awk -v p="$S_PLAYING" -v d="$S_DUR" -v v="$S_VOL" -v b="$S_BASE" \
+    'BEGIN{ if(p=="true" && d>0 && b>0 && v>=0 && v < b*0.5){ exit 1 } exit 0 }'
 }
 
 ensure_playing() {
@@ -132,6 +142,45 @@ scen_reorder() {
   sleep_ms 1500
 }
 
+# Jump to a random track in the queue, right at a boundary (real PLAY_FROM_QUEUE_INDEX).
+scen_play_random() {
+  local lead=$1
+  ensure_playing || return 0
+  read_status
+  local n=$(( RANDOM % (S_SIZE > 0 ? S_SIZE : 1) ))
+  dbg "SCENARIO play_random lead=${lead}ms index=$n of $S_SIZE"
+  c seek_lead "$lead"
+  sleep_ms 500
+  c play_index "$n"            # replaces current playback with a random track
+  sleep_ms 2000
+}
+
+# Remove a random pending (below-current) track at the boundary. (Removing a random track ABOVE the
+# current one is a receiver-side op only reachable over the remote link — see bluetooth-boundary-chaos.sh.)
+scen_remove_below() {
+  local lead=$1
+  ensure_playing || return 0
+  read_status
+  local pend=$(( S_SIZE - S_IDX - 1 ))
+  if [ "$pend" -lt 1 ]; then c add_below; c add_below; sleep_ms 800; read_status; pend=$(( S_SIZE - S_IDX - 1 )); fi
+  [ "$pend" -lt 1 ] && return 0
+  local k=$(( RANDOM % pend ))
+  dbg "SCENARIO remove_below lead=${lead}ms k=$k of $pend pending"
+  c seek_lead "$lead"
+  sleep_ms 500
+  c remove_pending "$k"
+  sleep_ms 1500
+}
+
+report_silent() {
+  echo
+  echo "################  FAILURE DETECTED  ################"
+  echo "  SILENT PLAYBACK after resume (regression of 5da8d45): playing but vol=$S_VOL << base=$S_BASE"
+  echo "  reproduce: scripts/boundary-chaos.sh $SEED $ITERS"
+  grep -E "LqpHarness: SCENARIO|LqpChaos: (CMD|STATUS)" "$LOG" | tail -25
+  echo "  full log: $LOG"
+}
+
 # --- main ------------------------------------------------------------------------------------------
 if [ -z "$(adb get-state 2>/dev/null)" ]; then echo "No device via adb. Connect the phone."; exit 2; fi
 if ! adb shell pm list packages 2>/dev/null | grep -q "$PKG"; then echo "$PKG not installed."; exit 2; fi
@@ -157,23 +206,30 @@ RANDOM=$SEED
 for ((i=1; i<=ITERS; i++)); do
   fade=${FADES[$(( RANDOM % ${#FADES[@]} ))]}
   lead=$(( 1000 + RANDOM % 1500 ))          # 1.0s .. 2.5s before end
-  pick=$(( RANDOM % 4 ))
+  pick=$(( RANDOM % 6 ))
   case $pick in
-    0|3) # stop-near-boundary then resume; sweep resume timing vs the fade window
+    0|1) # stop-near-boundary then resume; sweep resume timing vs the fade window
       stopWait=$(( 250 + RANDOM % 800 ))
       r=$(( RANDOM % 3 ))
       if   [ $r -eq 0 ]; then resumeWait=$(( fade * 300 ));          desc="resume-during-fade"
       elif [ $r -eq 1 ]; then resumeWait=$(( fade * 1000 ));         desc="resume-at-fade-end"
       else                    resumeWait=$(( fade * 1000 + 1500 ));  desc="resume-after-stop"; fi
       echo "[$i/$ITERS] stop_resume fade=${fade}s lead=${lead}ms $desc"
-      scen_stop_resume "$fade" "$lead" "$stopWait" "$resumeWait" ;;
-    1)
+      scen_stop_resume "$fade" "$lead" "$stopWait" "$resumeWait"
+      check_not_silent || { report_silent; exit 1; } ;;
+    2)
       lc=$(( RANDOM % 2 ))
       echo "[$i/$ITERS] add_below lead=${lead}ms letComplete=$lc"
       scen_add_below "$lead" "$lc" ;;
-    2)
+    3)
       echo "[$i/$ITERS] reorder lead=${lead}ms"
       scen_reorder "$lead" ;;
+    4)
+      echo "[$i/$ITERS] play_random lead=${lead}ms"
+      scen_play_random "$lead" ;;
+    5)
+      echo "[$i/$ITERS] remove_below lead=${lead}ms"
+      scen_remove_below "$lead" ;;
   esac
   health_check || exit 1
 done

@@ -170,7 +170,10 @@ public class Service extends android.service.media.MediaBrowserService implement
                     + " pos=" + sPlaybackPositionMs + " dur=" + sPlaybackDurationMs
                     + " playlistPos=" + playlistPosition + " size=" + (playlist != null ? playlist.size() : 0)
                     + " hasPlayer=" + (audioPlayer != null)
-                    + " entryId=" + sCurrentEntryId + " bt=" + chaosBtState() + " pendingIds=" + chaosPendingIds());
+                    + " vol=" + (audioPlayer != null ? audioPlayer.debugLastVolume() : -1f)
+                    + " base=" + (audioPlayer != null ? audioPlayer.debugBaseGain() : -1f)
+                    + " entryId=" + sCurrentEntryId + " bt=" + chaosBtState()
+                    + " aboveIds=" + chaosAboveIds() + " pendingIds=" + chaosPendingIds());
             case "set_fade" -> AudioOutputRouter.setFadeOutSeconds(this, Math.max(1, Math.min(10, arg)));
             case "seek_lead" -> chaosSeekLead(arg);
             case "stop" -> chaosSend(Launcher.STOP);
@@ -182,6 +185,8 @@ public class Service extends android.service.media.MediaBrowserService implement
             case "clear_played" -> chaosSend(Launcher.CLEAR_PLAYED_QUEUE);
             case "add_below" -> chaosAddBelowCurrent();
             case "reorder" -> chaosReorderPending(arg, arg2);
+            case "play_index" -> chaosPlayIndex(arg);
+            case "remove_pending" -> chaosRemovePending(arg);
             default -> Log.w(CHAOS_TAG, "unknown cmd: " + cmd);
         }
     }
@@ -211,6 +216,26 @@ public class Service extends android.service.media.MediaBrowserService implement
         uris.add(playlist.get(sCurrentIndex).location);
         ids.add(1_000_000 + (chaosIdSeq++));
         collectPending(uris, ids);
+        chaosDispatchSetPending(uris, ids);
+    }
+
+    /** Jump to persisted-queue index {@code n} (a random track), via the real PLAY_FROM_QUEUE_INDEX. */
+    private void chaosPlayIndex(int n) {
+        if (n < 0) return;
+        Intent i = new Intent(this, Service.class);
+        i.putExtra(Launcher.TYPE, Launcher.PLAY_FROM_QUEUE_INDEX);
+        i.putExtra(EXTRA_QUEUE_INDEX, n);
+        chaosStart(i);
+    }
+
+    /** Remove the {@code k}-th pending (below-current) track, via the real SET_PENDING_QUEUE path. */
+    private void chaosRemovePending(int k) {
+        ArrayList<Uri> uris = new ArrayList<>();
+        ArrayList<Integer> ids = new ArrayList<>();
+        collectPending(uris, ids);
+        if (k < 0 || k >= uris.size()) { Log.i(CHAOS_TAG, "remove_pending: k out of range " + uris.size()); return; }
+        uris.remove(k);
+        ids.remove(k);
         chaosDispatchSetPending(uris, ids);
     }
 
@@ -261,11 +286,21 @@ public class Service extends android.service.media.MediaBrowserService implement
         return "server=" + bridge.isServerRunning() + ",connected=" + bridge.isConnected();
     }
 
-    /** Stable queue-entry ids of the current track and the next few pending tracks, for remote targeting. */
+    /** Stable ids of the next few pending (below-current) tracks, for remote targeting. */
     private String chaosPendingIds() {
+        return chaosIdRange(playlistPosition, Math.min(playlist == null ? 0 : playlist.size(), playlistPosition + 6));
+    }
+
+    /** Stable ids of the last few already-played (above-current) tracks, for remote remove targeting. */
+    private String chaosAboveIds() {
+        int cur = playlistPosition - 1;               // current track index
+        return chaosIdRange(Math.max(0, cur - 6), cur);
+    }
+
+    private String chaosIdRange(int from, int toExclusive) {
         if (playlist == null) return "[]";
         StringBuilder sb = new StringBuilder("[");
-        for (int i = playlistPosition; i < playlist.size() && i < playlistPosition + 6; i++) {
+        for (int i = Math.max(0, from); i < toExclusive && i < playlist.size(); i++) {
             if (sb.length() > 1) sb.append(',');
             sb.append(playlist.get(i).queueEntryId);
         }

@@ -35,4 +35,9 @@ interface PlaybackEngine {
     void applyEqualizerSettings();
 
     void fadeOutAndStop(long durationMs);
+
+    /** Debug-only: last gain written to the player, and the track's base gain. Used by the chaos
+     *  harness to detect the fade-out-vs-resume "silent playback" race (5da8d45). */
+    default float debugLastVolume() { return 1f; }
+    default float debugBaseGain() { return 1f; }
 }

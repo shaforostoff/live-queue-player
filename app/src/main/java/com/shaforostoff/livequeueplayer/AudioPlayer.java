@@ -32,6 +32,11 @@ class AudioPlayer extends Thread implements MediaPlayer.OnCompletionListener, Me
   private volatile boolean fadeOutInProgress;
   private volatile boolean pausedForFocusLoss;
   private final AtomicInteger fadeToken = new AtomicInteger();
+  // Serializes volume writes between the background fade thread and cancelFadeOutAndResume()
+  // (main thread). Both do a token-check-then-setVolume; without a common lock a resume's
+  // baseGain restore can be overwritten by the fade thread's next near-zero step, leaving
+  // playback running but silent. See fadeOutAndStop()/cancelFadeOutAndResume().
+  private final Object fadeLock = new Object();
   private final float baseGain;
   private PowerManager.WakeLock transitionWakeLock;
   private EqController equalizer;
@@ -209,14 +214,19 @@ class AudioPlayer extends Thread implements MediaPlayer.OnCompletionListener, Me
   public void cancelFadeOutAndResume() {
     if (released) return;
 
-    fadeToken.incrementAndGet();
-    fadeOutInProgress = false;
-    try {
-      mediaPlayer.setVolume(baseGain, baseGain);
-      if (!mediaPlayer.isPlaying()) {
-        mediaPlayer.start();
+    // Bump the token and restore baseGain under fadeLock so the fade thread — which holds the
+    // same lock across its own token-check-then-setVolume — cannot overwrite this restore with a
+    // stale mid-fade (near-zero) step value after we return. Without this the track resumes silent.
+    synchronized (fadeLock) {
+      fadeToken.incrementAndGet();
+      fadeOutInProgress = false;
+      try {
+        mediaPlayer.setVolume(baseGain, baseGain);
+        if (!mediaPlayer.isPlaying()) {
+          mediaPlayer.start();
+        }
+      } catch (IllegalStateException ignored) {
       }
-    } catch (IllegalStateException ignored) {
     }
   }
 
@@ -283,38 +293,55 @@ class AudioPlayer extends Thread implements MediaPlayer.OnCompletionListener, Me
         final int steps = 40;
         final long stepDelay = Math.max(1L, durationMs / steps);
         for (int i = steps; i >= 0 && !released; i--) {
-          if (token != fadeToken.get()) {
-            fadeOutInProgress = false;
-            return;
-          }
-          float t = i / (float) steps;
-          float volume = (t == 0f) ? 0f : baseGain * (float) Math.pow(10.0, -40.0 * (1.0 - t) / 20.0);
-          try {
-            mediaPlayer.setVolume(volume, volume);
-          } catch (IllegalStateException ignored) {
-            break;
+          // Hold fadeLock across the token check AND the volume write so a concurrent
+          // cancelFadeOutAndResume() can't slip its baseGain restore between them and then have
+          // this thread stomp it back to a near-silent step value. Whoever takes the lock last
+          // wins: if cancel ran, the token no longer matches and we bail without writing; if we
+          // ran, cancel's baseGain is applied afterwards and is the final value. Sleep outside
+          // the lock so cancel is never blocked for a whole step.
+          synchronized (fadeLock) {
+            if (token != fadeToken.get()) {
+              fadeOutInProgress = false;
+              return;
+            }
+            float t = i / (float) steps;
+            float volume = (t == 0f) ? 0f : baseGain * (float) Math.pow(10.0, -40.0 * (1.0 - t) / 20.0);
+            try {
+              mediaPlayer.setVolume(volume, volume);
+            } catch (IllegalStateException ignored) {
+              break;
+            }
           }
           SystemClock.sleep(stepDelay);
         }
 
         if (!released) {
-          if (token != fadeToken.get()) {
-            fadeOutInProgress = false;
-            return;
-          }
-          try {
-            mediaPlayer.pause();
-          } catch (IllegalStateException ignored) {
+          // Same guard as the ramp: a cancel that lands here (fully ramped, about to pause) has
+          // already resumed the track, so this thread must not pause it back off.
+          synchronized (fadeLock) {
+            if (token != fadeToken.get()) {
+              fadeOutInProgress = false;
+              return;
+            }
+            try {
+              mediaPlayer.pause();
+            } catch (IllegalStateException ignored) {
+            }
           }
         }
       } finally {
         // Skip onFadeOutComplete if we were released externally (e.g. KILL while fading): the
         // service has already torn down playback and may have started a new track. Calling
-        // onFadeOutComplete now would tear down that new track.
-        if (token == fadeToken.get() && !released) {
-          fadeOutInProgress = false;
-          service.onFadeOutComplete();
+        // onFadeOutComplete now would tear down that new track. Likewise skip if a cancel bumped
+        // the token — it resumed this player and owns it now. Decide under fadeLock so the
+        // token/flag read is atomic with cancel, then invoke the service callback outside the
+        // lock (it reaches back into the service and must not run while holding a playback lock).
+        boolean complete;
+        synchronized (fadeLock) {
+          complete = token == fadeToken.get() && !released;
+          if (complete) fadeOutInProgress = false;
         }
+        if (complete) service.onFadeOutComplete();
       }
     }).start();
   }

@@ -262,7 +262,15 @@ public class Service extends android.service.media.MediaBrowserService implement
             // service could not close while the app was backgrounded — Android 14/15 DENIED the
             // re-promotion and App Standby then stopped the demoted service ~1 minute later,
             // cutting playback mid-song.
-            if (intent.getBooleanExtra(EXTRA_REPLACE_PLAYBACK, false) && audioPlayer != null) {
+            // Replace when the caller asked to (EXTRA_REPLACE_PLAYBACK) OR when the live player is
+            // genuinely fading out. The activity derives EXTRA_REPLACE_PLAYBACK from the optimistic
+            // sFadeOutInProgress static, which can lag the real per-player fade state; keying off
+            // the authoritative isFadeOutInProgress() here guarantees a new track started during a
+            // fade replaces the fading player instead of being appended onto it (which would leave
+            // the faded-to-silent track "playing" and the new one merely queued).
+            if (audioPlayer != null
+                    && (intent.getBooleanExtra(EXTRA_REPLACE_PLAYBACK, false)
+                        || audioPlayer.isFadeOutInProgress())) {
                 sFadeOutInProgress = false;
                 audioPlayer.onMediaPlayerDestroy();
                 audioPlayer = null;

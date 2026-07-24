@@ -108,6 +108,10 @@ final class SilenceStreamer {
             final byte[] decBuf = new byte[bufSize];
             final byte[] monoBuf = new byte[bufSize / 2];
             boolean died = false;
+            // This thread owns setPlaybackRate: it is the only one that knows when the track's
+            // buffer has drained/flushed, and the decoder's rate can still change after start()
+            // (HE-AAC with implicit SBR only reports its true rate once decoding begins).
+            int appliedRate = sampleRate;
             while (running) {
                 if (pendingFlush) {
                     pendingFlush = false;
@@ -124,6 +128,12 @@ final class SilenceStreamer {
                     }
                 }
                 PcmDecoder dec = previewDecoder.get();
+                int wantRate = dec != null ? dec.sampleRate : sampleRate;
+                if (wantRate != appliedRate) {
+                    // Assign first either way: a rate the track rejects must not be retried every pass.
+                    appliedRate = wantRate;
+                    try { trackRef.setPlaybackRate(wantRate); } catch (Exception ignored) {}
+                }
                 if (dec != null) {
                     int n;
                     if (dec.channelCount == 1) {
@@ -134,12 +144,10 @@ final class SilenceStreamer {
                     }
                     if (n < 0) {
                         if (previewDecoder.compareAndSet(dec, null)) {
-                            // Natural EOS: we own the cleanup.
-                            dec.close();
-                            restorePlaybackRate();
+                            dec.close(); // natural EOS: we own the cleanup
                         }
-                        // External stop: doStopPreview already closed and restored the rate;
-                        // doStartPreview may have already set the new decoder's rate — don't clobber it.
+                        // Otherwise an external stop got there first and already closed it. Either
+                        // way the next pass sees a null decoder and restores the track's own rate.
                     } else if (n > 0) {
                         previewPositionMs = dec.positionUs / 1000;
                         if (trackRef.write(decBuf, 0, n) < 0) { died = true; break; }
@@ -329,10 +337,7 @@ final class SilenceStreamer {
                     decoder.close(); // a newer start/stop superseded us while decoding
                     return;
                 }
-                AudioTrack at = audioTrack;
-                if (at != null) {
-                    try { at.setPlaybackRate(decoder.sampleRate); } catch (Exception ignored) {}
-                }
+                // The streaming thread picks up the decoder's sample rate on its next pass.
                 previewPositionMs = 0;
                 previewDurationMs = decoder.durationUs / 1000;
                 previewDecoder.set(decoder);
@@ -351,18 +356,10 @@ final class SilenceStreamer {
         PcmDecoder old = previewDecoder.getAndSet(null);
         if (old != null) {
             old.close();
-            restorePlaybackRate();
-            pendingFlush = true;
+            pendingFlush = true; // streaming thread flushes, then restores the track's own rate
         }
         previewPositionMs = 0;
         previewDurationMs = 0;
-    }
-
-    private void restorePlaybackRate() {
-        AudioTrack at = audioTrack;
-        if (at != null) {
-            try { at.setPlaybackRate(44100); } catch (Exception ignored) {}
-        }
     }
 
     private static int upmixMonoToStereo(byte[] mono, int monoBytes, byte[] stereo) {

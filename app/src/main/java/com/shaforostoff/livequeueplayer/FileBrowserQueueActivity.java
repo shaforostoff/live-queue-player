@@ -37,6 +37,7 @@ import android.view.HapticFeedbackConstants;
 import android.view.MotionEvent;
 import android.view.LayoutInflater;
 import android.view.View;
+import android.view.ViewConfiguration;
 import android.view.ViewGroup;
 import android.view.WindowInsets;
 import android.view.inputmethod.InputMethodManager;
@@ -2109,15 +2110,36 @@ public class FileBrowserQueueActivity extends Activity {
         return handled;
     }
 
+    /**
+     * Hands the ListView an ACTION_CANCEL once a drag takes over the gesture. The list saw our
+     * ACTION_DOWN and nothing after it, so without this it keeps the row pressed, keeps its tap
+     * callbacks pending and stays in touch mode for the rest of the drag. Fed to onTouchEvent
+     * rather than dispatchTouchEvent so it bypasses this very listener and our drag state survives.
+     */
+    static void cancelListTouch(ListView list) {
+        long now = SystemClock.uptimeMillis();
+        MotionEvent cancel = MotionEvent.obtain(now, now, MotionEvent.ACTION_CANCEL, 0f, 0f, 0);
+        list.onTouchEvent(cancel);
+        cancel.recycle();
+    }
+
     private void installQueueGestureHandler(ListView list) {
         SwipeState swipeState = queueSwipeState;
         DragState dragState = new DragState();
         Runnable[] longPressRunnable = {null};
+        // The drag may only arm while the finger is essentially still. Past the system touch slop
+        // the ListView has already committed to scrolling, so anything beyond it - however slowly
+        // it got there - is a scroll, never a hold.
+        float dragArmSlop = ViewConfiguration.get(this).getScaledTouchSlop();
+        long  dragArmDelay = ViewConfiguration.getLongPressTimeout();
+        int[] downScroll = {0, 0};   // firstVisiblePosition + its top offset, sampled at ACTION_DOWN
 
         list.setOnTouchListener((v, event) -> {
             switch (event.getAction()) {
                 case MotionEvent.ACTION_DOWN: {
                     dragState.reset();
+                    downScroll[0] = list.getFirstVisiblePosition();
+                    downScroll[1] = list.getChildCount() > 0 ? list.getChildAt(0).getTop() : 0;
                     if (longPressRunnable[0] != null) {
                         uiHandler.removeCallbacks(longPressRunnable[0]);
                         longPressRunnable[0] = null;
@@ -2143,6 +2165,14 @@ public class FileBrowserQueueActivity extends Activity {
                             longPressRunnable[0] = () -> {
                                 if (!swipeState.handled && !dragState.active
                                         && swipeState.swipingView != null) {
+                                    // The list scrolled under the finger (slow drag, or a fling
+                                    // still settling): the row is no longer where it was touched.
+                                    if (list.getFirstVisiblePosition() != downScroll[0]
+                                            || (list.getChildCount() > 0
+                                                    && list.getChildAt(0).getTop() != downScroll[1])) {
+                                        longPressRunnable[0] = null;
+                                        return;
+                                    }
                                     View src = swipeState.swipingView;
                                     Bitmap bmp = Bitmap.createBitmap(
                                             src.getWidth(), src.getHeight(), Bitmap.Config.ARGB_8888);
@@ -2168,9 +2198,10 @@ public class FileBrowserQueueActivity extends Activity {
                                     longPressRunnable[0] = null;
                                     list.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
                                     list.getParent().requestDisallowInterceptTouchEvent(true);
+                                    cancelListTouch(list);
                                 }
                             };
-                            uiHandler.postDelayed(longPressRunnable[0], 400L);
+                            uiHandler.postDelayed(longPressRunnable[0], dragArmDelay);
                         }
                     }
                     return false;
@@ -2202,11 +2233,9 @@ public class FileBrowserQueueActivity extends Activity {
                     float dx = event.getX() - swipeState.downX;
                     float dy = event.getY() - swipeState.downY;
 
-                    if (Math.abs(dx) > swipeHorizontalSlop || Math.abs(dy) > swipeVerticalSlop) {
-                        if (longPressRunnable[0] != null) {
-                            uiHandler.removeCallbacks(longPressRunnable[0]);
-                            longPressRunnable[0] = null;
-                        }
+                    if (Math.hypot(dx, dy) > dragArmSlop && longPressRunnable[0] != null) {
+                        uiHandler.removeCallbacks(longPressRunnable[0]);
+                        longPressRunnable[0] = null;
                     }
                     if (cancelSwipeIfVerticalScroll(swipeState, dx, dy)) {
                         return false;

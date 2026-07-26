@@ -12,6 +12,7 @@ import android.view.HapticFeedbackConstants;
 import android.view.LayoutInflater;
 import android.view.MotionEvent;
 import android.view.View;
+import android.view.ViewConfiguration;
 import android.view.ViewGroup;
 import android.widget.BaseAdapter;
 import android.widget.FrameLayout;
@@ -508,14 +509,21 @@ final class RemoteQueueController {
         SwipeState swipeState     = new SwipeState();
         DragState  dragState      = new DragState();
         float      verticalSlop   = 40f * activity.getResources().getDisplayMetrics().density;
-        float      horizontalSlop = 10f * activity.getResources().getDisplayMetrics().density;
         Runnable[] longPressRunnable = {null};
         int[]      dragOriginId   = {-1};
+        // The drag may only arm while the finger is essentially still. Past the system touch slop
+        // the ListView has already committed to scrolling, so anything beyond it - however slowly
+        // it got there - is a scroll, never a hold.
+        float      dragArmSlop    = ViewConfiguration.get(activity).getScaledTouchSlop();
+        long       dragArmDelay   = ViewConfiguration.getLongPressTimeout();
+        int[]      downScroll     = {0, 0};   // firstVisiblePosition + its top offset, at ACTION_DOWN
 
         list.setOnTouchListener((v, event) -> {
             switch (event.getAction()) {
 
                 case MotionEvent.ACTION_DOWN: {
+                    downScroll[0] = list.getFirstVisiblePosition();
+                    downScroll[1] = list.getChildCount() > 0 ? list.getChildAt(0).getTop() : 0;
                     swipeState.downX         = event.getX();
                     swipeState.downY         = event.getY();
                     swipeState.startPosition = list.pointToPosition((int) event.getX(), (int) event.getY());
@@ -548,6 +556,14 @@ final class RemoteQueueController {
                                     longPressRunnable[0] = null;
                                     return;
                                 }
+                                // The list scrolled under the finger (slow drag, or a fling still
+                                // settling): the row is no longer where it was touched.
+                                if (list.getFirstVisiblePosition() != downScroll[0]
+                                        || (list.getChildCount() > 0
+                                                && list.getChildAt(0).getTop() != downScroll[1])) {
+                                    longPressRunnable[0] = null;
+                                    return;
+                                }
                                 View src = swipeState.swipingView;
                                 Bitmap bmp = Bitmap.createBitmap(src.getWidth(), src.getHeight(), Bitmap.Config.ARGB_8888);
                                 src.draw(new Canvas(bmp));
@@ -574,9 +590,10 @@ final class RemoteQueueController {
                                 longPressRunnable[0] = null;
                                 list.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
                                 list.getParent().requestDisallowInterceptTouchEvent(true);
+                                FileBrowserQueueActivity.cancelListTouch(list);
                             }
                         };
-                        uiHandler.postDelayed(longPressRunnable[0], 400L);
+                        uiHandler.postDelayed(longPressRunnable[0], dragArmDelay);
                     }
                     return false;
                 }
@@ -605,11 +622,9 @@ final class RemoteQueueController {
                     float dx = event.getX() - swipeState.downX;
                     float dy = event.getY() - swipeState.downY;
 
-                    if (Math.abs(dx) > horizontalSlop || Math.abs(dy) > verticalSlop) {
-                        if (longPressRunnable[0] != null) {
-                            uiHandler.removeCallbacks(longPressRunnable[0]);
-                            longPressRunnable[0] = null;
-                        }
+                    if (Math.hypot(dx, dy) > dragArmSlop && longPressRunnable[0] != null) {
+                        uiHandler.removeCallbacks(longPressRunnable[0]);
+                        longPressRunnable[0] = null;
                     }
                     if (Math.abs(dy) > verticalSlop && Math.abs(dy) > Math.abs(dx)) {
                         swipeState.resetView();

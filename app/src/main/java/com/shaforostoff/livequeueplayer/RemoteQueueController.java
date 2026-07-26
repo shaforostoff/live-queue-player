@@ -515,7 +515,7 @@ final class RemoteQueueController {
         // the ListView has already committed to scrolling, so anything beyond it - however slowly
         // it got there - is a scroll, never a hold.
         float      dragArmSlop    = ViewConfiguration.get(activity).getScaledTouchSlop();
-        long       dragArmDelay   = ViewConfiguration.getLongPressTimeout();
+        long       dragArmDelay   = FileBrowserQueueActivity.queueDragArmDelay();
         int[]      downScroll     = {0, 0};   // firstVisiblePosition + its top offset, at ACTION_DOWN
 
         list.setOnTouchListener((v, event) -> {

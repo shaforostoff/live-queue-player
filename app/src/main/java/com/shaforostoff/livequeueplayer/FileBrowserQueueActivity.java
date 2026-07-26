@@ -138,6 +138,8 @@ public class FileBrowserQueueActivity extends Activity {
     private static final String BROWSER_PREFS = "browser_prefs";
     private static final String PREF_SORT_MODE = "sort_mode";
     private static final long PLAYBACK_SYNC_INTERVAL_MS = 1_000L;
+    /** Hold time on top of the system long-press timeout before a queue row starts dragging. */
+    private static final long DRAG_ARM_EXTRA_MS = 250L;
     private static final int PROGRESS_LEVEL_MAX = 10_000;
     private static final int SORT_FILENAME = 0;
     private static final int SORT_YEAR = 1;
@@ -2111,6 +2113,15 @@ public class FileBrowserQueueActivity extends Activity {
     }
 
     /**
+     * How long a queue row must be held before it starts dragging: the system long-press timeout
+     * (so the accessibility touch-and-hold delay is honoured) plus a margin, since reordering is
+     * rare next to scrolling and a plain long-press does nothing else here. Both queues share it.
+     */
+    static long queueDragArmDelay() {
+        return ViewConfiguration.getLongPressTimeout() + DRAG_ARM_EXTRA_MS;
+    }
+
+    /**
      * Hands the ListView an ACTION_CANCEL once a drag takes over the gesture. The list saw our
      * ACTION_DOWN and nothing after it, so without this it keeps the row pressed, keeps its tap
      * callbacks pending and stays in touch mode for the rest of the drag. Fed to onTouchEvent
@@ -2131,7 +2142,7 @@ public class FileBrowserQueueActivity extends Activity {
         // the ListView has already committed to scrolling, so anything beyond it - however slowly
         // it got there - is a scroll, never a hold.
         float dragArmSlop = ViewConfiguration.get(this).getScaledTouchSlop();
-        long  dragArmDelay = ViewConfiguration.getLongPressTimeout();
+        long  dragArmDelay = queueDragArmDelay();
         int[] downScroll = {0, 0};   // firstVisiblePosition + its top offset, sampled at ACTION_DOWN
 
         list.setOnTouchListener((v, event) -> {

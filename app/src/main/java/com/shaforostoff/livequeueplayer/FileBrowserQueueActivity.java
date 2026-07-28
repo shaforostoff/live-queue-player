@@ -762,12 +762,11 @@ public class FileBrowserQueueActivity extends Activity {
 
     private void navigateTo(File dir) {
         stopBrowsePlaybackForFolderSwitch();
-        resetFileBrowserPreview();
         listFileDirectory(dir);
     }
 
     /** Lists {@code dir} into the browser pane — the display half of {@link #navigateTo}, without
-     *  the playback/preview teardown a user-initiated folder switch needs. */
+     *  the browse-playback teardown a user-initiated folder switch needs. */
     private void listFileDirectory(File dir) {
         currentBrowsePlaylistEntry = null;
         clearFileFilterInput();
@@ -817,7 +816,6 @@ public class FileBrowserQueueActivity extends Activity {
         }
 
         stopBrowsePlaybackForFolderSwitch();
-        resetFileBrowserPreview();
         clearFileFilterInput();
         storageBrowser.pushDocument(documentUri);
         if (!browseCurrentDocumentDirectory()) {
@@ -831,7 +829,6 @@ public class FileBrowserQueueActivity extends Activity {
         }
 
         stopBrowsePlaybackForFolderSwitch();
-        resetFileBrowserPreview();
         clearFileFilterInput();
         if (storageBrowser.canPopDocument()) {
             pendingBackScrollUri = storageBrowser.getCurrentDocumentUri();
@@ -2594,12 +2591,11 @@ public class FileBrowserQueueActivity extends Activity {
 
     private void exitPlaylistBrowseFolder() {
         stopBrowsePlaybackForFolderSwitch();
-        resetFileBrowserPreview();
         closePlaylistBrowseFolder();
     }
 
     /** Leaves the playlist pseudo-folder and re-lists the folder that contains it, scrolled back to
-     *  the playlist row. Playback/preview teardown is the caller's business. */
+     *  the playlist row. Browse-playback teardown is the caller's business. */
     private void closePlaylistBrowseFolder() {
         clearFileFilterInput();
         pendingBackScrollUri = currentBrowsePlaylistEntry != null
@@ -3897,6 +3893,13 @@ public class FileBrowserQueueActivity extends Activity {
     }
 
     private void syncWithServiceState() {
+        // A preview that reached its end (or lost its output) clears PreviewManager.isPreviewActive
+        // from the streaming thread. Notice that here, so the row highlight and the browser stop
+        // button stop advertising a preview that is no longer playing — folder navigation used to
+        // clear that state as a side effect of stopping the preview, and no longer does.
+        if (fileBrowserPreviewingUri != null && !PreviewManager.isPreviewActive) {
+            resetFileBrowserPreview();
+        }
         int prevPlayingIndex = currentPlayingQueueIndex;
         int serviceIndex = Service.sCurrentIndex;
         int entryId = Service.sCurrentEntryId;

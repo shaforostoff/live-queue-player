@@ -145,6 +145,10 @@ final class SilenceStreamer {
                     if (n < 0) {
                         if (previewDecoder.compareAndSet(dec, null)) {
                             dec.close(); // natural EOS: we own the cleanup
+                            // The preview is over, so drop the flag the explicit stop paths clear:
+                            // it is how the browser notices a preview that ended on its own and
+                            // stops advertising it (see FileBrowserQueueActivity's 1s sync tick).
+                            PreviewManager.isPreviewActive = false;
                         }
                         // Otherwise an external stop got there first and already closed it. Either
                         // way the next pass sees a null decoder and restores the track's own rate.

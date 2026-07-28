@@ -12,6 +12,8 @@ import android.os.storage.StorageManager;
 import android.os.storage.StorageVolume;
 import android.provider.DocumentsContract;
 
+import org.json.JSONArray;
+
 import java.io.File;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -33,6 +35,15 @@ final class StorageBrowser {
     private static final String BROWSER_PREFS = "browser_prefs";
     private static final String PREF_LAST_TREE_URI = "last_tree_uri";
     private static final String MUSIC_DIRECTORY_NAME = "Music";
+
+    // -- persisted location snapshot (see persistLocation / restoreLocation) --
+    private static final String PREF_LOCATION_KIND      = "location_kind";
+    private static final String PREF_LOCATION_TREE_URI  = "location_tree_uri";
+    private static final String PREF_LOCATION_DOC_STACK = "location_doc_stack";
+    private static final String PREF_LOCATION_FILE_DIR  = "location_file_dir";
+    private static final String PREF_LOCATION_FILE_ROOT = "location_file_root";
+    private static final String LOCATION_KIND_DOCUMENT  = "doc";
+    private static final String LOCATION_KIND_FILE      = "file";
 
     // SAF child-document queries are slow (~1ms+ per item, all inside ContentResolver.query()), so
     // cache the listings of large folders for the session. Only big folders are worth caching, and
@@ -467,9 +478,11 @@ final class StorageBrowser {
 
     // -- persistence / device pickers ----------------------------------------
 
-    Uri getRememberedTreeUri() {
-        SharedPreferences prefs = context.getSharedPreferences(BROWSER_PREFS, Context.MODE_PRIVATE);
-        String uriString = prefs.getString(PREF_LAST_TREE_URI, null);
+    private SharedPreferences prefs() {
+        return context.getSharedPreferences(BROWSER_PREFS, Context.MODE_PRIVATE);
+    }
+
+    private static Uri parseUri(String uriString) {
         if (uriString == null || uriString.isEmpty()) {
             return null;
         }
@@ -480,12 +493,122 @@ final class StorageBrowser {
         }
     }
 
+    /**
+     * Snapshots the current location so a cold start can resume it. Called when the activity stops,
+     * which precedes both an activity relaunch and process death, so the snapshot is always at
+     * least as fresh as the last time the user could have navigated. Cheap enough to do on every
+     * stop: a handful of strings written with {@code apply()}.
+     */
+    void persistLocation() {
+        SharedPreferences.Editor edit = prefs().edit();
+        if (browsingDocumentTree && hasDocumentLocation()) {
+            JSONArray stack = new JSONArray();
+            for (Uri documentUri : documentUriStack) {
+                stack.put(documentUri.toString());
+            }
+            edit.putString(PREF_LOCATION_KIND, LOCATION_KIND_DOCUMENT)
+                .putString(PREF_LOCATION_TREE_URI, currentTreeUri.toString())
+                .putString(PREF_LOCATION_DOC_STACK, stack.toString());
+        } else if (!browsingDocumentTree && currentFileDirectory != null) {
+            File root = currentFileRootDirectory != null ? currentFileRootDirectory : currentFileDirectory;
+            edit.putString(PREF_LOCATION_KIND, LOCATION_KIND_FILE)
+                .putString(PREF_LOCATION_FILE_DIR, currentFileDirectory.getAbsolutePath())
+                .putString(PREF_LOCATION_FILE_ROOT, root.getAbsolutePath());
+        } else {
+            // No folder open (e.g. the MediaStore flat list): nothing to resume.
+            edit.remove(PREF_LOCATION_KIND);
+        }
+        edit.apply();
+    }
+
+    /**
+     * Restores the location saved by {@link #persistLocation()}. Returns false — leaving the
+     * current location untouched — when there is nothing usable to restore: no snapshot, a revoked
+     * SAF grant, or a folder that has since disappeared. Unlike {@link #openDocumentTree}, this
+     * does not clear the listing cache, so an instance that outlived the activity keeps its warm
+     * listings and the restore costs nothing for the folders the user was actually browsing.
+     */
+    boolean restoreLocation() {
+        SharedPreferences prefs = prefs();
+        String kind = prefs.getString(PREF_LOCATION_KIND, null);
+        if (LOCATION_KIND_DOCUMENT.equals(kind)) {
+            return restoreDocumentLocation(prefs);
+        }
+        if (LOCATION_KIND_FILE.equals(kind)) {
+            return restoreFileLocation(prefs);
+        }
+        return false;
+    }
+
+    private boolean restoreDocumentLocation(SharedPreferences prefs) {
+        Uri treeUri = parseUri(prefs.getString(PREF_LOCATION_TREE_URI, null));
+        if (treeUri == null || !hasReadPermissionForUri(treeUri)) {
+            return false;
+        }
+        List<Uri> stack = new ArrayList<>();
+        try {
+            JSONArray saved = new JSONArray(prefs.getString(PREF_LOCATION_DOC_STACK, "[]"));
+            for (int i = 0; i < saved.length(); i++) {
+                Uri documentUri = parseUri(saved.optString(i, null));
+                if (documentUri == null) return false;
+                stack.add(documentUri);
+            }
+        } catch (Exception ignored) {
+            return false;
+        }
+        if (stack.isEmpty()) {
+            return false;
+        }
+
+        // The folder may be gone (renamed, or a swapped SD card whose grant still persists), so walk
+        // up until one still exists and land as close as possible to where the user was. Normally
+        // that is a single one-row query on the folder they left off in.
+        int depth = stack.size();
+        while (depth > 0 && !documentExists(stack.get(depth - 1))) {
+            depth--;
+        }
+        if (depth == 0) {
+            return false;
+        }
+
+        browsingDocumentTree = true;
+        currentTreeUri = treeUri;
+        currentFileDirectory = null;
+        currentFileRootDirectory = null;
+        documentUriStack.clear();
+        documentUriStack.addAll(stack.subList(0, depth));
+        return true;
+    }
+
+    private boolean restoreFileLocation(SharedPreferences prefs) {
+        String dirPath = prefs.getString(PREF_LOCATION_FILE_DIR, null);
+        if (dirPath == null) {
+            return false;
+        }
+        File dir = new File(dirPath);
+        if (!dir.isDirectory() || !dir.canRead()) {
+            return false;
+        }
+        String rootPath = prefs.getString(PREF_LOCATION_FILE_ROOT, null);
+        File root = rootPath != null ? new File(rootPath) : dir;
+
+        browsingDocumentTree = false;
+        currentTreeUri = null;
+        documentUriStack.clear();
+        currentFileDirectory = dir;
+        currentFileRootDirectory = root.isDirectory() ? root : dir;
+        return true;
+    }
+
+    Uri getRememberedTreeUri() {
+        return parseUri(prefs().getString(PREF_LAST_TREE_URI, null));
+    }
+
     void rememberLastTreeUri(Uri treeUri) {
         if (treeUri == null) {
             return;
         }
-        SharedPreferences prefs = context.getSharedPreferences(BROWSER_PREFS, Context.MODE_PRIVATE);
-        prefs.edit().putString(PREF_LAST_TREE_URI, treeUri.toString()).apply();
+        prefs().edit().putString(PREF_LAST_TREE_URI, treeUri.toString()).apply();
     }
 
     boolean hasReadPermissionForUri(Uri treeUri) {

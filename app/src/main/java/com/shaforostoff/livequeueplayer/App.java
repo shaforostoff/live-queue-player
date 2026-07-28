@@ -17,12 +17,20 @@ public class App extends Application {
     // submit(), and an uncaught exception on that thread kills the whole process — including the
     // playback service. The tasks only touch the (also app-scoped) MetadataExtractor cache.
     private ExecutorService tagReadExecutor;
+    // Application-scoped so the browsing location — and its warm listing cache — survives activity
+    // teardown. Activities are destroyed and recreated for any unhandled configuration change, and
+    // a scheduled dark-theme flip does that behind a locked screen: the relaunch lands in onCreate
+    // with the browser reset to the storage root, mid-set. Holding the location here makes that
+    // relaunch a re-list of the same folder (a cache hit for the big folders), and
+    // StorageBrowser.persistLocation() covers the cold-start case where this instance is gone too.
+    private StorageBrowser storageBrowser;
 
     @Override
     public void onCreate() {
         super.onCreate();
         metadataExtractor = new MetadataExtractor(getContentResolver());
         tagReadExecutor = Executors.newFixedThreadPool(4);
+        storageBrowser = new StorageBrowser(this);
     }
 
     public MetadataExtractor getMetadataExtractor() {
@@ -31,6 +39,10 @@ public class App extends Application {
 
     public ExecutorService getTagReadExecutor() {
         return tagReadExecutor;
+    }
+
+    StorageBrowser getStorageBrowser() {
+        return storageBrowser;
     }
 
     public synchronized BluetoothQueueBridge getBluetoothBridge() {

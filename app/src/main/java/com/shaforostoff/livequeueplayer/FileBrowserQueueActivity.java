@@ -7,6 +7,7 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.content.UriPermission;
 import android.database.Cursor;
@@ -137,6 +138,9 @@ public class FileBrowserQueueActivity extends Activity {
     private static final String ACTION_SEND_MULTIPLE_COMPAT = "android.intent.action.SEND_MULTIPLE";
     private static final String BROWSER_PREFS = "browser_prefs";
     private static final String PREF_SORT_MODE = "sort_mode";
+    /** Playlist opened as a pseudo-folder, saved next to StorageBrowser's location snapshot. */
+    private static final String PREF_PLAYLIST_FOLDER_URI  = "playlist_folder_uri";
+    private static final String PREF_PLAYLIST_FOLDER_NAME = "playlist_folder_name";
     private static final long PLAYBACK_SYNC_INTERVAL_MS = 1_000L;
     /** Hold time on top of the system long-press timeout before a queue row starts dragging. */
     private static final long DRAG_ARM_EXTRA_MS = 250L;
@@ -354,7 +358,9 @@ public class FileBrowserQueueActivity extends Activity {
                         : new LocalEqSink(this)));
         metadataExtractor = ((App) getApplication()).getMetadataExtractor();
         tagReadExecutor = ((App) getApplication()).getTagReadExecutor();
-        storageBrowser = new StorageBrowser(this);
+        // App-scoped: keeps the browsing location (and its warm listing cache) across the activity
+        // relaunch that any unhandled configuration change causes — see App.getStorageBrowser().
+        storageBrowser = ((App) getApplication()).getStorageBrowser();
         playlistResolver = new PlaylistResolver(getContentResolver(), storageBrowser, metadataExtractor);
         btController = new BluetoothController(this, new BluetoothController.Callback() {
             @Override
@@ -545,7 +551,9 @@ public class FileBrowserQueueActivity extends Activity {
         });
 
         // -- kick off storage permission + browse ----------------------------
-        if (!restorePersistedDocumentTree()) {
+        // Resume the exact folder first; only fall back to the tree root when there is nothing to
+        // resume, so a relaunch mid-set does not dump the user out of a deep folder or playlist.
+        if (!restoreBrowseLocation() && !restorePersistedDocumentTree()) {
             requestPermissionsAndBrowse();
         }
         // Sole trigger for the receive-mode whole-library tag scan (runs regardless of BT state).
@@ -587,25 +595,65 @@ public class FileBrowserQueueActivity extends Activity {
 
     // -- permission handling -------------------------------------------------
 
+    private static String storageReadPermission() {
+        return Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+                ? Manifest.permission.READ_MEDIA_AUDIO
+                : Manifest.permission.READ_EXTERNAL_STORAGE;
+    }
+
+    private boolean hasStorageReadPermission() {
+        return checkSelfPermission(storageReadPermission()) == PackageManager.PERMISSION_GRANTED;
+    }
+
     private void requestPermissionsAndBrowse() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            if (checkSelfPermission(Manifest.permission.READ_MEDIA_AUDIO)
-                    != PackageManager.PERMISSION_GRANTED) {
-                requestPermissions(
-                        new String[]{Manifest.permission.READ_MEDIA_AUDIO},
-                        PERMISSION_REQUEST_CODE);
-                return;
-            }
-        } else {
-            if (checkSelfPermission(Manifest.permission.READ_EXTERNAL_STORAGE)
-                    != PackageManager.PERMISSION_GRANTED) {
-                requestPermissions(
-                        new String[]{Manifest.permission.READ_EXTERNAL_STORAGE},
-                        PERMISSION_REQUEST_CODE);
-                return;
-            }
+        if (!hasStorageReadPermission()) {
+            requestPermissions(new String[]{storageReadPermission()}, PERMISSION_REQUEST_CODE);
+            return;
         }
         startBrowsing();
+    }
+
+    /**
+     * Reopens the folder — or playlist pseudo-folder — the user last had open: from the App-scoped
+     * {@link StorageBrowser} when it outlived the previous activity instance, otherwise from the
+     * snapshot it persisted. Returns false when there is nothing usable to reopen, leaving the
+     * caller to fall back to the storage root.
+     */
+    private boolean restoreBrowseLocation() {
+        if (!storageBrowser.hasCurrentFolder() && !storageBrowser.restoreLocation()) {
+            return false;
+        }
+        // A document tree carries its own persisted SAF grant; file:// browsing needs the runtime
+        // read permission, which may have been revoked since the snapshot was written.
+        if ((storageBrowser.isBrowsingDocumentTree() || hasStorageReadPermission())
+                && relistCurrentFolder()) {
+            FileEntry playlistFolder = loadPersistedPlaylistFolder();
+            if (playlistFolder != null) {
+                openPlaylistAsBrowseFolder(playlistFolder);
+            }
+            return true;
+        }
+        // The location is unusable (folder gone, grant revoked): drop it so the fallback path below
+        // isn't left listing one folder while the up-button walks another.
+        storageBrowser.clearBrowsingState();
+        return false;
+    }
+
+    /**
+     * Re-lists the folder {@link #storageBrowser} already points at. Unlike {@link #navigateTo} this
+     * touches neither playback nor the preview: it runs during onCreate on a relaunch, where a track
+     * from this very folder is usually still playing.
+     */
+    private boolean relistCurrentFolder() {
+        if (storageBrowser.isBrowsingDocumentTree()) {
+            return browseCurrentDocumentDirectory();
+        }
+        File dir = storageBrowser.getCurrentFileDirectory();
+        if (dir == null) {
+            return false;
+        }
+        listFileDirectory(dir);
+        return true;
     }
 
     private boolean restorePersistedDocumentTree() {
@@ -714,8 +762,14 @@ public class FileBrowserQueueActivity extends Activity {
 
     private void navigateTo(File dir) {
         stopBrowsePlaybackForFolderSwitch();
-        currentBrowsePlaylistEntry = null;
         resetFileBrowserPreview();
+        listFileDirectory(dir);
+    }
+
+    /** Lists {@code dir} into the browser pane — the display half of {@link #navigateTo}, without
+     *  the playback/preview teardown a user-initiated folder switch needs. */
+    private void listFileDirectory(File dir) {
+        currentBrowsePlaylistEntry = null;
         clearFileFilterInput();
         fileEntriesVersion++;
         fileEntries.clear();
@@ -2485,6 +2539,12 @@ public class FileBrowserQueueActivity extends Activity {
 
     private void enterPlaylistAsBrowseFolder(FileEntry playlistEntry) {
         stopBrowsePlaybackForFolderSwitch();
+        openPlaylistAsBrowseFolder(playlistEntry);
+    }
+
+    /** Opens {@code playlistEntry} as a pseudo-folder. Split from {@link #enterPlaylistAsBrowseFolder}
+     *  so the restore path can reopen it without stopping the playback it is restoring around. */
+    private void openPlaylistAsBrowseFolder(FileEntry playlistEntry) {
         clearFileFilterInput();
         fileEntriesVersion++;
         fileEntries.clear();
@@ -2514,10 +2574,13 @@ public class FileBrowserQueueActivity extends Activity {
             runOnUiThread(() -> {
                 if (versionAtStart != fileEntriesVersion) return;
                 if (tracks.isEmpty()) {
-                    currentBrowsePlaylistEntry = null;
                     Toast.makeText(FileBrowserQueueActivity.this,
                             getString(R.string.no_playable_files_in_playlist, playlistEntry.name),
                             Toast.LENGTH_SHORT).show();
+                    // Back to the containing folder rather than an empty pane: the entries were
+                    // already cleared above, and this path also runs on restore, where a playlist
+                    // that has since gone stale would otherwise open to a blank browser.
+                    closePlaylistBrowseFolder();
                     return;
                 }
                 fileEntries.addAll(tracks);
@@ -2531,17 +2594,63 @@ public class FileBrowserQueueActivity extends Activity {
 
     private void exitPlaylistBrowseFolder() {
         stopBrowsePlaybackForFolderSwitch();
+        resetFileBrowserPreview();
+        closePlaylistBrowseFolder();
+    }
+
+    /** Leaves the playlist pseudo-folder and re-lists the folder that contains it, scrolled back to
+     *  the playlist row. Playback/preview teardown is the caller's business. */
+    private void closePlaylistBrowseFolder() {
         clearFileFilterInput();
-        pendingBackScrollUri = currentBrowsePlaylistEntry.uri;
+        pendingBackScrollUri = currentBrowsePlaylistEntry != null
+                ? currentBrowsePlaylistEntry.uri : null;
         currentBrowsePlaylistEntry = null;
         if (storageBrowser.isBrowsingDocumentTree()) {
             browseCurrentDocumentDirectory();
         } else {
             File dir = storageBrowser.getCurrentFileDirectory();
             if (dir != null) {
-                navigateTo(dir);
+                listFileDirectory(dir);
             }
         }
+    }
+
+    /** Snapshots the playlist pseudo-folder (if open) next to StorageBrowser's location snapshot. */
+    private void persistPlaylistFolder() {
+        SharedPreferences.Editor edit = getSharedPreferences(BROWSER_PREFS, MODE_PRIVATE).edit();
+        FileEntry entry = currentBrowsePlaylistEntry;
+        if (entry == null) {
+            edit.remove(PREF_PLAYLIST_FOLDER_URI).remove(PREF_PLAYLIST_FOLDER_NAME);
+        } else {
+            edit.putString(PREF_PLAYLIST_FOLDER_URI, entry.uri.toString())
+                .putString(PREF_PLAYLIST_FOLDER_NAME, entry.name);
+        }
+        edit.apply();
+    }
+
+    /** Rebuilds the entry saved by {@link #persistPlaylistFolder()}, or null if none is usable. */
+    private FileEntry loadPersistedPlaylistFolder() {
+        SharedPreferences prefs = getSharedPreferences(BROWSER_PREFS, MODE_PRIVATE);
+        String uriString = prefs.getString(PREF_PLAYLIST_FOLDER_URI, null);
+        String name = prefs.getString(PREF_PLAYLIST_FOLDER_NAME, null);
+        if (uriString == null || name == null || !isPlaylistFile(name)) {
+            return null;
+        }
+        Uri uri;
+        try {
+            uri = Uri.parse(uriString);
+        } catch (Exception ignored) {
+            return null;
+        }
+        if ("file".equals(uri.getScheme())) {
+            String path = uri.getPath();
+            if (path == null) return null;
+            File file = new File(path);
+            // A file-based playlist is cheap to check up front; a document one is validated by the
+            // resolve pass in openPlaylistAsBrowseFolder, which falls back to the folder if empty.
+            return file.isFile() ? new FileEntry(file, name, false) : null;
+        }
+        return new FileEntry(uri, name, false);
     }
 
     private void updateQueueHint() {
@@ -3853,6 +3962,10 @@ public class FileBrowserQueueActivity extends Activity {
         activityStarted = false;
         if (Service.sBrowseMode) queueRemainingBrowseTracks();
         persistQueue();
+        // onStop precedes both an activity relaunch and process death, so this snapshot is always as
+        // fresh as the last folder the user could have opened.
+        storageBrowser.persistLocation();
+        persistPlaylistFolder();
         // As the remote host, state observation must outlive the visible activity: the app-scoped
         // Bluetooth bridge keeps delivering client commands while the screen is off, and those
         // handlers serve state derived from fields (queueTransitionActive,

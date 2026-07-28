@@ -629,7 +629,7 @@ public class FileBrowserQueueActivity extends Activity {
                 && relistCurrentFolder()) {
             FileEntry playlistFolder = loadPersistedPlaylistFolder();
             if (playlistFolder != null) {
-                openPlaylistAsBrowseFolder(playlistFolder);
+                enterPlaylistAsBrowseFolder(playlistFolder);
             }
             return true;
         }
@@ -639,11 +639,7 @@ public class FileBrowserQueueActivity extends Activity {
         return false;
     }
 
-    /**
-     * Re-lists the folder {@link #storageBrowser} already points at. Unlike {@link #navigateTo} this
-     * touches neither playback nor the preview: it runs during onCreate on a relaunch, where a track
-     * from this very folder is usually still playing.
-     */
+    /** Re-lists the folder {@link #storageBrowser} already points at. */
     private boolean relistCurrentFolder() {
         if (storageBrowser.isBrowsingDocumentTree()) {
             return browseCurrentDocumentDirectory();
@@ -652,7 +648,7 @@ public class FileBrowserQueueActivity extends Activity {
         if (dir == null) {
             return false;
         }
-        listFileDirectory(dir);
+        navigateTo(dir);
         return true;
     }
 
@@ -760,14 +756,9 @@ public class FileBrowserQueueActivity extends Activity {
         }
     }
 
+    /** Lists {@code dir} into the browser pane. Leaves playback alone: a browse track or a preview
+     *  started in another folder keeps playing across the switch. */
     private void navigateTo(File dir) {
-        stopBrowsePlaybackForFolderSwitch();
-        listFileDirectory(dir);
-    }
-
-    /** Lists {@code dir} into the browser pane — the display half of {@link #navigateTo}, without
-     *  the browse-playback teardown a user-initiated folder switch needs. */
-    private void listFileDirectory(File dir) {
         currentBrowsePlaylistEntry = null;
         clearFileFilterInput();
         fileEntriesVersion++;
@@ -815,7 +806,6 @@ public class FileBrowserQueueActivity extends Activity {
             return;
         }
 
-        stopBrowsePlaybackForFolderSwitch();
         clearFileFilterInput();
         storageBrowser.pushDocument(documentUri);
         if (!browseCurrentDocumentDirectory()) {
@@ -828,7 +818,6 @@ public class FileBrowserQueueActivity extends Activity {
             return;
         }
 
-        stopBrowsePlaybackForFolderSwitch();
         clearFileFilterInput();
         if (storageBrowser.canPopDocument()) {
             pendingBackScrollUri = storageBrowser.getCurrentDocumentUri();
@@ -2534,14 +2523,9 @@ public class FileBrowserQueueActivity extends Activity {
         return null;
     }
 
+    /** Opens {@code playlistEntry} as a pseudo-folder. Like {@link #navigateTo}, leaves playback
+     *  running — including the restore path, which reopens it around a track already playing. */
     private void enterPlaylistAsBrowseFolder(FileEntry playlistEntry) {
-        stopBrowsePlaybackForFolderSwitch();
-        openPlaylistAsBrowseFolder(playlistEntry);
-    }
-
-    /** Opens {@code playlistEntry} as a pseudo-folder. Split from {@link #enterPlaylistAsBrowseFolder}
-     *  so the restore path can reopen it without stopping the playback it is restoring around. */
-    private void openPlaylistAsBrowseFolder(FileEntry playlistEntry) {
         clearFileFilterInput();
         fileEntriesVersion++;
         fileEntries.clear();
@@ -2577,7 +2561,7 @@ public class FileBrowserQueueActivity extends Activity {
                     // Back to the containing folder rather than an empty pane: the entries were
                     // already cleared above, and this path also runs on restore, where a playlist
                     // that has since gone stale would otherwise open to a blank browser.
-                    closePlaylistBrowseFolder();
+                    exitPlaylistBrowseFolder();
                     return;
                 }
                 fileEntries.addAll(tracks);
@@ -2589,14 +2573,9 @@ public class FileBrowserQueueActivity extends Activity {
         });
     }
 
-    private void exitPlaylistBrowseFolder() {
-        stopBrowsePlaybackForFolderSwitch();
-        closePlaylistBrowseFolder();
-    }
-
     /** Leaves the playlist pseudo-folder and re-lists the folder that contains it, scrolled back to
-     *  the playlist row. Browse-playback teardown is the caller's business. */
-    private void closePlaylistBrowseFolder() {
+     *  the playlist row. */
+    private void exitPlaylistBrowseFolder() {
         clearFileFilterInput();
         pendingBackScrollUri = currentBrowsePlaylistEntry != null
                 ? currentBrowsePlaylistEntry.uri : null;
@@ -2606,7 +2585,7 @@ public class FileBrowserQueueActivity extends Activity {
         } else {
             File dir = storageBrowser.getCurrentFileDirectory();
             if (dir != null) {
-                listFileDirectory(dir);
+                navigateTo(dir);
             }
         }
     }
@@ -2643,7 +2622,7 @@ public class FileBrowserQueueActivity extends Activity {
             if (path == null) return null;
             File file = new File(path);
             // A file-based playlist is cheap to check up front; a document one is validated by the
-            // resolve pass in openPlaylistAsBrowseFolder, which falls back to the folder if empty.
+            // resolve pass in enterPlaylistAsBrowseFolder, which falls back to the folder if empty.
             return file.isFile() ? new FileEntry(file, name, false) : null;
         }
         return new FileEntry(uri, name, false);
@@ -3231,12 +3210,6 @@ public class FileBrowserQueueActivity extends Activity {
     private void stopPlaybackImmediately() {
         sendStopNowCommand();
         applyStoppedState();
-    }
-
-    private void stopBrowsePlaybackForFolderSwitch() {
-        if (mode == Mode.REMOTE_SEND && Service.sBrowseMode) {
-            stopPlaybackImmediately();
-        }
     }
 
     private void applyStoppedState() {

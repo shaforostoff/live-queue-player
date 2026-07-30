@@ -181,6 +181,11 @@ public class FileBrowserQueueActivity extends Activity {
     private TextView queueEmptyHint;
     /** True between onStart and onStop — i.e. while this activity keeps the app visible. */
     private boolean activityStarted;
+    /**
+     * Static mirror of {@link #activityStarted}, readable by the Service's idle watchdog: it must
+     * not retire the service (dropping a paused track) while the user is looking at the app.
+     */
+    static volatile boolean sActivityStarted;
     private boolean queueTransitionActive;
     private long queueTransitionStartedAtMs;
     /** How long a play intent may stay unconfirmed by a Service broadcast before the optimistic
@@ -3832,6 +3837,7 @@ public class FileBrowserQueueActivity extends Activity {
     protected void onStart() {
         super.onStart();
         activityStarted = true;
+        sActivityStarted = true;
         restorePersistedQueue();
         servicePlaybackOffset = QueueStore.loadPlaybackOffset(this);
         if (Service.sBrowseMode && Service.sCurrentUri != null) {
@@ -3936,6 +3942,7 @@ public class FileBrowserQueueActivity extends Activity {
     @Override
     protected void onStop() {
         activityStarted = false;
+        sActivityStarted = false;
         if (Service.sBrowseMode) queueRemainingBrowseTracks();
         persistQueue();
         // onStop precedes both an activity relaunch and process death, so this snapshot is always as

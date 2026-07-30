@@ -43,6 +43,13 @@ public class Service extends android.service.media.MediaBrowserService implement
     static final String EXTRA_QUEUE_INDEX = "queue_index";
     private static final String MEDIA_ROOT_ID = "root";
     private static final long PLAYBACK_PROGRESS_BROADCAST_INTERVAL_MS = 1_000L;
+    /**
+     * How long this service may hold foreground status with nothing playing before it retires.
+     * A paused track — or a remote-host session — otherwise pins the service (and its silence
+     * streamer, notification and process residency) indefinitely: one such session was observed
+     * sitting foreground for 8h09m overnight.
+     */
+    private static final long IDLE_RETIRE_TIMEOUT_MS = 60 * 60 * 1_000L;
 
     // Readable by the activity to re-sync state after missed broadcasts (e.g. screen off)
     static volatile boolean sIsPlaying = false;
@@ -94,6 +101,10 @@ public class Service extends android.service.media.MediaBrowserService implement
             progressHandler.postDelayed(this, PLAYBACK_PROGRESS_BROADCAST_INTERVAL_MS);
         }
     };
+    private final Handler idleHandler = new Handler(Looper.getMainLooper());
+    private final Runnable idleRetireRunnable = this::retireIfStillIdle;
+    /** elapsedRealtime() at which the current idle stretch began; 0 while a track is playing. */
+    private long idleSinceElapsedMs = 0L;
 
     public Service() {
     }
@@ -171,6 +182,10 @@ public class Service extends android.service.media.MediaBrowserService implement
         // is persisted and the user can resume from the media notification — so bail out instead of
         // dereferencing a null intent and crashing the freshly restarted process.
         if (intent == null) return;
+        // Any command counts as activity, including ones that neither start nor stop playback
+        // (HOST_SESSION, queue edits, an EQ apply). State-changing ones re-run this via
+        // notifyPlaybackState() once the new state is committed.
+        updateIdleRetireTimer();
         /* check if called from self */
         if (intent.getAction() == null) {
             var action = intent.getByteExtra(Launcher.TYPE, Launcher.NULL);
@@ -720,6 +735,77 @@ public class Service extends android.service.media.MediaBrowserService implement
     }
 
     /**
+     * Start (or restart) the idle countdown, or cancel it while a track is actually playing. Called
+     * from every state-commit point and from the top of {@link #onStart}, so any command — local,
+     * media-button or remote — pushes retirement back out to a full {@link #IDLE_RETIRE_TIMEOUT_MS}.
+     */
+    private void updateIdleRetireTimer() {
+        idleHandler.removeCallbacks(idleRetireRunnable);
+        // onDestroy() commits a final notifyPlaybackState(); re-arming from there would outlive the
+        // service (and retire() reaches it via stopSelf()).
+        if (destroyed) return;
+        if (sIsPlaying) {
+            idleSinceElapsedMs = 0L;
+            return;
+        }
+        idleSinceElapsedMs = SystemClock.elapsedRealtime();
+        // postDelayed runs on the uptime clock, which does not advance in deep sleep, so this fires
+        // after IDLE_RETIRE_TIMEOUT_MS of *awake* time — never early, sometimes late in wall-clock
+        // terms. That is the right bias here: a sleeping device is not the battery drain being
+        // capped, and the elapsedRealtime re-check below makes "late" harmless. An exact alarm would
+        // have to wake the device to enforce a battery limit, which defeats the purpose.
+        idleHandler.postDelayed(idleRetireRunnable, IDLE_RETIRE_TIMEOUT_MS);
+    }
+
+    /**
+     * Retire unless something has happened since the countdown was armed. Remote traffic is
+     * timestamped on the Bluetooth read thread rather than routed through this service, so it is
+     * polled here instead of resetting the timer directly.
+     */
+    private void retireIfStillIdle() {
+        if (sIsPlaying) return;             // re-armed by the next pause/stop
+        long lastActivity = Math.max(idleSinceElapsedMs, BluetoothQueueBridge.lastInboundElapsedMs());
+        long remaining = IDLE_RETIRE_TIMEOUT_MS - (SystemClock.elapsedRealtime() - lastActivity);
+        if (remaining > 0) {
+            idleHandler.postDelayed(idleRetireRunnable, remaining);
+            return;
+        }
+        if (FileBrowserQueueActivity.sActivityStarted) {
+            // The user is looking at the app; retiring would silently drop a track they paused and
+            // may be about to resume. Nothing is playing, so re-check rather than give up entirely.
+            idleHandler.postDelayed(idleRetireRunnable, IDLE_RETIRE_TIMEOUT_MS);
+            return;
+        }
+        Log.w(TAG, "retiring: " + (IDLE_RETIRE_TIMEOUT_MS / 60_000L)
+                + " min foreground with no playback and no remote traffic");
+        retire();
+    }
+
+    /**
+     * Give up foreground status and stop. Unlike {@link #onPlaybackStoppedKeepAlive()} this does not
+     * keep the service around for a later background play command — that is the deliberate cost of
+     * the idle cap. Once retired, a remote/media-button play cannot re-promote from the background
+     * on Android 14/15 (see {@link #promoteToForeground()}), so the remote session is over until the
+     * user opens the app again.
+     */
+    private void retire() {
+        idleHandler.removeCallbacks(idleRetireRunnable);
+        // The activity's onStop() leaves the silence streamer running whenever a track is merely
+        // paused (it keys off Service.sCurrentUri), so an idle-foreground session holds an AudioTrack
+        // thread writing to the secondary output — the real battery cost of sitting idle. Nothing is
+        // playing and no activity is visible here, so nothing can want it.
+        SilenceStreamer.release();
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            stopForeground(STOP_FOREGROUND_REMOVE);
+        } else {
+            stopForeground(true);
+        }
+        sForegroundActive = false;
+        // onDestroy() tears down the player, notification and MediaSession.
+        stopSelf();
+    }
+
+    /**
      * Tear down the current playback but keep the foreground service running, so a subsequent
      * remote command (Bluetooth play_track, media-button play, etc.) can start a new track
      * without needing to start a new service from the background — which Android 14+ defers
@@ -763,6 +849,7 @@ public class Service extends android.service.media.MediaBrowserService implement
         destroyed = true;
         sForegroundActive = false;
         stopProgressTicks();
+        idleHandler.removeCallbacks(idleRetireRunnable);
         if (queueChangeListener != null) {
             QueueStore.prefs(this).unregisterOnSharedPreferenceChangeListener(queueChangeListener);
             queueChangeListener = null;
@@ -810,6 +897,7 @@ public class Service extends android.service.media.MediaBrowserService implement
         if (currentIndex < 0) sCurrentEntryId = -1;
         // Update pending tracks state based on current playlist position
         sHasPendingTracks = playlistPosition < playlist.size();
+        updateIdleRetireTimer();
         sendPlaybackStateBroadcast();
     }
 
@@ -925,6 +1013,7 @@ public class Service extends android.service.media.MediaBrowserService implement
         progressAnchorElapsedMs = 0L;
         sIsPlaying = false;
         stopProgressTicks();
+        updateIdleRetireTimer();
         sendPlaybackStateBroadcast();
     }
 
@@ -937,6 +1026,7 @@ public class Service extends android.service.media.MediaBrowserService implement
         progressAnchorElapsedMs = SystemClock.elapsedRealtime();
         sIsPlaying = true;
         startProgressTicks();
+        updateIdleRetireTimer();
         sendPlaybackStateBroadcast();
     }
 

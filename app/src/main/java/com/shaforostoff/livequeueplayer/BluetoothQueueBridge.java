@@ -5,6 +5,7 @@ import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
 import android.bluetooth.BluetoothServerSocket;
 import android.bluetooth.BluetoothSocket;
+import android.os.SystemClock;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -86,7 +87,18 @@ final class BluetoothQueueBridge {
     private volatile boolean wantConnected;
     private volatile BluetoothDevice lastDevice;
 
+    // elapsedRealtime() of the last inbound remote frame, or 0 when nothing has ever arrived.
+    // Stamped on the read thread, read by the playback Service's idle watchdog (which retires a
+    // service that has sat foreground without playback or remote traffic) — hence static: the
+    // watchdog must see the traffic even when this bridge instance is not the one it can reach.
+    private static volatile long sLastInboundElapsedMs;
+
     BluetoothQueueBridge() {
+    }
+
+    /** @see #sLastInboundElapsedMs */
+    static long lastInboundElapsedMs() {
+        return sLastInboundElapsedMs;
     }
 
     /**
@@ -393,6 +405,10 @@ final class BluetoothQueueBridge {
                 }
                 byte[] data = new byte[length];
                 in.readFully(data);
+                // Stamp before dispatch: every remote command and state poll passes through here,
+                // so this is the single point that keeps the Service's idle watchdog from retiring
+                // a live remote session. Framing errors above deliberately do not count as traffic.
+                sLastInboundElapsedMs = SystemClock.elapsedRealtime();
                 // GZIP magic: 0x1F 0x8B
                 if (length >= 2 && (data[0] & 0xFF) == 0x1F && (data[1] & 0xFF) == 0x8B) {
                     data = decompress(data);

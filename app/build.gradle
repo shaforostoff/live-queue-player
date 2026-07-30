@@ -3,19 +3,19 @@ plugins {
 }
 
 android {
-  namespace 'com.shaforostoff.livequeueplayer'
-  compileSdk 36
+  namespace = 'com.shaforostoff.livequeueplayer'
+  compileSdk = 36
 
   defaultConfig {
-    applicationId 'com.shaforostoff.livequeueplayer'
-    minSdk 23
-    targetSdk 36
+    applicationId = 'com.shaforostoff.livequeueplayer'
+    minSdk = 23
+    targetSdk = 36
   }
 
   buildFeatures {
     // Generates BuildConfig.DEBUG, used to gate the boundary runtime assertions to debug builds
     // (stripped from release). See docs/testing-race-conditions.md (Step 5).
-    buildConfig true
+    buildConfig = true
   }
 
   /* just delete the signing configs if it doesn't work */
@@ -25,23 +25,23 @@ android {
     keystoreProperties.load(new java.io.FileInputStream(keystorePropertiesFiles))
 
     basic {
-      storeFile file(keystoreProperties['storeFile'])
-      storePassword keystoreProperties['storePassword']
-      keyAlias keystoreProperties['keyAlias']
-      keyPassword keystoreProperties['keyPassword']
+      storeFile = file(keystoreProperties['storeFile'])
+      storePassword = keystoreProperties['storePassword']
+      keyAlias = keystoreProperties['keyAlias']
+      keyPassword = keystoreProperties['keyPassword']
     }
   }
 
   buildTypes {
     release {
-      minifyEnabled true
-      shrinkResources true
-      crunchPngs false
+      minifyEnabled = true
+      shrinkResources = true
+      crunchPngs = false
       proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
-      signingConfig signingConfigs.basic
+      signingConfig = signingConfigs.basic
     }
     debug {
-      signingConfig signingConfigs.basic
+      signingConfig = signingConfigs.basic
     }
   }
 

@@ -795,8 +795,9 @@ class AlacDecodeUtils
 			case 20:
 			case 32:
 				System.err.println("FIXME: unimplemented sample size " + alac.setinfo_sample_size);
+				break;
 			default:
-
+				break;
 			}
 		}
 		else if(channels == 1) // 2 channels
@@ -998,9 +999,9 @@ class AlacDecodeUtils
 			case 20:
 			case 32:
 				System.err.println("FIXME: unimplemented sample size " + alac.setinfo_sample_size);
-
+				break;
 			default:
-
+				break;
 			}
 		}
 		return outputsize;

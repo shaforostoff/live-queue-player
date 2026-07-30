@@ -13,6 +13,7 @@ import android.os.Handler;
 import android.os.Looper;
 import android.os.PowerManager;
 import android.os.SystemClock;
+import android.util.Log;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -22,6 +23,8 @@ import java.util.List;
  * service for playing music
  */
 public class Service extends android.service.media.MediaBrowserService implements MediaPlayerStateListener {
+
+    private static final String TAG = "Service";
 
     static final String ACTION_PLAYBACK_STATE = "com.shaforostoff.livequeueplayer.PLAYBACK_STATE";
     static final String EXTRA_CURRENT_INDEX = "current_index";
@@ -268,9 +271,23 @@ public class Service extends android.service.media.MediaBrowserService implement
             // the authoritative isFadeOutInProgress() here guarantees a new track started during a
             // fade replaces the fading player instead of being appended onto it (which would leave
             // the faded-to-silent track "playing" and the new one merely queued).
+            // Also replace an idle leftover player when the caller is an explicit queue-play request
+            // (EXTRA_QUEUE_ALREADY_PERSISTED). A paused track — or one dropped by
+            // onAudioFocusLoss() — keeps audioPlayer non-null and this service foreground
+            // indefinitely, while the activity sees sIsPlaying==false and therefore sends
+            // playQueueFrom() WITHOUT EXTRA_REPLACE_PLAYBACK. Without this clause such an intent
+            // fell straight into the double-start guard below and was dropped: tapping a Play Queue
+            // row after a pause did nothing at all, silently, until something else tore the player
+            // down (observed on the Xperia 10 V after a player sat paused overnight — the queue
+            // taps only re-posted the foreground notification). sIsPlaying is a safe discriminator
+            // against the genuine media-key duplicate the guard exists for: playEntryFromPlaylist()
+            // commits notifyPlaybackState(true, ...) synchronously, so a player started by the
+            // racing media key is already marked playing by the time this intent is handled.
             if (audioPlayer != null
                     && (intent.getBooleanExtra(EXTRA_REPLACE_PLAYBACK, false)
-                        || audioPlayer.isFadeOutInProgress())) {
+                        || audioPlayer.isFadeOutInProgress()
+                        || (intent.getBooleanExtra(EXTRA_QUEUE_ALREADY_PERSISTED, false)
+                            && !sIsPlaying))) {
                 sFadeOutInProgress = false;
                 audioPlayer.onMediaPlayerDestroy();
                 audioPlayer = null;
@@ -284,9 +301,13 @@ public class Service extends android.service.media.MediaBrowserService implement
             // sets audioPlayer. This ACTION_SEND_MULTIPLE intent then arrives as a redundant
             // duplicate — appending its URIs now would double the queue both in memory (replaying
             // the whole set) and in the store. EXTRA_QUEUE_ALREADY_PERSISTED is set only by
-            // playQueueFrom (never a genuine append), so with a player already live this intent is
-            // always that duplicate: bail before mutating the playlist or the store.
+            // playQueueFrom (never a genuine append), so with a player already live AND playing
+            // (the replace clause above has already taken any idle leftover) this intent is always
+            // that duplicate: bail before mutating the playlist or the store.
             if (audioPlayer != null && intent.getBooleanExtra(EXTRA_QUEUE_ALREADY_PERSISTED, false)) {
+                // The app is otherwise silent on this path; a dropped queue-play request is
+                // indistinguishable from a dead tap in logcat without it.
+                Log.w(TAG, "dropping duplicate queue-play intent (player already live and playing)");
                 return;
             }
             int sizeBefore = playlist.size();

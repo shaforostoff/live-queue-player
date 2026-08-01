@@ -372,8 +372,13 @@ final class StorageBrowser {
     /** Resolves a root-relative path directly against a file-based root folder, or null if absent. */
     Uri resolveDirectFilePath(File root, String relPath) {
         if (root == null) return null;
-        File target = new File(root, relPath);
-        return target.isFile() ? Uri.fromFile(target) : null;
+        // Try both Unicode forms of the path: the stored/incoming spelling of an accent need not
+        // match the one on disk, and File.isFile() is a byte-exact lookup.
+        for (String variant : TextNormalizer.variants(relPath)) {
+            File target = new File(root, variant);
+            if (target.isFile()) return Uri.fromFile(target);
+        }
+        return null;
     }
 
     /** Resolves a root-relative path directly against a SAF document-tree root, or null if absent. */
@@ -383,16 +388,19 @@ final class StorageBrowser {
             String rootDocId = DocumentsContract.getDocumentId(rootDocUri);
             if (rootDocId == null) return null;
             String sep = (rootDocId.endsWith(":") || rootDocId.endsWith("/")) ? "" : "/";
-            String targetDocId = rootDocId + sep + relPath;
-            Uri target = DocumentsContract.buildDocumentUriUsingTree(currentTreeUri, targetDocId);
-            try (Cursor cursor = resolver().query(
-                    target,
-                    new String[]{DocumentsContract.Document.COLUMN_DOCUMENT_ID,
-                                 DocumentsContract.Document.COLUMN_MIME_TYPE},
-                    null, null, null)) {
-                if (cursor != null && cursor.moveToFirst()
-                        && !DocumentsContract.Document.MIME_TYPE_DIR.equals(cursor.getString(1))) {
-                    return target;
+            // Both Unicode forms of the path, for the same reason as resolveDirectFilePath.
+            for (String variant : TextNormalizer.variants(relPath)) {
+                String targetDocId = rootDocId + sep + variant;
+                Uri target = DocumentsContract.buildDocumentUriUsingTree(currentTreeUri, targetDocId);
+                try (Cursor cursor = resolver().query(
+                        target,
+                        new String[]{DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                                     DocumentsContract.Document.COLUMN_MIME_TYPE},
+                        null, null, null)) {
+                    if (cursor != null && cursor.moveToFirst()
+                            && !DocumentsContract.Document.MIME_TYPE_DIR.equals(cursor.getString(1))) {
+                        return target;
+                    }
                 }
             }
         } catch (Exception ignored) {
@@ -401,7 +409,7 @@ final class StorageBrowser {
     }
 
     Uri findDocumentChildByName(Uri parentDocumentUri, String childName) {
-        if (currentTreeUri == null) {
+        if (currentTreeUri == null || childName == null) {
             return null;
         }
         try {
@@ -418,7 +426,9 @@ final class StorageBrowser {
                 while (cursor.moveToNext()) {
                     String documentId = cursor.getString(0);
                     String displayName = cursor.getString(1);
-                    if (displayName != null && displayName.equals(childName)) {
+                    // Form-insensitive: an existing "Niño.m3u8" is the same file whether its name
+                    // or ours spells the ñ precomposed or as "n" + combining tilde.
+                    if (TextNormalizer.equals(displayName, childName)) {
                         return DocumentsContract.buildDocumentUriUsingTree(currentTreeUri, documentId);
                     }
                 }
@@ -438,8 +448,11 @@ final class StorageBrowser {
         String originalExt = dot >= 0 ? name.substring(dot) : "";
         for (String ext : AUDIO_EXTENSIONS_NO_PLAYLIST) {
             if (ext.equals(originalExt)) continue;
-            File candidate = new File(dir, base + ext);
-            if (candidate.isFile()) return candidate;
+            // base came from a name of unknown origin, so try both spellings of its accents.
+            for (String variant : TextNormalizer.variants(base + ext)) {
+                File candidate = new File(dir, variant);
+                if (candidate.isFile()) return candidate;
+            }
         }
         return null;
     }
@@ -450,10 +463,12 @@ final class StorageBrowser {
         String originalExt = dot >= 0 ? normalizedPath.substring(dot) : "";
         for (String ext : AUDIO_EXTENSIONS_NO_PLAYLIST) {
             if (ext.equals(originalExt)) continue;
-            String candidateDocId = volume + ":" + basePath + ext;
-            Uri candidateUri = DocumentsContract.buildDocumentUriUsingTree(currentTreeUri, candidateDocId);
-            if (documentExists(candidateUri)) {
-                return candidateUri;
+            for (String variant : TextNormalizer.variants(basePath + ext)) {
+                String candidateDocId = volume + ":" + variant;
+                Uri candidateUri = DocumentsContract.buildDocumentUriUsingTree(currentTreeUri, candidateDocId);
+                if (documentExists(candidateUri)) {
+                    return candidateUri;
+                }
             }
         }
         return null;

@@ -137,7 +137,9 @@ final class MediaImporter {
                 DocumentsContract.Document.COLUMN_DISPLAY_NAME}, null, null, null)) {
             if (c == null) return null;
             while (c.moveToNext()) {
-                if (name.equals(c.getString(1))) {
+                // Form-insensitive, so an existing child whose accents are spelled the other way
+                // (precomposed ñ vs "n" + combining tilde) is reused instead of duplicated.
+                if (TextNormalizer.equals(name, c.getString(1))) {
                     return DocumentsContract.buildDocumentUriUsingTree(treeUri, c.getString(0));
                 }
             }

@@ -1185,7 +1185,7 @@ public class FileBrowserQueueActivity extends Activity {
 
         File targetFile = new File(resolvedTargetPath);
         File parent = targetFile.getParentFile();
-        if (parent != null && parent.getAbsolutePath().equals(basePath)) {
+        if (parent != null && TextNormalizer.equals(parent.getAbsolutePath(), basePath)) {
             return targetFile.getName();
         }
 
@@ -1217,7 +1217,7 @@ public class FileBrowserQueueActivity extends Activity {
             String entryPath = entryDocumentId.substring(entrySeparator + 1);
 
             String entryParentPath = parentPath(entryPath);
-            if (entryParentPath != null && entryParentPath.equals(currentPath)) {
+            if (entryParentPath != null && TextNormalizer.equals(entryParentPath, currentPath)) {
                 return baseName(entryPath);
             }
             return computeRelativePath(currentPath, entryPath);
@@ -1272,7 +1272,9 @@ public class FileBrowserQueueActivity extends Activity {
 
         int common = 0;
         int max = Math.min(fromParts.length, toParts.length);
-        while (common < max && fromParts[common].equals(toParts[common])) {
+        // Form-insensitive: a folder spelled with a decomposed ñ on one side and a precomposed one
+        // on the other is still the same folder, and must not push a spurious "../" into the path.
+        while (common < max && TextNormalizer.equals(fromParts[common], toParts[common])) {
             common++;
         }
 
@@ -1374,7 +1376,7 @@ public class FileBrowserQueueActivity extends Activity {
             return left.sortRank < right.sortRank ? -1 : 1;
         }
         if (left.isDirectory()) {
-            return left.name.compareToIgnoreCase(right.name);
+            return TextNormalizer.compareIgnoreCase(left.name, right.name);
         }
         int c;
         if (fileSortMode == SORT_YEAR) {
@@ -1398,7 +1400,7 @@ public class FileBrowserQueueActivity extends Activity {
             c = compareNullableStr(left.sortDate, right.sortDate, false);
             if (c != 0) return c;
         }
-        return left.name.compareToIgnoreCase(right.name);
+        return TextNormalizer.compareIgnoreCase(left.name, right.name);
     }
 
     private static int compareNullableStr(String a, String b, boolean ignoreCase) {
@@ -1406,7 +1408,9 @@ public class FileBrowserQueueActivity extends Activity {
         boolean bHas = b != null && b.length() > 0;
         if (aHas != bHas) return aHas ? -1 : 1;
         if (!aHas) return 0;
-        return ignoreCase ? a.compareToIgnoreCase(b) : a.compareTo(b);
+        // Form-insensitive so an artist/genre tagged with a decomposed ñ sorts next to the
+        // precomposed spelling of the same name instead of in a separate run.
+        return ignoreCase ? TextNormalizer.compareIgnoreCase(a, b) : a.compareTo(b);
     }
 
     private static int comparePositiveInt(int a, int b) {
@@ -1663,19 +1667,13 @@ public class FileBrowserQueueActivity extends Activity {
                 || containsIgnoreCase(entry.sortGenre,  query);
     }
 
-    /** Case-insensitive {@code value.contains(query)} without allocating a lower-cased copy. */
+    /**
+     * Case-insensitive {@code value.contains(query)} that also ignores the Unicode encoding form,
+     * so typing "niño" finds a file whose name spells the ñ as "n" + combining tilde and vice
+     * versa. ASCII text (the common case) still allocates nothing.
+     */
     private static boolean containsIgnoreCase(String value, String query) {
-        if (value == null) return false;
-        int queryLen = query.length();
-        if (queryLen == 0) return true;
-        int max = value.length() - queryLen;
-        for (int i = 0; i <= max; i++) {
-            // regionMatches(ignoreCase=true, ...) folds case per char, allocating nothing.
-            if (value.regionMatches(true, i, query, 0, queryLen)) {
-                return true;
-            }
-        }
-        return false;
+        return TextNormalizer.containsIgnoreCase(value, query);
     }
 
     private static void scrollTo(ListView list, int position) {

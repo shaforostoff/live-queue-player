@@ -11,6 +11,10 @@ import java.util.Map;
  * requests against the local library (REMOTE_RECEIVE mode). Every method is a
  * pure utility operating on its arguments — no Android Activity state — so the
  * matching strategy can be reasoned about and tested in isolation.
+ *
+ * Names and tags arrive over the wire in whatever Unicode form the sending
+ * device's library uses, which need not match this device's, so every
+ * comparison here is form-insensitive (see {@link TextNormalizer}).
  */
 final class TrackMatcher {
 
@@ -46,7 +50,7 @@ final class TrackMatcher {
         float bestExactArtist = -1f;
         for (Map.Entry<String, MetadataExtractor.TagEntry> e : snapshot) {
             MetadataExtractor.TagEntry tag = e.getValue();
-            if (tag.title == null || !tag.title.equalsIgnoreCase(title)) continue;
+            if (tag.title == null || !TextNormalizer.equalsIgnoreCase(tag.title, title)) continue;
             float a = FuzzySearch.matchFuzzy(tag.artist, artist);
             if (bestExact == null || a > bestExactArtist) {
                 bestExact = Uri.parse(MetadataExtractor.keyToUri(e.getKey()));
@@ -118,9 +122,9 @@ final class TrackMatcher {
             Uri[] hintMatches, Uri[] nameMatches, Uri[] extMatches) {
         for (int i = 0; i < requests.size(); i++) {
             if (hintMatches[i] != null) continue;
-            if (!childName.equalsIgnoreCase(requests.get(i).file)) continue;
+            if (!TextNormalizer.equalsIgnoreCase(childName, requests.get(i).file)) continue;
             String hint = hints[i];
-            if (hint.length() > 0 && dirName.equalsIgnoreCase(hint)) hintMatches[i] = childUri;
+            if (hint.length() > 0 && TextNormalizer.equalsIgnoreCase(dirName, hint)) hintMatches[i] = childUri;
             else if (nameMatches[i] == null) nameMatches[i] = childUri;
         }
         applyExtFallbackMatch(stripExtension(childName), childUri, requests, hintMatches, nameMatches, extMatches);
@@ -130,7 +134,7 @@ final class TrackMatcher {
             List<BluetoothQueueBridge.TrackRequest> requests, Uri[] hintMatches, Uri[] nameMatches, Uri[] extMatches) {
         for (int i = 0; i < requests.size(); i++) {
             if (hintMatches[i] != null || nameMatches[i] != null || extMatches[i] != null) continue;
-            if (childNoExt.equalsIgnoreCase(stripExtension(requests.get(i).file))) {
+            if (TextNormalizer.equalsIgnoreCase(childNoExt, stripExtension(requests.get(i).file))) {
                 extMatches[i] = childUri;
             }
         }

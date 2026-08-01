@@ -78,17 +78,27 @@ final class PlaylistResolver {
 
         if (playlistFile != null) {
             File playlistDir = playlistFile.getParentFile();
-            File target = pathValue.startsWith("/")
-                    ? new File(pathValue)
-                    : new File(playlistDir, pathValue);
-            if (target.exists() && target.isFile()) {
-                return Uri.fromFile(target);
+            // A playlist written on macOS spells accents decomposed ("n" + combining tilde) where
+            // the file on this device is precomposed (or the reverse), and File.exists() is a
+            // byte-exact lookup — so try the line as written, then its other Unicode form.
+            for (String variant : TextNormalizer.variants(pathValue)) {
+                File candidate = playlistRelativeFile(playlistDir, variant);
+                if (candidate.exists() && candidate.isFile()) {
+                    return Uri.fromFile(candidate);
+                }
             }
-            File fallback = StorageBrowser.findFileWithDifferentExtension(target);
+            // findFileWithDifferentExtension probes both forms itself.
+            File fallback = StorageBrowser.findFileWithDifferentExtension(
+                    playlistRelativeFile(playlistDir, pathValue));
             return fallback != null ? Uri.fromFile(fallback) : null;
         }
 
         return resolveDocumentTargetUri(playlistUri, pathValue);
+    }
+
+    /** A playlist line as a File: absolute if it starts with '/', otherwise relative to the playlist. */
+    private static File playlistRelativeFile(File playlistDir, String pathValue) {
+        return pathValue.startsWith("/") ? new File(pathValue) : new File(playlistDir, pathValue);
     }
 
     private Uri resolveDocumentTargetUri(Uri playlistUri, String pathValue) {
@@ -120,10 +130,13 @@ final class PlaylistResolver {
                 return null;
             }
 
-            String targetDocumentId = volume + ":" + normalizedPath;
-            Uri targetUri = DocumentsContract.buildDocumentUriUsingTree(storageBrowser.getCurrentTreeUri(), targetDocumentId);
-            if (storageBrowser.documentExists(targetUri)) {
-                return targetUri;
+            // Both Unicode forms of the path, for the same reason as the file branch above.
+            for (String variant : TextNormalizer.variants(normalizedPath)) {
+                Uri targetUri = DocumentsContract.buildDocumentUriUsingTree(
+                        storageBrowser.getCurrentTreeUri(), volume + ":" + variant);
+                if (storageBrowser.documentExists(targetUri)) {
+                    return targetUri;
+                }
             }
             return storageBrowser.findDocumentWithDifferentExtension(volume, normalizedPath);
         } catch (Exception ignored) {
@@ -160,22 +173,28 @@ final class PlaylistResolver {
         return builder.toString();
     }
 
-    /** Existence test for a document id (against the tag cache or a fetched sibling listing). */
-    private interface DocIdExists { boolean test(String docId); }
+    /**
+     * Looks a candidate document id up (against the tag cache or a fetched sibling listing) and
+     * returns the id that actually exists — which may spell accents in the other Unicode form than
+     * the candidate did, so the caller must use the returned id, not the one it passed in — or null.
+     */
+    private interface DocIdLookup { String resolve(String docId); }
 
     /**
      * Resolves {@code docId} to an existing document id: the id itself if present, otherwise the same
      * base name with a different audio extension; null if nothing exists. Shared by the playlist
      * tag-cache pass and the SAF sibling-listing pass.
      */
-    private static String resolveExistingDocId(String docId, DocIdExists exists) {
-        if (exists.test(docId)) return docId;
+    private static String resolveExistingDocId(String docId, DocIdLookup lookup) {
+        String hit = lookup.resolve(docId);
+        if (hit != null) return hit;
         int dot = docId.lastIndexOf('.');
         String base = dot >= 0 ? docId.substring(0, dot) : docId;
         String originalExt = dot >= 0 ? docId.substring(dot) : "";
         for (String ext : StorageBrowser.AUDIO_EXTENSIONS_NO_PLAYLIST) {
             if (ext.equals(originalExt)) continue;
-            if (exists.test(base + ext)) return base + ext;
+            hit = lookup.resolve(base + ext);
+            if (hit != null) return hit;
         }
         return null;
     }
@@ -228,8 +247,17 @@ final class PlaylistResolver {
         // SAF query per directory. Entries not found here fall through to the batch query below.
         for (int i = 0; i < n; i++) {
             if (result.get(i) != null || targetDocIds[i] == null) continue;
-            String hit = resolveExistingDocId(targetDocIds[i],
-                    d -> metadataExtractor.containsUri(DocumentsContract.buildDocumentUriUsingTree(treeUri, d)));
+            String hit = resolveExistingDocId(targetDocIds[i], d -> {
+                // The cache is keyed by the URI the provider handed us, so a line whose accents are
+                // spelled the other way round only hits on its alternate form.
+                for (String variant : TextNormalizer.variants(d)) {
+                    if (metadataExtractor.containsUri(
+                            DocumentsContract.buildDocumentUriUsingTree(treeUri, variant))) {
+                        return variant;
+                    }
+                }
+                return null;
+            });
             if (hit != null) result.set(i, DocumentsContract.buildDocumentUriUsingTree(treeUri, hit));
         }
 
@@ -245,21 +273,18 @@ final class PlaylistResolver {
             parentDocIds.add(volume + ":" + parentPath);
         }
 
-        // Batch query: one ContentResolver query per distinct parent directory
-        Map<String, Set<String>> dirContents = new HashMap<>();
+        // Batch query: one ContentResolver query per distinct parent directory. Each listing is
+        // indexed by the composed form of the child's document id, so a playlist line and the
+        // provider's own id match even when they spell the accents differently; the values are the
+        // provider's ids, which is what has to go into the URI we hand back.
+        Map<String, Map<String, String>> dirContents = new HashMap<>();
         for (String parentDocId : parentDocIds) {
-            Uri childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, parentDocId);
-            Set<String> children = new HashSet<>();
-            try (Cursor cursor = contentResolver.query(childrenUri,
-                    new String[]{DocumentsContract.Document.COLUMN_DOCUMENT_ID}, null, null, null)) {
-                if (cursor != null) {
-                    int col = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DOCUMENT_ID);
-                    if (col >= 0) {
-                        while (cursor.moveToNext())
-                            children.add(cursor.getString(col));
-                    }
-                }
-            } catch (Exception ignored) {}
+            Map<String, String> children = Collections.emptyMap();
+            // The parent path came out of the playlist too, so it needs the same treatment.
+            for (String variant : TextNormalizer.variants(parentDocId)) {
+                children = queryChildDocumentIds(treeUri, variant);
+                if (!children.isEmpty()) break;
+            }
             dirContents.put(parentDocId, children);
         }
 
@@ -271,12 +296,37 @@ final class PlaylistResolver {
             String path = colon >= 0 ? docId.substring(colon + 1) : docId;
             int slash = path.lastIndexOf('/');
             String parentPath = slash >= 0 ? path.substring(0, slash) : "";
-            Set<String> siblings = dirContents.getOrDefault(volume + ":" + parentPath, Collections.emptySet());
-            String hit = resolveExistingDocId(docId, siblings::contains);
+            Map<String, String> siblings =
+                    dirContents.getOrDefault(volume + ":" + parentPath, Collections.emptyMap());
+            String hit = resolveExistingDocId(docId, d -> siblings.get(TextNormalizer.compose(d)));
             if (hit != null) result.set(i, DocumentsContract.buildDocumentUriUsingTree(treeUri, hit));
         }
 
         return result;
+    }
+
+    /**
+     * Document ids of {@code parentDocId}'s children, keyed by their composed form (see
+     * {@link TextNormalizer#compose}). Empty when the directory doesn't exist or can't be listed.
+     */
+    private Map<String, String> queryChildDocumentIds(Uri treeUri, String parentDocId) {
+        Uri childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, parentDocId);
+        Map<String, String> children = new HashMap<>();
+        try (Cursor cursor = contentResolver.query(childrenUri,
+                new String[]{DocumentsContract.Document.COLUMN_DOCUMENT_ID}, null, null, null)) {
+            if (cursor != null) {
+                int col = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DOCUMENT_ID);
+                if (col >= 0) {
+                    while (cursor.moveToNext()) {
+                        String childDocId = cursor.getString(col);
+                        if (childDocId != null) {
+                            children.put(TextNormalizer.compose(childDocId), childDocId);
+                        }
+                    }
+                }
+            }
+        } catch (Exception ignored) {}
+        return children;
     }
 
     /** Display name for a playlist line: the last path segment, or the line itself. */

@@ -12,6 +12,11 @@ package com.shaforostoff.livequeueplayer;
  *
  * Returns the fraction of query words that matched (0.0–1.0).
  *
+ * Both inputs are composed first ({@link TextNormalizer#compose}) so a
+ * decomposed ñ ("n" + combining tilde, as written by macOS/iTunes) compares
+ * identically to a precomposed one; any combining mark that survives that is
+ * treated as part of its word and ignored when comparing.
+ *
  * Avoids substring allocations by working with (String, start, end) slices
  * throughout. The two small scratch buffers are allocated once per top-level
  * call and reused for every word-pair comparison.
@@ -42,8 +47,8 @@ public final class FuzzySearch {
      */
     public static float matchFuzzy(String a, String b) {
         if (a == null || a.isEmpty() || b == null || b.isEmpty()) return 0.0f;
-        String pa = preprocess(a);
-        String pb = preprocess(b);
+        String pa = preprocess(TextNormalizer.compose(a));
+        String pb = preprocess(TextNormalizer.compose(b));
         if (pa.isEmpty() || pb.isEmpty()) return 0.0f;
         int[] bigramBuf = new int[BIGRAM_BUF_SIZE];
         int[] dirtyBuf  = new int[MAX_DIRTY];
@@ -57,6 +62,10 @@ public final class FuzzySearch {
     public static float containsFuzzy(String filename, String query) {
         if (query    == null || query.isEmpty())    return 1.0f;
         if (filename == null || filename.isEmpty()) return 0.0f;
+
+        // Compose both sides so the two spellings of ñ/á/… split into words and compare alike.
+        filename = TextNormalizer.compose(filename);
+        query    = TextNormalizer.compose(query);
 
         // One allocation per call; shared across all word comparisons below.
         int[] bigramBuf = new int[BIGRAM_BUF_SIZE];
@@ -117,16 +126,38 @@ public final class FuzzySearch {
                                         int[] bigramBuf, int[] dirtyBuf) {
         final int bLen = bEnd - bStart;
         if (bLen <= SHORT_WORD_MAX) {
-            if (aEnd - aStart != bLen) return false;
-            for (int i = 0; i < bLen; i++) {
-                if (Character.toLowerCase(a.charAt(aStart + i))
-                        != Character.toLowerCase(b.charAt(bStart + i)))
-                    return false;
-            }
-            return true;
+            return foldedEquals(a, aStart, aEnd, b, bStart, bEnd);
         }
         return diceSimilarity(a, aStart, aEnd, b, bStart, bEnd, bigramBuf, dirtyBuf)
                >= SIMILARITY_THRESHOLD;
+    }
+
+    /**
+     * Case-insensitive equality of two word slices that ignores combining marks and folds the
+     * Spanish accents to their base letter — so "ñu" matches whether the ñ arrived precomposed or
+     * as "n" + combining tilde (which is one char longer, and so would fail a plain length/char
+     * comparison). Matches how {@link #diceSimilarity} already treats accents on longer words.
+     */
+    private static boolean foldedEquals(String a, int aStart, int aEnd,
+                                        String b, int bStart, int bEnd) {
+        int i = aStart;
+        int j = bStart;
+        while (true) {
+            while (i < aEnd && TextNormalizer.isCombiningMark(a.charAt(i))) i++;
+            while (j < bEnd && TextNormalizer.isCombiningMark(b.charAt(j))) j++;
+            if (i >= aEnd || j >= bEnd) break;
+            if (foldChar(a.charAt(i)) != foldChar(b.charAt(j))) return false;
+            i++;
+            j++;
+        }
+        return i >= aEnd && j >= bEnd;   // both exhausted, i.e. same length once marks are dropped
+    }
+
+    /** Lower-cases c, mapping the Spanish accented letters onto their base ASCII letter. */
+    private static char foldChar(char c) {
+        int idx = charIdx(c);
+        if (idx < 0) return Character.toLowerCase(c);   // e.g. Cyrillic: compare as-is
+        return idx < 26 ? (char) ('a' + idx) : (char) ('0' + idx - 26);
     }
 
     /**
@@ -185,7 +216,11 @@ public final class FuzzySearch {
         return total == 0 ? 0.0f : (2.0f * common) / total;
     }
 
-    /** Maps a character to its index in the 36-symbol alphabet, or -1. */
+    /**
+     * Maps a character to its index in the 36-symbol alphabet, or -1.
+     * Combining marks land on -1 and are simply skipped, so a decomposed letter contributes its
+     * base letter (inputs are composed first, so this only comes up for marks NFC can't compose).
+     */
     private static int charIdx(char c) {
         if (c >= 'A' && c <= 'Z') c = (char) (c - 'A' + 'a');
         if (c >= 'a' && c <= 'z') return c - 'a';
@@ -202,8 +237,12 @@ public final class FuzzySearch {
         }
     }
 
+    /**
+     * A combining mark counts as part of its word: otherwise a decomposed "niño" would split into
+     * "ni" and "o" at the tilde, since a mark is not a letter or digit.
+     */
     private static boolean isWordChar(char c) {
-        return Character.isLetterOrDigit(c);
+        return Character.isLetterOrDigit(c) || TextNormalizer.isCombiningMark(c);
     }
 
     /** Removes parenthesised substrings and strips punctuation characters. */

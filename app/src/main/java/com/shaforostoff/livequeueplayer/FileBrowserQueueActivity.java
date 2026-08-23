@@ -3272,6 +3272,7 @@ public class FileBrowserQueueActivity extends Activity {
         browseNextQueued = false;
         browseNextUri = null;
         currentPlayingQueueIndex = -1;
+        resetCurrentTrackProgress();
         queueAdapter.notifyDataSetChanged();
         fileAdapter.notifyDataSetChanged();
     }
@@ -3921,8 +3922,7 @@ public class FileBrowserQueueActivity extends Activity {
                     browseFileUri = browseNextUri;
                     browseNextQueued = false;
                     browseNextUri = null;
-                } else if (serviceUri != null && browseFileUri != null && !serviceUri.equals(browseFileUri)) {
-                    // Service is playing a different URI than expected (e.g. activity recreated mid-transition)
+                } else if (serviceUri != null && !serviceUri.equals(browseFileUri)) {
                     browseFileUri = serviceUri;
                     browseNextQueued = false;
                     browseNextUri = null;

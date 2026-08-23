@@ -282,7 +282,20 @@ public class FileBrowserQueueActivity extends Activity {
                     resetCurrentTrackProgress();
                 }
             } else if (serviceBrowseMode) {
-                browseTransitionActive = false;
+                // Only the broadcast for the track we actually asked for ends the transition. A
+                // progress tick for the outgoing track can still be in flight when
+                // playBrowseFile() arms browseTransitionActive (sendBroadcast round-trips through
+                // the ActivityManager, so delivery lags the tap by a few ms). Clearing the flag on
+                // that stale tick lets the KILL's index=-1 broadcast fall through to
+                // clearBrowseState(), which nulls browseFileUri — and only onStart() can undo
+                // that, because the 1s poll's self-heal is itself guarded on browseFileUri being
+                // non-null. The track kept playing with no row highlight and no folder
+                // auto-advance (maybeQueueNextBrowseTrack bails on a null browseFileUri) until the
+                // user left the app and came back.
+                if (currentUri != null
+                        && (currentUri.equals(browseFileUri) || currentUri.equals(browseNextUri))) {
+                    browseTransitionActive = false;
+                }
                 currentPlayingQueueIndex = -1;
                 if (browseNextUri != null && browseNextUri.equals(currentUri)) {
                     browseFileUri = browseNextUri;

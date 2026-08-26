@@ -45,6 +45,16 @@ android {
     }
   }
 
+  packaging {
+    resources {
+      // AGP 9 puts kotlin-stdlib on the runtime classpath even for a pure-Java app. R8 strips
+      // every Kotlin class (the release dex contains none), but the stdlib's non-class resources
+      // survive shrinking and cost ~13 KB of APK: kotlin/**/*.kotlin_builtins is metadata only
+      // kotlin-reflect reads. Drop it; restore this if Kotlin code ever ships here.
+      excludes += ['kotlin/**', 'META-INF/*.kotlin_module']
+    }
+  }
+
   compileOptions {
     sourceCompatibility JavaVersion.VERSION_17
     targetCompatibility JavaVersion.VERSION_17

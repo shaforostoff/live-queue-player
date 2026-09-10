@@ -97,6 +97,23 @@
   <string name="eq_band_db">%+d dB</string>
   <string name="eq_freq_hz">%d Hz</string>
   <string name="eq_freq_khz">%.1f kHz</string>
+  <string name="eq_section_low_cut">Low cut</string>
+  <string name="eq_section_bass">Bass</string>
+  <string name="eq_section_reverb">Reverb cut</string>
+  <string name="eq_section_brilliance">Brilliance</string>
+  <string name="eq_section_hiss">Hiss cut</string>
+  <string name="eq_section_generic">Band</string>
+  <string name="eq_shape_high_pass">high-pass</string>
+  <string name="eq_shape_low_shelf">low shelf</string>
+  <string name="eq_shape_peak">peak</string>
+  <string name="eq_shape_high_shelf">high shelf</string>
+  <string name="eq_shape_low_pass">low-pass</string>
+  <string name="eq_section_detail">%1$s · %2$s · Q %3$.1f</string>
+  <string name="eq_filter_detail">%1$s · Q %2$.1f</string>
+  <string name="eq_setup_freq">Freq</string>
+  <string name="eq_setup_q">Q</string>
+  <string name="eq_q_value">%.1f</string>
+  <string name="eq_off">off</string>
 </resources>
 
 

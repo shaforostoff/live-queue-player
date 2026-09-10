@@ -109,6 +109,18 @@ final class RemoteQueueController {
     private int[]   eqFreqs  = new int[0];    // milliHz, for display
     private short[] eqLevels = new short[0];  // gain, millibels
     private boolean eqEnabled;
+    // Section model, populated when the host sends a "sections" array. Empty against a host that
+    // predates it, in which case the band cache above is what the dialog renders.
+    private ParametricEq.Section[] eqSections = new ParametricEq.Section[0];
+    private int[] eqSectionFreqMin = new int[0];
+    private int[] eqSectionFreqMax = new int[0];
+    // Defaults as the host defines them, for double-tap-to-reset. 0 means the host never said, which
+    // a host predating the feature will not — the reset then does nothing rather than inventing a
+    // value this end has no business choosing. Gain is exempt: flat is 0 on every host there is.
+    private int[] eqSectionFreqDefault = new int[0];
+    private int[] eqSectionQDefault = new int[0];
+    private int   eqQMin = ParametricEqSettings.Q_MIN_MILLI;
+    private int   eqQMax = ParametricEqSettings.Q_MAX_MILLI;
 
     RemoteQueueController(Activity activity,
                           BluetoothController btController,
@@ -216,8 +228,47 @@ final class RemoteQueueController {
         eqParametric = "parametric".equals(obj.optString("mode", "graphic"));
         eqNumBands = obj.optInt("num_bands", 0);
         eqEnabled = obj.optBoolean("enabled", eqEnabled);
-        if (eqParametric) {
-            // Host sends freqs in Hz + gains in millibels with explicit ranges.
+        JSONArray secs = obj.optJSONArray("sections");
+        if (secs != null) {
+            // Section host: the real parametric model. Ranges travel with it so this end clamps its
+            // optimistic updates exactly as the host will.
+            eqMin = (short) obj.optInt("gain_min", eqMin);
+            eqMax = (short) obj.optInt("gain_max", eqMax);
+            eqQMin = obj.optInt("q_min", eqQMin);
+            eqQMax = obj.optInt("q_max", eqQMax);
+            int n = secs.length();
+            ParametricEq.Section[] parsed = new ParametricEq.Section[n];
+            int[] freqMin = new int[n];
+            int[] freqMax = new int[n];
+            int[] freqDefault = new int[n];
+            int[] qDefault = new int[n];
+            for (int i = 0; i < n; i++) {
+                JSONObject o = secs.optJSONObject(i);
+                if (o == null) {
+                    parsed[i] = new ParametricEq.Section(ParametricEq.TYPE_PEAK, 1000, 1000, 0, false);
+                    freqMin[i] = 20;
+                    freqMax[i] = 20000;
+                    continue;
+                }
+                parsed[i] = new ParametricEq.Section(
+                        o.optInt("type", ParametricEq.TYPE_PEAK),
+                        o.optInt("freq", 1000),
+                        o.optInt("q", 1000),
+                        o.optInt("gain", 0),
+                        o.optBoolean("on", true));
+                freqMin[i] = o.optInt("freq_min", 20);
+                freqMax[i] = o.optInt("freq_max", 20000);
+                freqDefault[i] = o.optInt("freq_default", 0);
+                qDefault[i] = o.optInt("q_default", 0);
+            }
+            eqSections = parsed;
+            eqSectionFreqMin = freqMin;
+            eqSectionFreqMax = freqMax;
+            eqSectionFreqDefault = freqDefault;
+            eqSectionQDefault = qDefault;
+        } else if (eqParametric) {
+            // Host on the superseded six-band partition model: freqs in Hz + gains in millibels.
+            eqSections = new ParametricEq.Section[0];
             eqMin = (short) obj.optInt("gain_min", eqMin);
             eqMax = (short) obj.optInt("gain_max", eqMax);
             eqFreqMinHz = obj.optInt("freq_min", eqFreqMinHz);
@@ -235,6 +286,7 @@ final class RemoteQueueController {
             }
         } else {
             // Graphic host: freqs in milliHz + levels in millibels.
+            eqSections = new ParametricEq.Section[0];
             eqMin = (short) obj.optInt("min", eqMin);
             eqMax = (short) obj.optInt("max", eqMax);
             if (eqNumBands > 0) {
@@ -251,83 +303,222 @@ final class RemoteQueueController {
         if (eqDialog != null) eqDialog.refresh();
     }
 
-    /** Remote-playback equalizer: caches state pushed by the server and sends changes back. */
-    private final class RemoteEqSink implements EqualizerDialog.EqSink {
-        @Override public boolean isEnabled() { return eqEnabled; }
+    /**
+     * Remote-playback equalizer: caches state pushed by the server and sends changes back.
+     *
+     * <p>Every change is applied to the local cache first so the rows and the response curve move
+     * under the finger, then sent; the host's {@code eq_state} echo is authoritative and corrects
+     * any drift. Two models are served, decided by what the host sent: the section model, and the
+     * older band model for a host that predates it.
+     */
+    private final class RemoteEqSink extends EqualizerDialog.EqSink {
+        @Override boolean isEnabled() { return eqEnabled; }
 
-        @Override public void setEnabled(boolean enabled) {
+        @Override void setEnabled(boolean enabled) {
             eqEnabled = enabled;
-            try {
-                JSONObject cmd = new JSONObject();
-                cmd.put("type", "set_eq");
-                cmd.put("enabled", enabled);
-                btController.sendRaw(cmd.toString());
-            } catch (Exception ignored) {}
+            send("enabled", enabled);
         }
 
-        @Override public int numBands() { return eqNumBands; }
-
-        @Override public int centerFreqMilliHz(int band) {
-            return band < eqFreqs.length ? eqFreqs[band] : 0;
-        }
-
-        @Override public short bandLevel(int band) {
-            return band < eqLevels.length ? eqLevels[band] : 0;
-        }
-
-        @Override public void nudgeBand(int band, int deltaMillibels) {
-            if (band < 0 || band >= eqLevels.length) return;
-            int level = Math.max(eqMin, Math.min(eqMax, eqLevels[band] + deltaMillibels));
-            eqLevels[band] = (short) level;
-            try {
-                JSONObject cmd = new JSONObject();
-                cmd.put("type", "set_eq");
-                cmd.put("band", band);
-                cmd.put("value", level);
-                btController.sendRaw(cmd.toString());
-            } catch (Exception ignored) {}
-        }
-
-        @Override public CharSequence statusText() {
-            if (eqNumBands > 0) return null;
+        @Override CharSequence statusText() {
+            if (eqNumBands > 0 || eqSections.length > 0) return null;
             return activity.getString(eqDeterminate ? R.string.eq_unavailable : R.string.eq_loading);
         }
 
-        @Override public boolean freqAdjustable() { return eqParametric; }
+        // --- section model ---------------------------------------------------------------------
 
-        @Override public void nudgeFreq(int band, int direction) {
-            if (!eqParametric || band < 0 || band >= eqFreqs.length) return;
-            int curHz = eqFreqs[band] / 1000;
-            // Keep a half-octave gap from each neighbour, matching the host's clamp; the
-            // authoritative eq_state echo corrects any drift anyway.
-            int loHz = band == 0 ? eqFreqMinHz
-                    : ParametricEqSettings.gapAbove(eqFreqs[band - 1] / 1000);
-            int hiHz = band == eqFreqs.length - 1 ? eqFreqMaxHz
-                    : ParametricEqSettings.gapBelow(eqFreqs[band + 1] / 1000);
-            if (hiHz < loHz) hiHz = loHz;
-            int newHz = Math.max(loHz, Math.min(hiHz, ParametricEqSettings.stepFreqHz(curHz, direction)));
-            eqFreqs[band] = newHz * 1000;
+        @Override int sectionCount() { return eqSections.length; }
+
+        @Override ParametricEq.Section section(int slot) {
+            return slot >= 0 && slot < eqSections.length ? eqSections[slot] : null;
+        }
+
+        @Override int sectionLabelRes(int slot) { return ParametricEqSettings.labelRes(slot); }
+
+        @Override void nudgeGain(int slot, int deltaMillibels) {
+            ParametricEq.Section s = section(slot);
+            if (s == null) return;
+            int gain = Math.max(eqMin, Math.min(eqMax, s.gainMb + deltaMillibels));
+            eqSections[slot] = s.withGain(gain);
+            sendSection(slot, "gain", gain);
+        }
+
+        @Override void nudgeFreq(int slot, int direction) {
+            ParametricEq.Section s = section(slot);
+            if (s == null) return;
+            int loHz = slot < eqSectionFreqMin.length ? eqSectionFreqMin[slot] : 20;
+            int hiHz = slot < eqSectionFreqMax.length ? eqSectionFreqMax[slot] : 20000;
+            int hz = ParametricEqSettings.stepFreqHz(s.freqHz, direction, loHz, hiHz);
+            eqSections[slot] = s.withFreq(hz);
+            sendSection(slot, "freq", hz);
+        }
+
+        @Override void nudgeQ(int slot, int direction) {
+            ParametricEq.Section s = section(slot);
+            if (s == null) return;
+            int q = ParametricEqSettings.stepQMilli(s.qMilli, direction);
+            q = Math.max(eqQMin, Math.min(Math.max(eqQMin, eqQMax), q));
+            eqSections[slot] = s.withQ(q);
+            sendSection(slot, "q", q);
+        }
+
+        @Override void resetGain(int slot) {
+            ParametricEq.Section s = section(slot);
+            if (s == null) return;
+            int gain = Math.max(eqMin, Math.min(eqMax, ParametricEqSettings.DEFAULT_GAIN_MILLIBELS));
+            eqSections[slot] = s.withGain(gain);
+            sendSection(slot, "gain", gain);
+        }
+
+        @Override void resetFreq(int slot) {
+            ParametricEq.Section s = section(slot);
+            int hz = slot < eqSectionFreqDefault.length ? eqSectionFreqDefault[slot] : 0;
+            if (s == null || hz <= 0) return;
+            eqSections[slot] = s.withFreq(hz);
+            sendSection(slot, "freq", hz);
+        }
+
+        @Override void resetQ(int slot) {
+            ParametricEq.Section s = section(slot);
+            int q = slot < eqSectionQDefault.length ? eqSectionQDefault[slot] : 0;
+            if (s == null || q <= 0) return;
+            eqSections[slot] = s.withQ(q);
+            sendSection(slot, "q", q);
+        }
+
+        @Override void setSectionOn(int slot, boolean on) {
+            ParametricEq.Section s = section(slot);
+            if (s == null || s.on == on) return;
+            eqSections[slot] = s.withOn(on);
             try {
                 JSONObject cmd = new JSONObject();
                 cmd.put("type", "set_eq");
-                cmd.put("band", band);
-                cmd.put("freq", newHz);
+                cmd.put("section", slot);
+                cmd.put("on", on);
                 btController.sendRaw(cmd.toString());
             } catch (Exception ignored) {}
         }
 
-        // Edges derived from neighbours, mirroring the host (eqFreqs holds milliHz, so geometricMean
-        // operates on milliHz directly). First band falls to 0; last band reaches the ceiling.
-        @Override public int lowerEdgeMilliHz(int band) {
-            if (band <= 0 || band >= eqFreqs.length) return 0;
-            return ParametricEqSettings.geometricMean(eqFreqs[band - 1], eqFreqs[band]);
+        // --- band model (host predating the section model) --------------------------------------
+
+        @Override int numBands() { return eqSections.length > 0 ? 0 : eqNumBands; }
+
+        @Override int centerFreqMilliHz(int band) {
+            return band < eqFreqs.length ? eqFreqs[band] : 0;
         }
 
-        @Override public int upperEdgeMilliHz(int band) {
-            if (band < 0 || band >= eqFreqs.length) return 0;
-            if (band == eqFreqs.length - 1) return ParametricEqSettings.TOP_EDGE_HZ * 1000;
-            return ParametricEqSettings.geometricMean(eqFreqs[band], eqFreqs[band + 1]);
+        @Override short bandLevel(int band) {
+            return band < eqLevels.length ? eqLevels[band] : 0;
         }
+
+        @Override void nudgeBand(int band, int deltaMillibels) {
+            if (band < 0 || band >= eqLevels.length) return;
+            int level = Math.max(eqMin, Math.min(eqMax, eqLevels[band] + deltaMillibels));
+            eqLevels[band] = (short) level;
+            sendBand(band, "value", level);
+        }
+
+        @Override void resetBand(int band) {
+            if (band < 0 || band >= eqLevels.length) return;
+            int level = Math.max(eqMin, Math.min(eqMax, 0));
+            eqLevels[band] = (short) level;
+            sendBand(band, "value", level);
+        }
+
+        @Override boolean freqAdjustable() { return eqParametric && eqSections.length == 0; }
+
+        @Override void nudgeBandFreq(int band, int direction) {
+            if (!freqAdjustable() || band < 0 || band >= eqFreqs.length) return;
+            int curHz = eqFreqs[band] / 1000;
+            // Keep a half-octave gap from each neighbour, matching that host's clamp; the
+            // authoritative eq_state echo corrects any drift anyway.
+            int loHz = band == 0 ? eqFreqMinHz : legacyGapAbove(eqFreqs[band - 1] / 1000);
+            int hiHz = band == eqFreqs.length - 1 ? eqFreqMaxHz
+                    : legacyGapBelow(eqFreqs[band + 1] / 1000);
+            if (hiHz < loHz) hiHz = loHz;
+            int newHz = Math.max(loHz, Math.min(hiHz, legacyStepFreqHz(curHz, direction)));
+            eqFreqs[band] = newHz * 1000;
+            sendBand(band, "freq", newHz);
+        }
+
+        /** That host's own default centre frequencies, so a reset lands where it would have. Only
+         *  the six-band shape ever existed, so anything else is left alone. */
+        @Override void resetBandFreq(int band) {
+            if (!freqAdjustable() || band < 0 || band >= eqFreqs.length) return;
+            if (eqFreqs.length != LEGACY_DEFAULT_FREQ_HZ.length) return;
+            int hz = LEGACY_DEFAULT_FREQ_HZ[band];
+            eqFreqs[band] = hz * 1000;
+            sendBand(band, "freq", hz);
+        }
+
+        // Edges derived from neighbours, mirroring that host (eqFreqs holds milliHz, so the mean
+        // operates on milliHz directly). First band falls to 0; last band reaches the ceiling.
+        @Override int lowerEdgeMilliHz(int band) {
+            if (band <= 0 || band >= eqFreqs.length) return 0;
+            return legacyGeometricMean(eqFreqs[band - 1], eqFreqs[band]);
+        }
+
+        @Override int upperEdgeMilliHz(int band) {
+            if (band < 0 || band >= eqFreqs.length) return 0;
+            if (band == eqFreqs.length - 1) return LEGACY_TOP_EDGE_HZ * 1000;
+            return legacyGeometricMean(eqFreqs[band], eqFreqs[band + 1]);
+        }
+
+        private void send(String key, boolean value) {
+            try {
+                JSONObject cmd = new JSONObject();
+                cmd.put("type", "set_eq");
+                cmd.put(key, value);
+                btController.sendRaw(cmd.toString());
+            } catch (Exception ignored) {}
+        }
+
+        private void sendSection(int slot, String key, int value) {
+            try {
+                JSONObject cmd = new JSONObject();
+                cmd.put("type", "set_eq");
+                cmd.put("section", slot);
+                cmd.put(key, value);
+                btController.sendRaw(cmd.toString());
+            } catch (Exception ignored) {}
+        }
+
+        private void sendBand(int band, String key, int value) {
+            try {
+                JSONObject cmd = new JSONObject();
+                cmd.put("type", "set_eq");
+                cmd.put("band", band);
+                cmd.put(key, value);
+                btController.sendRaw(cmd.toString());
+            } catch (Exception ignored) {}
+        }
+    }
+
+    // Geometry of the superseded six-band partition model, kept only for driving a host that still
+    // runs it: band edges sit at the geometric mean of adjacent centres, neighbours keep a half
+    // octave apart, and one nudge moves a third of an octave.
+    private static final int LEGACY_TOP_EDGE_HZ = 20000;
+    private static final int[] LEGACY_DEFAULT_FREQ_HZ = {80, 400, 1000, 2000, 5000, 12000};
+    private static final double LEGACY_NEIGHBOUR_RATIO = 1.4142;  // 2^(1/2)
+    private static final double LEGACY_STEP_RATIO = 1.2599;       // 2^(1/3)
+
+    private static int legacyGeometricMean(int aHz, int bHz) {
+        return (int) Math.round(Math.sqrt((double) aHz * bHz));
+    }
+
+    private static int legacyGapAbove(int lowerNeighbourHz) {
+        return (int) Math.ceil(lowerNeighbourHz * LEGACY_NEIGHBOUR_RATIO);
+    }
+
+    private static int legacyGapBelow(int upperNeighbourHz) {
+        return (int) Math.floor(upperNeighbourHz / LEGACY_NEIGHBOUR_RATIO);
+    }
+
+    private static int legacyStepFreqHz(int hz, int direction) {
+        int next = direction >= 0
+                ? (int) Math.round(hz * LEGACY_STEP_RATIO)
+                : (int) Math.round(hz / LEGACY_STEP_RATIO);
+        if (next == hz) next += direction >= 0 ? 1 : -1;
+        return next;
     }
 
     void refreshAndScrollToNewTrack() {

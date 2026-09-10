@@ -2880,23 +2880,33 @@ public class FileBrowserQueueActivity extends Activity {
 
     /** Apply an equalizer change requested by the remote sender, then echo the new state back. The
      *  host's active backend (parametric on API 28+, graphic below) decides which settings store the
-     *  command is routed to. */
+     *  command is routed to. A sender still speaking the older band protocol addresses sections by
+     *  {@code band}: that index is a section slot, and its two commands land on that section's gain
+     *  and centre frequency, so it keeps working unchanged. */
     private void handleRemoteSetEq(JSONObject obj) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             if (obj.has("enabled")) {
                 ParametricEqSettings.setEnabled(this,
                         obj.optBoolean("enabled", ParametricEqSettings.isEnabled(this)));
             }
-            if (obj.has("band")) {
-                int band = obj.optInt("band", -1);
-                if (band >= 0 && band < ParametricEqSettings.numBands()) {
-                    if (obj.has("value")) {
-                        ParametricEqSettings.setGainMillibels(this, band, obj.optInt("value", 0));
-                    }
-                    if (obj.has("freq")) {
-                        ParametricEqSettings.setFreqHz(this, band,
-                                obj.optInt("freq", ParametricEqSettings.getFreqHz(this, band)));
-                    }
+            int slot = obj.has("section") ? obj.optInt("section", -1) : obj.optInt("band", -1);
+            if (slot >= 0 && slot < ParametricEqSettings.numSections()) {
+                ParametricEq.Section cur = ParametricEqSettings.section(this, slot);
+                // "value" is the legacy band-gain key; "gain" is its section-model spelling.
+                if (obj.has("value")) {
+                    ParametricEqSettings.setGainMillibels(this, slot, obj.optInt("value", cur.gainMb));
+                }
+                if (obj.has("gain")) {
+                    ParametricEqSettings.setGainMillibels(this, slot, obj.optInt("gain", cur.gainMb));
+                }
+                if (obj.has("freq")) {
+                    ParametricEqSettings.setFreqHz(this, slot, obj.optInt("freq", cur.freqHz));
+                }
+                if (obj.has("q")) {
+                    ParametricEqSettings.setQMilli(this, slot, obj.optInt("q", cur.qMilli));
+                }
+                if (obj.has("on")) {
+                    ParametricEqSettings.setSectionOn(this, slot, obj.optBoolean("on", cur.on));
                 }
             }
         } else {
@@ -2921,24 +2931,50 @@ public class FileBrowserQueueActivity extends Activity {
             JSONObject msg = new JSONObject();
             msg.put("type", "eq_state");
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                // Parametric (DynamicsProcessing) host: per-band freq (Hz) + gain (millibels), with
-                // app-defined ranges. The remote renders adjustable-frequency rows from this.
-                int n = ParametricEqSettings.numBands();
+                // Parametric (DynamicsProcessing) host. Two views of the same state go out
+                // together: the "sections" array is the real model a current sender renders its
+                // curve and its frequency/Q controls from, while mode/num_bands/freqs/gains project
+                // those sections onto the older band protocol so a sender predating the section
+                // model still gets working gain and frequency control over them. A current sender
+                // keys off "sections" and ignores the projection.
+                ParametricEq.Section[] sections = ParametricEqSettings.sections(this);
+                int n = sections.length;
                 msg.put("mode", "parametric");
                 msg.put("enabled", ParametricEqSettings.isEnabled(this));
                 msg.put("num_bands", n);
                 msg.put("gain_min", ParametricEqSettings.GAIN_MIN_MILLIBELS);
                 msg.put("gain_max", ParametricEqSettings.GAIN_MAX_MILLIBELS);
-                msg.put("freq_min", ParametricEqSettings.FREQ_MIN_HZ);
-                msg.put("freq_max", ParametricEqSettings.FREQ_MAX_HZ);
-                JSONArray freqs = new JSONArray(); // Hz
-                JSONArray gains = new JSONArray(); // millibels
-                for (int b = 0; b < n; b++) {
-                    freqs.put(ParametricEqSettings.getFreqHz(this, b));
-                    gains.put(ParametricEqSettings.getGainMillibels(this, b));
+                msg.put("freq_min", ParametricEqSettings.freqMinHz(0));
+                msg.put("freq_max", ParametricEqSettings.freqMaxHz(n - 1));
+                msg.put("q_min", ParametricEqSettings.Q_MIN_MILLI);
+                msg.put("q_max", ParametricEqSettings.Q_MAX_MILLI);
+                JSONArray freqs = new JSONArray();     // Hz, legacy projection
+                JSONArray gains = new JSONArray();     // millibels, legacy projection
+                JSONArray secs  = new JSONArray();
+                for (int i = 0; i < n; i++) {
+                    ParametricEq.Section s = sections[i];
+                    freqs.put(s.freqHz);
+                    gains.put(s.gainMb);
+                    JSONObject o = new JSONObject();
+                    o.put("type", s.type);
+                    o.put("freq", s.freqHz);
+                    o.put("q",    s.qMilli);
+                    o.put("gain", s.gainMb);
+                    o.put("on",   s.on);
+                    // Per-slot frequency limits travel with the section so the sender can clamp its
+                    // own optimistic update the same way the host would. The defaults travel for
+                    // the same reason: a double tap on a value there resets it to this host's
+                    // default, not to whatever the sender's own build would have chosen.
+                    o.put("freq_min", ParametricEqSettings.freqMinHz(i));
+                    o.put("freq_max", ParametricEqSettings.freqMaxHz(i));
+                    o.put("gain_default", ParametricEqSettings.DEFAULT_GAIN_MILLIBELS);
+                    o.put("freq_default", ParametricEqSettings.defaultFreqHz(i));
+                    o.put("q_default", ParametricEqSettings.defaultQMilli(i));
+                    secs.put(o);
                 }
                 msg.put("freqs", freqs);
                 msg.put("gains", gains);
+                msg.put("sections", secs);
             } else {
                 // Graphic (Equalizer) host: fixed bands, gain only.
                 EqualizerSettings.Caps caps = EqualizerSettings.queryCapabilities(this);
@@ -2974,8 +3010,9 @@ public class FileBrowserQueueActivity extends Activity {
         startService(intent);
     }
 
-    /** Local-playback equalizer: persists settings and nudges the running Service to re-apply. */
-    private static final class LocalEqSink implements EqualizerDialog.EqSink {
+    /** Local-playback graphic equalizer: persists settings and nudges the running Service to
+     *  re-apply. Bands are fixed by the device, so only gain is adjustable. */
+    private static final class LocalEqSink extends EqualizerDialog.EqSink {
         private final FileBrowserQueueActivity activity;
         private final Context context;
 
@@ -2988,26 +3025,26 @@ public class FileBrowserQueueActivity extends Activity {
             return EqualizerSettings.queryCapabilities(context);
         }
 
-        @Override public boolean isEnabled() { return EqualizerSettings.isEnabled(context); }
+        @Override boolean isEnabled() { return EqualizerSettings.isEnabled(context); }
 
-        @Override public void setEnabled(boolean enabled) {
+        @Override void setEnabled(boolean enabled) {
             EqualizerSettings.setEnabled(context, enabled);
             activity.applyEqToService();
         }
 
-        @Override public int numBands() {
+        @Override int numBands() {
             EqualizerSettings.Caps c = caps();
             return c == null ? 0 : c.numBands;
         }
 
-        @Override public int centerFreqMilliHz(int band) {
+        @Override int centerFreqMilliHz(int band) {
             EqualizerSettings.Caps c = caps();
             return (c == null || band >= c.centerFreq.length) ? 0 : c.centerFreq[band];
         }
 
-        @Override public short bandLevel(int band) { return EqualizerSettings.getBandLevel(context, band); }
+        @Override short bandLevel(int band) { return EqualizerSettings.getBandLevel(context, band); }
 
-        @Override public void nudgeBand(int band, int deltaMillibels) {
+        @Override void nudgeBand(int band, int deltaMillibels) {
             EqualizerSettings.Caps c = caps();
             if (c == null || band < 0 || band >= c.numBands) return;
             int level = EqualizerSettings.getBandLevel(context, band) + deltaMillibels;
@@ -3016,24 +3053,23 @@ public class FileBrowserQueueActivity extends Activity {
             activity.applyEqToService();
         }
 
-        @Override public CharSequence statusText() {
-            return caps() == null ? context.getString(R.string.eq_unavailable) : null;
+        @Override void resetBand(int band) {
+            EqualizerSettings.Caps c = caps();
+            if (c == null || band < 0 || band >= c.numBands) return;
+            EqualizerSettings.setBandLevel(context, band, 0);
+            activity.applyEqToService();
         }
 
-        @Override public boolean freqAdjustable() { return false; }
-
-        @Override public void nudgeFreq(int band, int direction) { /* graphic bands are fixed */ }
-
-        // Edges are unused for graphic bands (freqAdjustable() is false); report the center.
-        @Override public int lowerEdgeMilliHz(int band) { return centerFreqMilliHz(band); }
-
-        @Override public int upperEdgeMilliHz(int band) { return centerFreqMilliHz(band); }
+        @Override CharSequence statusText() {
+            return caps() == null ? context.getString(R.string.eq_unavailable) : null;
+        }
     }
 
-    /** Local-playback parametric equalizer (API 28+, {@link DynamicsEqController}): per-band center
-     *  frequency and gain are both adjustable. Persists to {@link ParametricEqSettings} and nudges
-     *  the running Service to re-apply. */
-    private static final class ParametricLocalEqSink implements EqualizerDialog.EqSink {
+    /** Local-playback parametric equalizer (API 28+, {@link DynamicsEqController}): the five-section
+     *  model in {@link ParametricEqSettings}, where gain, centre frequency, Q and — for the cut
+     *  filter — engagement are all adjustable. Persists changes and nudges the running Service to
+     *  re-apply. */
+    private static final class ParametricLocalEqSink extends EqualizerDialog.EqSink {
         private final FileBrowserQueueActivity activity;
         private final Context context;
 
@@ -3042,47 +3078,54 @@ public class FileBrowserQueueActivity extends Activity {
             this.context = activity.getApplicationContext();
         }
 
-        @Override public boolean isEnabled() { return ParametricEqSettings.isEnabled(context); }
+        @Override boolean isEnabled() { return ParametricEqSettings.isEnabled(context); }
 
-        @Override public void setEnabled(boolean enabled) {
+        @Override void setEnabled(boolean enabled) {
             ParametricEqSettings.setEnabled(context, enabled);
             activity.applyEqToService();
         }
 
-        @Override public int numBands() { return ParametricEqSettings.numBands(); }
+        @Override int sectionCount() { return ParametricEqSettings.numSections(); }
 
-        @Override public int centerFreqMilliHz(int band) {
-            return ParametricEqSettings.getFreqHz(context, band) * 1000;
+        @Override ParametricEq.Section section(int slot) {
+            return ParametricEqSettings.section(context, slot);
         }
 
-        @Override public short bandLevel(int band) {
-            return (short) ParametricEqSettings.getGainMillibels(context, band);
-        }
+        @Override int sectionLabelRes(int slot) { return ParametricEqSettings.labelRes(slot); }
 
-        @Override public void nudgeBand(int band, int deltaMillibels) {
-            if (band < 0 || band >= ParametricEqSettings.numBands()) return;
-            int level = ParametricEqSettings.getGainMillibels(context, band) + deltaMillibels;
-            ParametricEqSettings.setGainMillibels(context, band, level);
+        @Override void nudgeGain(int slot, int deltaMillibels) {
+            ParametricEqSettings.nudgeGain(context, slot, deltaMillibels);
             activity.applyEqToService();
         }
 
-        @Override public CharSequence statusText() { return null; }
-
-        @Override public boolean freqAdjustable() { return true; }
-
-        @Override public void nudgeFreq(int band, int direction) {
-            if (band < 0 || band >= ParametricEqSettings.numBands()) return;
-            int cur = ParametricEqSettings.getFreqHz(context, band);
-            ParametricEqSettings.setFreqHz(context, band, ParametricEqSettings.stepFreqHz(cur, direction));
+        @Override void nudgeFreq(int slot, int direction) {
+            ParametricEqSettings.nudgeFreq(context, slot, direction);
             activity.applyEqToService();
         }
 
-        @Override public int lowerEdgeMilliHz(int band) {
-            return ParametricEqSettings.lowerEdgeHz(context, band) * 1000;
+        @Override void nudgeQ(int slot, int direction) {
+            ParametricEqSettings.nudgeQ(context, slot, direction);
+            activity.applyEqToService();
         }
 
-        @Override public int upperEdgeMilliHz(int band) {
-            return ParametricEqSettings.upperEdgeHz(context, band) * 1000;
+        @Override void setSectionOn(int slot, boolean on) {
+            ParametricEqSettings.setSectionOn(context, slot, on);
+            activity.applyEqToService();
+        }
+
+        @Override void resetGain(int slot) {
+            ParametricEqSettings.resetGain(context, slot);
+            activity.applyEqToService();
+        }
+
+        @Override void resetFreq(int slot) {
+            ParametricEqSettings.resetFreq(context, slot);
+            activity.applyEqToService();
+        }
+
+        @Override void resetQ(int slot) {
+            ParametricEqSettings.resetQ(context, slot);
+            activity.applyEqToService();
         }
     }
 

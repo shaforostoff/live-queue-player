@@ -1,0 +1,40 @@
+The BPM analysis, vendored rather than submoduled.
+
+    https://github.com/shaforostoff/foo_rubato
+    revision  aa251da2368285abca8c6b32003e5783e20a6a37
+    retrieved 2026-09-16
+
+Copied verbatim: bpmcore/, pffft/ and cmake/fft_backend.cmake. Nothing is
+patched. If that ever changes, say so here and keep the diff alongside, because
+a silent local change to a vendored file is how a build stops matching its
+provenance - and here that failure is invisible. rhythm_model.h is 7546 lines of
+generated gradient-boosted trees; a corrupted copy does not fail to compile, it
+classifies wrongly. The checksums below are the only cheap guard against that.
+
+bpmcore/ is a static library with one public header and no host in it - no
+foobar2000, no Windows, no ATL, only the standard library and one FFT reached
+through real_fft.h. It is built here for arm64-v8a only, on pffft at single
+precision; see ../CMakeLists.txt for why, and ../../../../../LICENSE.md for
+pffft's licence.
+
+Re-verify with tools/bpmcheck/run.sh, which also checks these files
+still match the foo_rubato tree they came from.
+
+ac5e82fdf8225118c398a1186a2622d40ab7b1c3af504a5e882c29cd4b6cee60  bpmcore/analyse.cpp
+23daf1970e50a51a7ea9eddcc2e51c2d778280fc6de1f91ec6d9d8d2ed431585  bpmcore/bpmcore.h
+29a0119a70193abdfe6b6cf130b27413c098f9afca19faffb68c12f461ff62c2  bpmcore/CMakeLists.txt
+efd2c79afd98eaec91fc8325ba211e2c8b3f51dbe7460ee28f4488b5f9f28c99  bpmcore/internal.h
+f4afc2ab1fd02c4402eee82dacdef2b4dfd392f10756ed4a1064694ad30e21da  bpmcore/odf.cpp
+f1f64b268484b497a4ac241218d00169bfc28a796e0654b74734d2d9d084d11c  bpmcore/parallel.h
+9a3080ecc47bd163b35d382f943524e81f56bc2510ce4570b38f52f237460ad9  bpmcore/real_fft.cpp
+fb96699b9fbf8c61f657ce7f9b9388c8709d5fa5b572c948452b6b0fe44f6dd9  bpmcore/real_fft.h
+1917112bc1fc0be0a6853364be5663ce209e6e47bd98bf02ad5434b0a8ebd89c  bpmcore/resample.cpp
+c73b354a6b7937d15011db710c6ce74140fb28179bd0ef9ae9ff1a40fd34c6e1  bpmcore/rhythm.cpp
+798ecd207385391e2ebf66d34843cd7cce0075076bdb82ab147febdb31f11bfd  bpmcore/rhythm_model.h
+2a6cb1e7b242c1e47784c0b32112bfdf8f56a5b461fa069018993c3bdaf36241  bpmcore/tempo.cpp
+43e188e5645d00b73f304222b4109cdc948ad7b5b053f57deed7f4634b6f375e  cmake/fft_backend.cmake
+ca96e7556db5bd06d26cc9e6b3a46b003ad7b69d1747402246786fb1db91d795  pffft/CMakeLists.txt
+048d649aae3c88a096327c53a781e4b18b6049b005d6d13008fe9ea06a31eae5  pffft/COPYING
+485f2c641b9bc9434720757307e825c2f694b682438da9052959ab1e445e1f16  pffft/pffft.c
+d6ac7f26f7c3f87ed2ad7f0264c09d72285526d937b4dccc5fc1c97645a0d55d  pffft/pffft.h
+aefcb0c447f0c13827b6207c8acf089e432ca5c589fcea6b8147b1b03c7bc35f  pffft/PROVENANCE.txt

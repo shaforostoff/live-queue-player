@@ -1,10 +1,20 @@
 FROM debian:bookworm-slim AS builder
 
 # need git, openjdk and android sdk
-RUN apt-get update && apt-get install -y git openjdk-17-jdk-headless sdkmanager
+# unzip is for the ABI check near the end of this file, not for the SDK.
+RUN apt-get update && apt-get install -y git openjdk-17-jdk-headless sdkmanager unzip
 
 # get required android sdk
-RUN sdkmanager "build-tools;30.0.3" "platforms;android-33"
+#
+# The NDK and CMake are named rather than left to AGP's auto-download. AGP would
+# very likely fetch them - the licences are accepted below, and this image
+# already relies on auto-download for platforms;android-36, since compileSdk is
+# 36 and only 33 is installed here - but a ~2.5GB implicit fetch in the middle
+# of a build is the kind of thing that becomes an unexplained CI timeout. The
+# NDK version is also the one the analysis's numbers were checked at, so it
+# belongs somewhere visible. It must match ndkVersion in app/build.gradle.
+RUN sdkmanager "build-tools;30.0.3" "platforms;android-33" \
+               "ndk;28.2.13676358" "cmake;3.22.1"
 
 # accept licenses for android sdk
 RUN yes | sdkmanager --licenses
@@ -32,6 +42,17 @@ storeFile=/home/debug.keystore\
 RUN chmod 700 ./gradlew
 
 RUN ANDROID_HOME=/opt/android-sdk ./gradlew assembleDebug --no-daemon --console=plain
+
+# An APK carrying no .so for an ABI is uninstallable on that ABI, so a mistake in
+# abiFilters does not fail the build - it silently ships an app that 32-bit and
+# x86 devices cannot install at all. Nothing else here would catch that, and the
+# stub in bpm_jni_stub.cpp exists precisely to keep those entries present.
+RUN for abi in arm64-v8a armeabi-v7a x86 x86_64; do \
+        unzip -l app/build/outputs/apk/debug/app-debug.apk \
+            | grep -q "lib/$abi/libbpmnative.so" \
+            || { echo "missing lib/$abi/libbpmnative.so in the APK"; exit 1; }; \
+        echo "lib/$abi/libbpmnative.so present"; \
+    done
 
 FROM scratch AS output
 

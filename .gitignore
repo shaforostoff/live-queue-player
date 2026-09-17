@@ -13,3 +13,6 @@ publish_0.keystore
 keystore.properties
 /app/build.gradle
 .idea
+
+# host check build of the vendored bpmcore
+/tools/bpmcheck/build/

@@ -1,6 +1,7 @@
 package com.shaforostoff.livequeueplayer;
 
 import android.content.Context;
+import android.media.AudioFormat;
 import android.media.MediaCodec;
 import android.media.MediaExtractor;
 import android.media.MediaFormat;
@@ -30,8 +31,16 @@ final class PcmDecoder {
     /** Rate/layout of the PCM the codec emits — the container's values are only the starting guess. */
     volatile int sampleRate;
     volatile int channelCount;
-    /** An {@link android.media.AudioFormat} encoding; the codec's default is 16-bit. */
-    volatile int pcmEncoding = android.media.AudioFormat.ENCODING_PCM_16BIT;
+    /**
+     * Sample format the codec emits. Almost always {@link AudioFormat#ENCODING_PCM_16BIT}, which
+     * every consumer here assumes, but a codec may publish {@code ENCODING_PCM_FLOAT} instead.
+     *
+     * <p>Worth reading rather than assuming because the two failures differ in kind: playback fed
+     * float bytes as 16-bit merely sounds wrong, and you hear it. BPM analysis fed the same bytes
+     * produces a number that looks perfectly reasonable and is not. So {@link NativeBpmEngine} checks
+     * this and skips the track; the playback path keeps its existing assumption.
+     */
+    volatile int pcmEncoding = AudioFormat.ENCODING_PCM_16BIT;
     final long durationUs;
     volatile long positionUs;
 
@@ -110,7 +119,7 @@ final class PcmDecoder {
         }
     }
 
-    /** Take sample rate / channel count from the codec's current output format, if it has one. */
+    /** Take sample rate / channel count / sample format from the codec's output format, if it has one. */
     private void adoptOutputFormat() {
         MediaFormat out;
         try {

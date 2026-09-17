@@ -1,0 +1,14 @@
+# docker build ships the whole context and ignores .gitignore, so every one of
+# these has to be named again here. .cxx and the build trees are the ones that
+# matter: once native code has been built locally they are gigabytes, and they
+# would be uploaded on every `docker build .` to be thrown away unread.
+.git
+.github
+.gradle
+.idea
+build/
+app/build/
+app/.cxx/
+tools/bpmcheck/build/
+*.apk
+*.png

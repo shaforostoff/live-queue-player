@@ -1,0 +1,22 @@
+PFFFT, vendored rather than submoduled.
+
+    https://bitbucket.org/jpommier/pffft
+    revision 0aec0327a6912e1a0ec5326eef737c2ce19bc836
+    retrieved 2026-09-13
+
+    sha256  485f2c641b9bc9434720757307e825c2f694b682438da9052959ab1e445e1f16  pffft.c
+    sha256  d6ac7f26f7c3f87ed2ad7f0264c09d72285526d937b4dccc5fc1c97645a0d55d  pffft.h
+
+Both files are verbatim; COPYING is the licence block lifted out of the header.
+
+Two files rather than a submodule, for the same reason kiss_fft is a copy: this
+tree is meant to be consumed by an Android project, and a submodule inside a
+subtree is the thing that does not survive that - the recursive init gets
+missed. There is also no upstream cadence to track. The widely used fork at
+github.com/marton78/pffft is a benchmarking project carrying its own
+submodules and splitting pffft across five files and a simd directory, which is
+a great deal more than the transform.
+
+Nothing here is patched. If that changes, say so here and keep the diff
+alongside, because a silent local change to a vendored file is how a build
+stops matching its provenance.

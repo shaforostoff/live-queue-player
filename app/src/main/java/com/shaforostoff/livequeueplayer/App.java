@@ -24,6 +24,10 @@ public class App extends Application {
     // relaunch a re-list of the same folder (a cache hit for the big folders), and
     // StorageBrowser.persistLocation() covers the cold-start case where this instance is gone too.
     private StorageBrowser storageBrowser;
+    // Application-scoped for the same reason tagReadExecutor is: an analysis outlives the activity
+    // that asked for it, and its result belongs to the (also app-scoped) tag cache rather than to
+    // whoever happens to be on screen when it lands.
+    private BpmScanner bpmScanner;
 
     @Override
     public void onCreate() {
@@ -33,6 +37,16 @@ public class App extends Application {
         storageBrowser = new StorageBrowser(this);
         // Nothing can be playing yet in a fresh process, so any staged ALAC copy is a leftover.
         AlacMediaDataSource.deleteStaleStagedFiles(this);
+        bpmScanner = new BpmScanner(this, metadataExtractor);
+        if (BuildConfig.DEBUG) {
+            // This app logs nothing in normal operation, so "is BPM analysis even on this device?"
+            // is otherwise unanswerable without a debugger. One line at startup: whether the
+            // library loaded at all, and whether pffft reached NEON (4) or fell back to scalar (1),
+            // which is a sixfold slowdown that reports itself no other way.
+            android.util.Log.d("Bpm", BpmNative.isSupported()
+                    ? "analysis available, pffft SIMD width " + BpmNative.nativeSimdSize()
+                    : "analysis not in this build (" + android.os.Build.SUPPORTED_ABIS[0] + ")");
+        }
     }
 
     /**
@@ -67,6 +81,10 @@ public class App extends Application {
 
     StorageBrowser getStorageBrowser() {
         return storageBrowser;
+    }
+
+    BpmScanner getBpmScanner() {
+        return bpmScanner;
     }
 
     private BluetoothFileSender fileSender;

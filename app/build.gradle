@@ -6,10 +6,41 @@ android {
   namespace = 'com.shaforostoff.livequeueplayer'
   compileSdk = 36
 
+  // Pinned rather than floating. The arm64/stub split keys off ANDROID_ABI, 16 KB page
+  // alignment is the linker default from r28 on, and the analysis's numbers are checked
+  // against a desktop build at one toolchain version - so a silent NDK bump is a silent
+  // revalidation.
+  ndkVersion = '28.2.13676358'
+
   defaultConfig {
     applicationId = 'com.shaforostoff.livequeueplayer'
     minSdk = 23
     targetSdk = 36
+
+    externalNativeBuild {
+      cmake {
+        // Which FFT and at what width lives in CMakeLists.txt, so a plain
+        // `cmake -S app/src/main/cpp` builds the same thing this does. The STL is the one
+        // thing CMake cannot pick for itself: c++_static because there is exactly one .so
+        // in the APK and so nothing to share a runtime with.
+        arguments += ['-DANDROID_STL=c++_static']
+      }
+    }
+
+    ndk {
+      // Named rather than left to the NDK's default list, for two reasons. A future NDK
+      // that adds an ABI must not silently start building for it; and armeabi-v7a and x86
+      // must never be dropped by accident, because an APK with no .so for an ABI is
+      // uninstallable there - which is the whole reason bpm_jni_stub.cpp exists.
+      abiFilters 'arm64-v8a', 'armeabi-v7a', 'x86', 'x86_64'
+    }
+  }
+
+  externalNativeBuild {
+    cmake {
+      path = file('src/main/cpp/CMakeLists.txt')
+      version = '3.22.1'
+    }
   }
 
   buildFeatures {

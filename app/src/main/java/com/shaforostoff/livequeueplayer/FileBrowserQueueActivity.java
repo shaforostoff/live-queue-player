@@ -20,6 +20,9 @@ import android.os.Looper;
 import android.os.SystemClock;
 import android.view.KeyEvent;
 import android.text.Editable;
+import android.text.SpannableStringBuilder;
+import android.text.Spanned;
+import android.text.style.ForegroundColorSpan;
 import android.text.TextWatcher;
 import android.text.format.Formatter;
 import android.provider.DocumentsContract;
@@ -124,6 +127,7 @@ public class FileBrowserQueueActivity extends Activity {
     private int fileSortMode = SORT_FILENAME;
     private int fileEntriesVersion = 0;
     private MetadataExtractor metadataExtractor;
+    private BpmScanner bpmScanner;
     private int activeTagReadJobs;
     private int tagReadProgressTotal;
     private final AtomicInteger tagReadProgressDone = new AtomicInteger(0);
@@ -276,6 +280,9 @@ public class FileBrowserQueueActivity extends Activity {
         // App-scoped: keeps the browsing location (and its warm listing cache) across the activity
         // relaunch that any unhandled configuration change causes — see App.getStorageBrowser().
         storageBrowser = ((App) getApplication()).getStorageBrowser();
+        // App-scoped too: an analysis takes seconds and must survive the relaunch a rotation or a
+        // scheduled dark-theme flip causes, and its result belongs to the tag cache either way.
+        bpmScanner = ((App) getApplication()).getBpmScanner();
         playlistResolver = new PlaylistResolver(getContentResolver(), storageBrowser, metadataExtractor);
         btController = new BluetoothController(this, new BluetoothController.Callback() {
             @Override
@@ -537,6 +544,10 @@ public class FileBrowserQueueActivity extends Activity {
         }
 
         storageBrowser.rememberLastTreeUri(treeUri);
+        // Before clearCache, so no analysis of the outgoing library is still running when the cache
+        // it would write into is replaced. clearCache also bumps the generation the scanner stamped
+        // its work with, which catches anything already past the cancel.
+        if (bpmScanner != null) bpmScanner.cancelAll();
         metadataExtractor.clearCache();
 
 
@@ -719,7 +730,7 @@ public class FileBrowserQueueActivity extends Activity {
     /** Lists {@code dir} into the browser pane, leaving the search filter alone. */
     private void relistFolder(File dir) {
         currentBrowsePlaylistEntry = null;
-        fileEntriesVersion++;
+        invalidateFileListing();
         fileEntries.clear();
         fileEntries.addAll(storageBrowser.listFolder(dir));
         sortFileEntriesInPlace();
@@ -821,7 +832,7 @@ public class FileBrowserQueueActivity extends Activity {
             return false;
         }
 
-        fileEntriesVersion++;
+        invalidateFileListing();
         fileEntries.clear();
 
         List<FileEntry> listed = storageBrowser.readCurrentDocumentDirectory();
@@ -1263,7 +1274,7 @@ public class FileBrowserQueueActivity extends Activity {
     /** Fallback: list all audio via MediaStore when direct file access fails. */
     private void loadFromMediaStore() {
 
-        fileEntriesVersion++;
+        invalidateFileListing();
         fileEntries.clear();
 
         String[] projection = {
@@ -1373,6 +1384,23 @@ public class FileBrowserQueueActivity extends Activity {
         return Integer.compare(a, b);
     }
 
+    /**
+     * Marks the browser's listing as replaced. In-flight tag reads compare
+     * {@code fileEntriesVersion} and drop their results; any BPM analysis queued for the folder
+     * being left is abandoned here.
+     *
+     * <p>Abandoning it is the point of this method existing at all. The feature measures the
+     * folder you are looking at, so work for a folder you have already left is both useless and
+     * visible: it holds the sort button's progress bar lit over a folder that may have nothing to
+     * measure, which reads as an analysis that started and never finished. It also accumulates -
+     * a few folders in a row queue faster than one thread drains. Whatever finished stays in the
+     * tag cache, so coming back keeps those and re-queues only what did not.
+     */
+    private void invalidateFileListing() {
+        fileEntriesVersion++;
+        if (bpmScanner != null) bpmScanner.cancelAll();
+    }
+
     private void resolveTagMetadataForVisibleFolderAsync() {
         final int versionAtStart = fileEntriesVersion;
         final ArrayList<FileEntry> pendingEntries = new ArrayList<>(fileEntries.size());
@@ -1415,6 +1443,10 @@ public class FileBrowserQueueActivity extends Activity {
         }
 
         if (pendingEntries.isEmpty()) {
+            // The warm-cache path: every entry resolved without a read, so the cache already holds
+            // this folder's tags and the analysis can start now. When there is a read to do
+            // instead, the handoff waits for it - see queueBpmAnalysisForVisibleFolder().
+            queueBpmAnalysisForVisibleFolder();
             return;
         }
 
@@ -1459,6 +1491,10 @@ public class FileBrowserQueueActivity extends Activity {
                             e.sortArtistState = TagState.UNKNOWN;
                             e.sortBpmState    = TagState.UNKNOWN;
                         }
+                        // Hand off anyway: the folder this job was reading is gone, but the job
+                        // may have been the last one holding the analysis back, and the folder now
+                        // on screen may already be fully tag-read and waiting on exactly that.
+                        queueBpmAnalysisForVisibleFolder();
                         return;
                     }
 
@@ -1480,7 +1516,8 @@ public class FileBrowserQueueActivity extends Activity {
                         e.sortGenre  = tag.genre;
                         e.sortArtist = tag.artist;
                         e.sortTitle  = tag.title;
-                        e.sortBpm    = tag.bpm;
+                        e.sortBpm    = MetadataExtractor.effectiveBpm(tag);
+                        e.sortBpmMeasured = MetadataExtractor.isBpmMeasured(tag);
                         e.sortDateState   = TagState.RESOLVED;
                         e.sortGenreState  = TagState.RESOLVED;
                         e.sortArtistState = TagState.RESOLVED;
@@ -1494,34 +1531,167 @@ public class FileBrowserQueueActivity extends Activity {
                         }
                         applyFileFilter();
                     }
+
+                    queueBpmAnalysisForVisibleFolder();
                 }));
+    }
+
+    /**
+     * Hands every tag-read track in this folder that carries no BPM tag to {@link BpmScanner}.
+     *
+     * <p>Only ever after the tags are in the cache, and that is two separate conditions. Per track,
+     * {@code sortBpmState == RESOLVED} says this file's tags have been read, so a track still being
+     * read is never judged on the BPM it does not yet appear to have. Folder-wide, nothing at all
+     * is handed off while a tag read is in flight: an analysis saturates {@code cores - 2} cores
+     * with decoding and FFT, and the read is the thing the user is actually waiting for. Deferring
+     * costs nothing, because every path that finishes a read calls back here.
+     *
+     * <p>Walks the whole list rather than only the batch that just finished, because a folder
+     * resolves in pieces — some entries come warm from the cache, the rest from a background read —
+     * and both paths end here. The scanner de-duplicates by URI, so a second look at a track it is
+     * already working on costs one set lookup.
+     *
+     * <p>Does nothing at all where the native analysis is not in the build, which is every ABI but
+     * arm64-v8a: no decode is started and no thread is created.
+     */
+    private void queueBpmAnalysisForVisibleFolder() {
+        if (bpmScanner == null || !bpmScanner.isAvailable()) {
+            return;
+        }
+        if (activeTagReadJobs > 0) {
+            return;
+        }
+        ArrayList<Uri> untagged = null;
+        int tagged = 0, measured = 0, unread = 0;
+        for (FileEntry e : fileEntries) {
+            if (e.isDirectory() || e.uri == null || isPlaylistFile(e.name)) {
+                continue;
+            }
+            if (e.sortBpmState != TagState.RESOLVED) {
+                unread++;
+            } else if (e.sortBpm <= 0) {
+                if (untagged == null) untagged = new ArrayList<>();
+                untagged.add(e.uri);
+            } else if (e.sortBpmMeasured) {
+                measured++;
+            } else {
+                tagged++;
+            }
+        }
+        if (BuildConfig.DEBUG) {
+            // The census, not just the handoff: "is it analysing tracks that already have a tag?"
+            // is otherwise unanswerable from outside, and the answer has to come from the same
+            // walk that decides.
+            android.util.Log.d("Bpm", "folder handoff: " + (untagged == null ? 0 : untagged.size())
+                    + " to measure, " + tagged + " already tagged, " + measured
+                    + " already measured, " + unread + " not tag-read yet");
+        }
+        if (untagged != null) {
+            bpmScanner.submit(untagged);
+        }
+        // Unconditionally, including when nothing was submitted: this is the end of resolving a
+        // folder, and a folder with nothing left to measure is precisely the one whose sort button
+        // has to stop showing a progress bar.
+        applySortButtonLoadingState();
+    }
+
+    private final BpmScanner.Listener bpmResultsListener = this::onBpmResultsArrived;
+
+    /**
+     * Some measurements landed. The values are in the tag cache; copy them onto the rows that were
+     * showing nothing and redraw.
+     *
+     * <p>Arrives coalesced — the scanner debounces, so this runs once for a burst of results rather
+     * than once per track, which matters because it re-sorts and re-filters the whole folder.
+     */
+    private void onBpmResultsArrived() {
+        boolean fileChanged = false;
+        for (FileEntry e : fileEntries) {
+            if (e.isDirectory() || e.uri == null || e.sortBpmState != TagState.RESOLVED
+                    || e.sortBpm > 0) {
+                continue;
+            }
+            if (applyCachedSortTags(e) && e.sortBpm > 0) fileChanged = true;
+        }
+
+        boolean queueChanged = false;
+        for (QueueEntry q : queueEntries) {
+            if (!q.tagsCached || q.uri == null || q.bpm > 0) continue;
+            MetadataExtractor.TagEntry t = metadataExtractor.peekCachedTags(q.uri);
+            int bpm = MetadataExtractor.effectiveBpm(t);
+            if (bpm > 0) {
+                q.bpm = bpm;
+                q.bpmMeasured = MetadataExtractor.isBpmMeasured(t);
+                queueChanged = true;
+            }
+        }
+
+        if (fileChanged) {
+            if (isTagSortMode(fileSortMode) && currentBrowsePlaylistEntry == null) {
+                Collections.sort(fileEntries, this::compareFileEntries);
+            }
+            applyFileFilter();
+        }
+        if (queueChanged) {
+            queueAdapter.notifyDataSetChanged();
+        }
+        // Fires on every completed measurement, not only the ones that produced a number, so this
+        // is also what advances and finally clears the sort button's progress bar.
+        applySortButtonLoadingState();
     }
 
     private void applySortButtonLoadingState() {
         if (sortButton == null) {
             return;
         }
+
+        // Two phases share this one bar, in the order they happen: reading tags, then measuring the
+        // BPM of whatever had none. They are painted in different colours rather than run together,
+        // because they take very different lengths of time — a tag read is milliseconds a file, an
+        // analysis is seconds — and a single bar covering both would appear to stall. The BPM phase
+        // uses the same blue the measured values themselves are drawn in.
+        final int phase;
+        final float progress;
         if (activeTagReadJobs > 0) {
-            float progress = 0f;
-            if (tagReadProgressTotal > 0) {
-                progress = Math.min(1f, tagReadProgressDone.get() / (float) tagReadProgressTotal);
-            }
-            if (progressClipDrawable == null) {
-                GradientDrawable base = new GradientDrawable();
-                base.setColor(getColor(R.color.buttonBackground));
-                GradientDrawable fill = new GradientDrawable();
-                fill.setColor(getColor(R.color.stopButtonActive));
-                progressClipDrawable = new ClipDrawable(fill, Gravity.START, ClipDrawable.HORIZONTAL);
-                sortButton.setBackground(new LayerDrawable(new Drawable[]{base, progressClipDrawable}));
-            }
-            progressClipDrawable.setLevel((int) (Math.max(0f, Math.min(1f, progress)) * PROGRESS_LEVEL_MAX));
-            sortButton.setTextColor(getColor(R.color.stopButtonActiveText));
+            phase = PROGRESS_PHASE_TAGS;
+            progress = tagReadProgressTotal > 0
+                    ? Math.min(1f, tagReadProgressDone.get() / (float) tagReadProgressTotal) : 0f;
+        } else if (bpmScanner != null && bpmScanner.isBusy()) {
+            phase = PROGRESS_PHASE_BPM;
+            progress = bpmScanner.progress();
         } else {
+            phase = PROGRESS_PHASE_NONE;
+            progress = 0f;
+        }
+
+        if (phase == PROGRESS_PHASE_NONE) {
             progressClipDrawable = null;
+            progressPhase = PROGRESS_PHASE_NONE;
             sortButton.setBackgroundColor(getColor(R.color.buttonBackground));
             sortButton.setTextColor(getColor(R.color.foreground));
+            return;
         }
+
+        // Rebuilt on a phase change as well as from nothing, since the fill colour differs.
+        if (progressClipDrawable == null || progressPhase != phase) {
+            GradientDrawable base = new GradientDrawable();
+            base.setColor(getColor(R.color.buttonBackground));
+            GradientDrawable fill = new GradientDrawable();
+            fill.setColor(getColor(phase == PROGRESS_PHASE_BPM
+                    ? R.color.metaBpmMeasured : R.color.stopButtonActive));
+            progressClipDrawable = new ClipDrawable(fill, Gravity.START, ClipDrawable.HORIZONTAL);
+            sortButton.setBackground(new LayerDrawable(new Drawable[]{base, progressClipDrawable}));
+            progressPhase = phase;
+        }
+        progressClipDrawable.setLevel((int) (Math.max(0f, Math.min(1f, progress)) * PROGRESS_LEVEL_MAX));
+        sortButton.setTextColor(getColor(R.color.stopButtonActiveText));
     }
+
+    private static final int PROGRESS_PHASE_NONE = 0;
+    private static final int PROGRESS_PHASE_TAGS = 1;
+    private static final int PROGRESS_PHASE_BPM  = 2;
+    /** Which phase progressClipDrawable was built for, so a colour change rebuilds it. */
+    private int progressPhase = PROGRESS_PHASE_NONE;
 
     /**
      * Paints {@code vh.content} with a track/fill progress background. The drawable stack (base +
@@ -1787,7 +1957,8 @@ public class FileBrowserQueueActivity extends Activity {
                         e.artist = tag.artist;
                         e.date   = tag.date;
                         e.genre  = tag.genre;
-                        e.bpm    = tag.bpm;
+                        e.bpm    = MetadataExtractor.effectiveBpm(tag);
+                        e.bpmMeasured = MetadataExtractor.isBpmMeasured(tag);
                         e.tagsCached = true;
                     }
                     queueAdapter.notifyDataSetChanged();
@@ -2133,7 +2304,8 @@ public class FileBrowserQueueActivity extends Activity {
         e.sortGenre = t.genre;
         e.sortArtist = t.artist;
         e.sortTitle = t.title;
-        e.sortBpm = t.bpm;
+        e.sortBpm = MetadataExtractor.effectiveBpm(t);
+        e.sortBpmMeasured = MetadataExtractor.isBpmMeasured(t);
         e.sortDateState   = TagState.RESOLVED;
         e.sortGenreState  = TagState.RESOLVED;
         e.sortArtistState = TagState.RESOLVED;
@@ -2176,7 +2348,7 @@ public class FileBrowserQueueActivity extends Activity {
      *  running — including the restore path, which reopens it around a track already playing. */
     private void enterPlaylistAsBrowseFolder(FileEntry playlistEntry) {
         clearFileFilterInput();
-        fileEntriesVersion++;
+        invalidateFileListing();
         fileEntries.clear();
         currentBrowsePlaylistEntry = playlistEntry;
         applyFileFilter();
@@ -3377,6 +3549,15 @@ public class FileBrowserQueueActivity extends Activity {
         super.onStart();
         activityStarted = true;
         sActivityStarted = true;
+        // Registered per visible lifetime rather than for the life of the activity: the scanner
+        // outlives this activity, and a listener left behind would keep a destroyed one alive.
+        // Which also means results that landed while we were stopped were never delivered, so
+        // resync the progress bar rather than trusting the state it was left in: a scan that
+        // finished behind our back would otherwise leave the button lit for good.
+        if (bpmScanner != null) {
+            bpmScanner.addListener(bpmResultsListener);
+            applySortButtonLoadingState();
+        }
         restorePersistedQueue();
         servicePlaybackOffset = QueueStore.loadPlaybackOffset(this);
         if (Service.sBrowseMode && Service.sCurrentUri != null) {
@@ -3520,6 +3701,7 @@ public class FileBrowserQueueActivity extends Activity {
     protected void onStop() {
         activityStarted = false;
         sActivityStarted = false;
+        if (bpmScanner != null) bpmScanner.removeListener(bpmResultsListener);
         if (Service.sBrowseMode) queueRemainingBrowseTracks();
         persistQueue();
         // onStop precedes both an activity relaunch and process death, so this snapshot is always as
@@ -3674,6 +3856,8 @@ public class FileBrowserQueueActivity extends Activity {
         String sortArtist;
         String sortTitle;
         int sortBpm;
+        /** True when sortBpm was measured from the audio rather than read from a tag. */
+        boolean sortBpmMeasured;
         TagState sortDateState   = TagState.UNKNOWN;
         TagState sortGenreState  = TagState.UNKNOWN;
         TagState sortArtistState = TagState.UNKNOWN;
@@ -3717,6 +3901,8 @@ public class FileBrowserQueueActivity extends Activity {
         String  date;
         String  genre;
         int     bpm;
+        /** True when bpm was measured from the audio rather than read from a tag. */
+        boolean bpmMeasured;
 
         QueueEntry(String name, Uri uri) {
             this(name, uri, 0);
@@ -3744,29 +3930,60 @@ public class FileBrowserQueueActivity extends Activity {
         return String.format(Locale.US, "-%d:%02d", totalSecs / 60, totalSecs % 60);
     }
 
-    private String buildMetaText(String date, String genre, int bpm) {
+    /**
+     * The right-hand half of a row's second line: year, genre and BPM, ordered so that whichever
+     * field the list is sorted by sits last, nearest the eye.
+     *
+     * <p>Returns a CharSequence rather than a String because a BPM this app measured itself is
+     * tinted — {@code measured} true — to distinguish it from one read out of the file's tags. It is
+     * an estimate, and a colour says so without costing a character of a line that is already
+     * 11sp and end-aligned.
+     */
+    private CharSequence buildMetaText(String date, String genre, int bpm, boolean measured) {
         String bpmText = bpm > 0 ? bpm + " BPM" : null;
-        StringBuilder sb = new StringBuilder();
+        SpannableStringBuilder sb = new SpannableStringBuilder();
+        int bpmStart;
         if (fileSortMode == SORT_GENRE) {
             appendMeta(sb, date);
-            appendMeta(sb, bpmText);
+            bpmStart = appendMeta(sb, bpmText);
             appendMeta(sb, genre);
         } else if (fileSortMode == SORT_BPM) {
             appendMeta(sb, date);
             appendMeta(sb, genre);
-            appendMeta(sb, bpmText);
+            bpmStart = appendMeta(sb, bpmText);
         } else { // SORT_YEAR, SORT_ARTIST, SORT_FILENAME
-            appendMeta(sb, bpmText);
+            bpmStart = appendMeta(sb, bpmText);
             appendMeta(sb, genre);
             appendMeta(sb, date);
         }
-        return sb.toString();
+        if (measured && bpmStart >= 0) {
+            sb.setSpan(new ForegroundColorSpan(measuredBpmColor()), bpmStart,
+                    bpmStart + bpmText.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        }
+        return sb;
     }
 
-    private static void appendMeta(StringBuilder sb, String part) {
-        if (part == null || part.isEmpty()) return;
+    /** Where {@code part} landed, so a span can be put over it, or -1 if nothing was appended. */
+    private static int appendMeta(SpannableStringBuilder sb, String part) {
+        if (part == null || part.isEmpty()) return -1;
         if (sb.length() > 0) sb.append("  ");
+        int start = sb.length();
         sb.append(part);
+        return start;
+    }
+
+    /**
+     * Resolved lazily and cached, because getView runs per row per scroll frame. Cleared by the
+     * activity relaunch any unhandled configuration change causes — which is what a dark-theme flip
+     * is — so it never outlives the theme it was read under.
+     */
+    private int measuredBpmColorCache;
+
+    private int measuredBpmColor() {
+        if (measuredBpmColorCache == 0) {
+            measuredBpmColorCache = getResources().getColor(R.color.metaBpmMeasured, getTheme());
+        }
+        return measuredBpmColorCache;
     }
 
     private static final class ViewHolder {
@@ -3827,8 +4044,9 @@ public class FileBrowserQueueActivity extends Activity {
             }
             vh.icon.setText(entry.isDirectory() ? "\uD83D\uDCC1" : "\uD83C\uDFB5");
             vh.name.setText(fileSortMode != SORT_FILENAME && entry.sortTitle != null && !entry.sortTitle.isEmpty() ? entry.sortTitle : entry.name);
-            String metaText = entry.isDirectory() ? "" :
-                    buildMetaText(entry.sortDate, entry.sortGenre, entry.sortBpm);
+            CharSequence metaText = entry.isDirectory() ? "" :
+                    buildMetaText(entry.sortDate, entry.sortGenre, entry.sortBpm,
+                            entry.sortBpmMeasured);
             String artistText = entry.isDirectory() ? "" :
                     (entry.sortArtist != null ? entry.sortArtist : "");
             vh.artist.setText(artistText);
@@ -3928,9 +4146,9 @@ public class FileBrowserQueueActivity extends Activity {
             String displayName = entry.tagsCached && entry.title != null && !entry.title.isEmpty()
                     ? entry.title : entry.name;
             String artistText = entry.tagsCached && entry.artist != null ? entry.artist : "";
-            String metaText   = entry.tagsCached
-                    ? buildMetaText(entry.date, entry.genre, entry.bpm) : "";
-            boolean hasSubtext = !artistText.isEmpty() || !metaText.isEmpty();
+            CharSequence metaText = entry.tagsCached
+                    ? buildMetaText(entry.date, entry.genre, entry.bpm, entry.bpmMeasured) : "";
+            boolean hasSubtext = !artistText.isEmpty() || metaText.length() > 0;
             vh.name.setText(displayName);
             vh.name.setGravity(Gravity.START);
             vh.artist.setText(artistText);

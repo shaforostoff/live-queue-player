@@ -41,7 +41,38 @@ class MetadataExtractor {
         String genre;
         String artist;
         String title;
-        int bpm = -1;
+        /** -1 not read yet, 0 read and the file carries no BPM tag, &gt; 0 the tagged value. */
+        volatile int bpm = -1;
+        /**
+         * Tempo measured from the audio, for a file that carried no BPM tag.
+         * 0 = not measured, -1 = measured and no tempo found, &gt; 0 = measured.
+         *
+         * <p>A field of its own rather than a value written into {@link #bpm}, because bpm's
+         * three-way sentinel is load-bearing: {@code bpm == 0} is precisely the set of tracks worth
+         * measuring, and overwriting it with a measurement destroys that predicate. A later pass
+         * could then tell neither a tagged 120 from a measured one, nor "already measured" from
+         * "never tried". Keeping the two apart also buys a negative cache for free — the -1 that
+         * stops a file with no detectable beat being re-analysed every time its folder is reopened
+         * — and lets the row say which kind of figure it is showing.
+         *
+         * <p>Both are volatile because an analysis thread now writes what the tag-read threads and
+         * the main thread read. The fields are disjoint from everything {@link #readSortTags}
+         * writes, so there is no lost update to worry about — only visibility, and that is all
+         * volatile is being asked for here.
+         */
+        volatile int measuredBpm;
+    }
+
+    /** The BPM to show and sort by: the tagged one if there is one, else the measured one, else 0. */
+    static int effectiveBpm(TagEntry e) {
+        if (e == null) return 0;
+        if (e.bpm > 0) return e.bpm;
+        return e.measuredBpm > 0 ? e.measuredBpm : 0;
+    }
+
+    /** True when {@code e} was measured rather than read from a tag — i.e. what to tint. */
+    static boolean isBpmMeasured(TagEntry e) {
+        return e != null && e.bpm <= 0 && e.measuredBpm > 0;
     }
 
     // Cache keys are stored in a shortened, reversible form to save RAM (the cache can hold the
@@ -62,10 +93,48 @@ class MetadataExtractor {
         }
     }
 
+    /**
+     * Bumped by {@link #clearCache()}. A BPM measurement started before the bump belongs to a tree
+     * the user has since replaced, and {@link #recordMeasuredBpm} drops it — without this its
+     * {@code computeIfAbsent} would put a stale key back into the fresh cache, which is a leak of
+     * the old library into the new one that nothing later would undo.
+     */
+    private volatile int cacheGeneration;
+
+    int cacheGeneration() {
+        return cacheGeneration;
+    }
+
     void clearCache() {
+        cacheGeneration++;
         tagCache.clear();
         scannedRoots.clear();
         valuePool.clear();
+    }
+
+    /**
+     * True when {@code uri} has been tag-read, carries no BPM tag, and has not been measured yet —
+     * exactly the set worth handing to {@link BpmScanner}.
+     */
+    boolean needsBpmAnalysis(Uri uri) {
+        if (uri == null) return false;
+        TagEntry e = tagCache.get(uriToKey(uri));
+        return e != null && e.bpm == 0 && e.measuredBpm == 0;
+    }
+
+    /**
+     * Stores an analysed tempo. {@code bpm} is the measured value, or -1 for "analysed, no tempo
+     * found" so the file is not tried again. A real tag always wins, so this is a no-op once one
+     * has arrived; {@code generation} must be the value {@link #cacheGeneration()} had when the
+     * analysis was queued.
+     */
+    void recordMeasuredBpm(Uri uri, int bpm, int generation) {
+        if (uri == null || generation != cacheGeneration) return;
+        TagEntry e = tagCache.get(uriToKey(uri));
+        // Only an entry that is already in the cache: an analysis whose file has since been
+        // enumerated away has nothing to say about the library the user is now looking at.
+        if (e == null || e.bpm > 0) return;
+        e.measuredBpm = bpm;
     }
 
     /** Returns a canonical (shared) instance for {@code s}, so duplicate values aren't kept N times. */
@@ -118,6 +187,14 @@ class MetadataExtractor {
         if (uri == null) return false;
         TagEntry e = tagCache.get(uriToKey(uri));
         return e != null && e.date != null && e.genre != null && e.artist != null && e.title != null && e.bpm >= 0;
+    }
+
+    /**
+     * The cached tags for {@code uri}, or null. Never reads the file — unlike
+     * {@link #readSortTags}, which will, so this is the one to call from the main thread.
+     */
+    TagEntry peekCachedTags(Uri uri) {
+        return uri == null ? null : tagCache.get(uriToKey(uri));
     }
 
     /** True if {@code uri} is present in the cache, i.e. the file was enumerated this session. */

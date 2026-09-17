@@ -10,4 +10,8 @@
   <color name="queueProgressFill">#616161</color>
   <color name="inputBackground">#4A4A4A</color>
   <color name="inputHint">#C7C7C7</color>
+  <!-- A BPM measured from the audio rather than read from a tag. Has to stay legible
+       against the #EDEDED the rest of the meta line is, and on queuePlayingBackground,
+       the only other ground a meta line sits on. -->
+  <color name="metaBpmMeasured">#9DC1FF</color>
 </resources>

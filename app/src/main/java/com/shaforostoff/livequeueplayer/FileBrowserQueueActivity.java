@@ -2416,17 +2416,10 @@ public class FileBrowserQueueActivity extends Activity {
     }
 
     private void pushPlayState() {
-        try {
-            JSONObject msg = new JSONObject();
-            msg.put("type", "play_state");
-            String state = remotePlaybackState();
-            msg.put("state", state);
-            msg.put("current_id", currentPlayingEntryId());
-            if ("fading".equals(state)) msg.put("fade_duration_ms", fadeDurationMs());
-            btController.sendRaw(msg.toString());
-            lastPushedPlayKey = playStateKey();
-        } catch (Exception ignored) {
-        }
+        String state = remotePlaybackState();
+        btController.send("play_state", "state", state, "current_id", currentPlayingEntryId(),
+                "fade_duration_ms", "fading".equals(state) ? fadeDurationMs() : null);
+        lastPushedPlayKey = playStateKey();
     }
 
     private String playStateKey() {
@@ -2453,7 +2446,7 @@ public class FileBrowserQueueActivity extends Activity {
      */
     private void notifyRemoteQueueChanged() {
         if (mode == Mode.REMOTE_RECEIVE && btController != null) {
-            btController.sendRaw("{\"type\":\"queue_changed\"}");
+            btController.send("queue_changed");
         }
     }
 
@@ -2469,16 +2462,11 @@ public class FileBrowserQueueActivity extends Activity {
     }
 
     private void pushVolumeState() {
-        try {
-            AudioManager am = (AudioManager) getSystemService(AUDIO_SERVICE);
-            if (am == null) return;
-            JSONObject msg = new JSONObject();
-            msg.put("type",  "volume_state");
-            msg.put("value", am.getStreamVolume(AudioManager.STREAM_MUSIC));
-            msg.put("max",   am.getStreamMaxVolume(AudioManager.STREAM_MUSIC));
-            btController.sendRaw(msg.toString());
-        } catch (Exception ignored) {
-        }
+        AudioManager am = (AudioManager) getSystemService(AUDIO_SERVICE);
+        if (am == null) return;
+        btController.send("volume_state",
+                "value", am.getStreamVolume(AudioManager.STREAM_MUSIC),
+                "max", am.getStreamMaxVolume(AudioManager.STREAM_MUSIC));
     }
 
     /** Apply an equalizer change requested by the remote sender, then echo the new state back. The
@@ -3045,19 +3033,8 @@ public class FileBrowserQueueActivity extends Activity {
     }
 
     private void sendMatchResult(int name, int tag, int fuzzy, int none, String tagName, String fuzzyName, String noneName) {
-        try {
-            JSONObject obj = new JSONObject();
-            obj.put("type",  "match_result");
-            obj.put("name",  name);
-            obj.put("tag",   tag);
-            obj.put("fuzzy", fuzzy);
-            obj.put("none",  none);
-            if (tagName   != null) obj.put("tag_name",   tagName);
-            if (fuzzyName != null) obj.put("fuzzy_name", fuzzyName);
-            if (noneName  != null) obj.put("none_name",  noneName);
-            btController.sendRaw(obj.toString());
-        } catch (Exception ignored) {
-        }
+        btController.send("match_result", "name", name, "tag", tag, "fuzzy", fuzzy, "none", none,
+                "tag_name", tagName, "fuzzy_name", fuzzyName, "none_name", noneName);
     }
 
     private void showMatchResultToast(String jsonLine) {

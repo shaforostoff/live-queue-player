@@ -121,13 +121,7 @@ final class RemoteQueueController {
                         (pos, cancelled) -> {
                             adapter.notifyDataSetChanged();
                             if (!cancelled && pos < queueEntries.size()) {
-                                try {
-                                    JSONObject cmd = new JSONObject();
-                                    cmd.put("type", "move_track");
-                                    cmd.put("id", queueEntries.get(pos).id);
-                                    cmd.put("to_position", pos);
-                                    btController.sendRaw(cmd.toString());
-                                } catch (Exception ignored) {}
+                                btController.send("move_track", "id", queueEntries.get(pos).id, "to_position", pos);
                             }
                         });
 
@@ -135,16 +129,11 @@ final class RemoteQueueController {
             if (gestures.consumeSuppressedClick()) return;
             if ("playing".equals(playbackState)) return;
             if (position < 0 || position >= queueEntries.size()) return;
-            try {
-                JSONObject cmd = new JSONObject();
-                cmd.put("type", "play_track");
-                cmd.put("id", queueEntries.get(position).id);
-                btController.sendRaw(cmd.toString());
-            } catch (Exception ignored) {}
+            btController.send("play_track", "id", queueEntries.get(position).id);
         });
 
-        stopButton.setOnClickListener(v -> btController.sendRaw("{\"type\":\"stop_playback\"}"));
-        playButton.setOnClickListener(v -> btController.sendRaw("{\"type\":\"resume_playback\"}"));
+        stopButton.setOnClickListener(v -> btController.send("stop_playback"));
+        playButton.setOnClickListener(v -> btController.send("resume_playback"));
         refreshButton.setOnClickListener(v -> requestQueue());
         volumeButton.setOnClickListener(v -> showVolumePopup());
         eqButton.setOnClickListener(v -> showEqDialog());
@@ -183,18 +172,13 @@ final class RemoteQueueController {
         });
         volumePopup.showAsDropDown(volumeButton);
 
-        btController.sendRaw("{\"type\":\"request_volume\"}");
+        btController.send("request_volume");
     }
 
     private void sendVolume(int value) {
         cachedVolumeValue = value;
         if (volumeValueText != null) volumeValueText.setText(String.valueOf(value));
-        try {
-            JSONObject cmd = new JSONObject();
-            cmd.put("type", "set_volume");
-            cmd.put("value", value);
-            btController.sendRaw(cmd.toString());
-        } catch (Exception ignored) {}
+        btController.send("set_volume", "value", value);
     }
 
     void onVolumeStateReceived(JSONObject obj) {
@@ -209,7 +193,7 @@ final class RemoteQueueController {
     private void showEqDialog() {
         if (eqDialog != null && eqDialog.isShowing()) return;
         eqDialog = EqualizerDialog.show(activity, new RemoteEqSink());
-        btController.sendRaw("{\"type\":\"request_eq\"}");
+        btController.send("request_eq");
     }
 
     void onEqStateReceived(JSONObject obj) {
@@ -305,7 +289,7 @@ final class RemoteQueueController {
 
         @Override void setEnabled(boolean enabled) {
             eqEnabled = enabled;
-            send("enabled", enabled);
+            btController.send("set_eq", "enabled", enabled);
         }
 
         @Override CharSequence statusText() {
@@ -328,7 +312,7 @@ final class RemoteQueueController {
             if (s == null) return;
             int gain = Math.max(eqMin, Math.min(eqMax, s.gainMb + deltaMillibels));
             eqSections[slot] = s.withGain(gain);
-            sendSection(slot, "gain", gain);
+            btController.send("set_eq", "section", slot, "gain", gain);
         }
 
         @Override void nudgeFreq(int slot, int direction) {
@@ -338,7 +322,7 @@ final class RemoteQueueController {
             int hiHz = slot < eqSectionFreqMax.length ? eqSectionFreqMax[slot] : 20000;
             int hz = ParametricEqSettings.stepFreqHz(s.freqHz, direction, loHz, hiHz);
             eqSections[slot] = s.withFreq(hz);
-            sendSection(slot, "freq", hz);
+            btController.send("set_eq", "section", slot, "freq", hz);
         }
 
         @Override void nudgeQ(int slot, int direction) {
@@ -347,7 +331,7 @@ final class RemoteQueueController {
             int q = ParametricEqSettings.stepQMilli(s.qMilli, direction);
             q = Math.max(eqQMin, Math.min(Math.max(eqQMin, eqQMax), q));
             eqSections[slot] = s.withQ(q);
-            sendSection(slot, "q", q);
+            btController.send("set_eq", "section", slot, "q", q);
         }
 
         @Override void resetGain(int slot) {
@@ -355,7 +339,7 @@ final class RemoteQueueController {
             if (s == null) return;
             int gain = Math.max(eqMin, Math.min(eqMax, ParametricEqSettings.DEFAULT_GAIN_MILLIBELS));
             eqSections[slot] = s.withGain(gain);
-            sendSection(slot, "gain", gain);
+            btController.send("set_eq", "section", slot, "gain", gain);
         }
 
         @Override void resetFreq(int slot) {
@@ -363,7 +347,7 @@ final class RemoteQueueController {
             int hz = slot < eqSectionFreqDefault.length ? eqSectionFreqDefault[slot] : 0;
             if (s == null || hz <= 0) return;
             eqSections[slot] = s.withFreq(hz);
-            sendSection(slot, "freq", hz);
+            btController.send("set_eq", "section", slot, "freq", hz);
         }
 
         @Override void resetQ(int slot) {
@@ -371,20 +355,14 @@ final class RemoteQueueController {
             int q = slot < eqSectionQDefault.length ? eqSectionQDefault[slot] : 0;
             if (s == null || q <= 0) return;
             eqSections[slot] = s.withQ(q);
-            sendSection(slot, "q", q);
+            btController.send("set_eq", "section", slot, "q", q);
         }
 
         @Override void setSectionOn(int slot, boolean on) {
             ParametricEq.Section s = section(slot);
             if (s == null || s.on == on) return;
             eqSections[slot] = s.withOn(on);
-            try {
-                JSONObject cmd = new JSONObject();
-                cmd.put("type", "set_eq");
-                cmd.put("section", slot);
-                cmd.put("on", on);
-                btController.sendRaw(cmd.toString());
-            } catch (Exception ignored) {}
+            btController.send("set_eq", "section", slot, "on", on);
         }
 
         // --- band model (host predating the section model) --------------------------------------
@@ -403,14 +381,14 @@ final class RemoteQueueController {
             if (band < 0 || band >= eqLevels.length) return;
             int level = Math.max(eqMin, Math.min(eqMax, eqLevels[band] + deltaMillibels));
             eqLevels[band] = (short) level;
-            sendBand(band, "value", level);
+            btController.send("set_eq", "band", band, "value", level);
         }
 
         @Override void resetBand(int band) {
             if (band < 0 || band >= eqLevels.length) return;
             int level = Math.max(eqMin, Math.min(eqMax, 0));
             eqLevels[band] = (short) level;
-            sendBand(band, "value", level);
+            btController.send("set_eq", "band", band, "value", level);
         }
 
         @Override boolean freqAdjustable() { return eqParametric && eqSections.length == 0; }
@@ -426,7 +404,7 @@ final class RemoteQueueController {
             if (hiHz < loHz) hiHz = loHz;
             int newHz = Math.max(loHz, Math.min(hiHz, legacyStepFreqHz(curHz, direction)));
             eqFreqs[band] = newHz * 1000;
-            sendBand(band, "freq", newHz);
+            btController.send("set_eq", "band", band, "freq", newHz);
         }
 
         /** That host's own default centre frequencies, so a reset lands where it would have. Only
@@ -436,7 +414,7 @@ final class RemoteQueueController {
             if (eqFreqs.length != LEGACY_DEFAULT_FREQ_HZ.length) return;
             int hz = LEGACY_DEFAULT_FREQ_HZ[band];
             eqFreqs[band] = hz * 1000;
-            sendBand(band, "freq", hz);
+            btController.send("set_eq", "band", band, "freq", hz);
         }
 
         // Edges derived from neighbours, mirroring that host (eqFreqs holds milliHz, so the mean
@@ -450,35 +428,6 @@ final class RemoteQueueController {
             if (band < 0 || band >= eqFreqs.length) return 0;
             if (band == eqFreqs.length - 1) return LEGACY_TOP_EDGE_HZ * 1000;
             return legacyGeometricMean(eqFreqs[band], eqFreqs[band + 1]);
-        }
-
-        private void send(String key, boolean value) {
-            try {
-                JSONObject cmd = new JSONObject();
-                cmd.put("type", "set_eq");
-                cmd.put(key, value);
-                btController.sendRaw(cmd.toString());
-            } catch (Exception ignored) {}
-        }
-
-        private void sendSection(int slot, String key, int value) {
-            try {
-                JSONObject cmd = new JSONObject();
-                cmd.put("type", "set_eq");
-                cmd.put("section", slot);
-                cmd.put(key, value);
-                btController.sendRaw(cmd.toString());
-            } catch (Exception ignored) {}
-        }
-
-        private void sendBand(int band, String key, int value) {
-            try {
-                JSONObject cmd = new JSONObject();
-                cmd.put("type", "set_eq");
-                cmd.put("band", band);
-                cmd.put(key, value);
-                btController.sendRaw(cmd.toString());
-            } catch (Exception ignored) {}
         }
     }
 
@@ -522,15 +471,10 @@ final class RemoteQueueController {
             if (maxKnownId == 0 || key > maxKnownId) maxKnownId = key;
             if (minKnownId == 0 || key < minKnownId) minKnownId = key;
         }
-        try {
-            JSONObject cmd = new JSONObject();
-            cmd.put("type", "request_queue");
-            if (maxKnownId > 0) {
-                cmd.put("max_known_id", maxKnownId);
-                cmd.put("min_known_id", minKnownId);
-            }
-            btController.sendRaw(cmd.toString());
-        } catch (Exception ignored) {}
+        boolean known = maxKnownId > 0;
+        btController.send("request_queue",
+                "max_known_id", known ? maxKnownId : null,
+                "min_known_id", known ? minKnownId : null);
     }
 
     void onQueueStateReceived(JSONObject obj) {
@@ -676,12 +620,7 @@ final class RemoteQueueController {
         if (pos < 0 || pos >= queueEntries.size()) return;
         int trackId = queueEntries.remove(pos).id;
         adapter.notifyDataSetChanged();
-        try {
-            JSONObject cmd = new JSONObject();
-            cmd.put("type", "remove_track");
-            cmd.put("id", trackId);
-            btController.sendRaw(cmd.toString());
-        } catch (Exception ignored) {}
+        btController.send("remove_track", "id", trackId);
     }
 
     /** Optimistically toggles the remote insert anchor on the swiped track and tells the host. */
@@ -691,12 +630,7 @@ final class RemoteQueueController {
         if (entry.id == currentId) return;   // the playing track can't be an anchor
         anchorId = (anchorId == entry.id) ? 0 : entry.id;
         adapter.notifyDataSetChanged();
-        try {
-            JSONObject cmd = new JSONObject();
-            cmd.put("type", "set_anchor");
-            cmd.put("id", entry.id);
-            btController.sendRaw(cmd.toString());
-        } catch (Exception ignored) {}
+        btController.send("set_anchor", "id", entry.id);
     }
 
     private final class QueueAdapter extends BaseAdapter {

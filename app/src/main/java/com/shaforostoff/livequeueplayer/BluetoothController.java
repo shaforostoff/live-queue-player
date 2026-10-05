@@ -13,6 +13,7 @@ import android.content.pm.PackageManager;
 import android.os.Build;
 import android.widget.Toast;
 
+import org.json.JSONException;
 import org.json.JSONObject;
 
 import java.util.ArrayList;
@@ -129,6 +130,22 @@ class BluetoothController {
 
     boolean sendRaw(String line) {
         return bridge.sendRaw(line);
+    }
+
+    /**
+     * Sends the message {@code {"type": type, key1: value1, ...}}. A null value leaves its key out,
+     * which is how optional fields are written.
+     */
+    boolean send(String type, Object... keysAndValues) {
+        try {
+            JSONObject msg = new JSONObject().put("type", type);
+            for (int i = 0; i + 1 < keysAndValues.length; i += 2) {
+                msg.put((String) keysAndValues[i], keysAndValues[i + 1]);
+            }
+            return sendRaw(msg.toString());
+        } catch (JSONException e) {
+            return false; // only for a NaN/infinite number, which no message carries
+        }
     }
 
     boolean sendQueueRequests(List<BluetoothQueueBridge.TrackRequest> requests) {

@@ -3142,20 +3142,21 @@ public class FileBrowserQueueActivity extends Activity {
             }
         }
 
-
         // Stage 3 — tree walk: only for whatever stages 1-2 couldn't resolve (e.g. files added after
-        // the scan, or a request that arrived before the scan finished).
+        // the scan, or a request that arrived before the scan finished). One pass over the library;
+        // a parent-folder hint match outranks a plain name match, which outranks one that only
+        // matches with the extension stripped (see TrackMatcher).
         if (resolved < n) {
-            List<Uri> walk = null;
+            TrackMatcher.Accumulator matcher = new TrackMatcher.Accumulator(requests);
+            StorageBrowser.FileVisitor match = (name, mime, parentName, uri) -> matcher.match(name, parentName, uri);
             if (isDocTree) {
-                walk = findAllInDocumentTree(rootDocUri, requests);
+                storageBrowser.walkDocumentTree(storageBrowser.getCurrentTreeUri(), rootDocUri, match);
             } else if (fileRoot != null && fileRoot.exists()) {
-                walk = findAllInFileDirectory(fileRoot, requests);
+                StorageBrowser.walkFileTree(fileRoot, match);
             }
-            if (walk != null) {
-                for (int i = 0; i < n; i++) {
-                    if (results[i] == null && walk.get(i) != null) results[i] = walk.get(i);
-                }
+            List<Uri> walk = matcher.result();
+            for (int i = 0; i < n; i++) {
+                if (results[i] == null && walk.get(i) != null) results[i] = walk.get(i);
             }
         }
 
@@ -3206,9 +3207,7 @@ public class FileBrowserQueueActivity extends Activity {
                 : fileRoot.getAbsolutePath();
         if (!metadataExtractor.claimRootScan(rootKey)) return;
         new Thread(() -> {
-            List<Uri> allUris = isDocTree
-                    ? storageBrowser.collectAllAudioUrisFromDocumentTree(rootDocUri, treeUri)
-                    : storageBrowser.collectAllAudioUrisFromFileDirectory(fileRoot);
+            List<Uri> allUris = storageBrowser.collectAllAudioUris(isDocTree, rootDocUri, treeUri, fileRoot);
             if (allUris.isEmpty()) return;
             List<Uri> toScan = new ArrayList<>(allUris.size());
             for (Uri uri : allUris) {
@@ -3218,84 +3217,6 @@ public class FileBrowserQueueActivity extends Activity {
             runParallelTagReads(toScan.size(),
                     idx -> metadataExtractor.readSortTags(toScan.get(idx)), null);
         }).start();
-    }
-
-    /**
-     * Finds all requested files in the file-based directory tree with a single DFS pass.
-     * Hint-matched results (parent folder name matches) take priority over plain name matches,
-     * which take priority over extension-stripped matches.
-     */
-    private List<Uri> findAllInFileDirectory(File root, List<BluetoothQueueBridge.TrackRequest> requests) {
-        TrackMatcher.Accumulator matcher = new TrackMatcher.Accumulator(requests);
-        ArrayList<File> stack = new ArrayList<>();
-        stack.add(root);
-        while (!stack.isEmpty()) {
-            File dir = stack.remove(stack.size() - 1);
-            File[] children = dir.listFiles();
-            if (children == null) continue;
-            String dirName = dir.getName();
-            for (File child : children) {
-                if (child == null) continue;
-                if (child.isDirectory()) { stack.add(child); continue; }
-                matcher.match(child.getName(), dirName, Uri.fromFile(child));
-            }
-        }
-
-        return matcher.result();
-    }
-
-    /**
-     * Finds all requested files in the SAF document tree with a single DFS pass.
-     * Each directory is queried exactly once. Hint-matched results take priority over plain
-     * name matches, which take priority over extension-stripped matches.
-     */
-    private List<Uri> findAllInDocumentTree(Uri rootDocumentUri, List<BluetoothQueueBridge.TrackRequest> requests) {
-        Uri treeUri = storageBrowser.getCurrentTreeUri();
-        TrackMatcher.Accumulator matcher = new TrackMatcher.Accumulator(requests);
-
-        String rootDocId;
-        try {
-            rootDocId = DocumentsContract.getDocumentId(rootDocumentUri);
-        } catch (Exception ignored) {
-            return matcher.result(); // nothing matched: one null per request
-        }
-
-        String[] projection = {
-                DocumentsContract.Document.COLUMN_DOCUMENT_ID,
-                DocumentsContract.Document.COLUMN_DISPLAY_NAME,
-                DocumentsContract.Document.COLUMN_MIME_TYPE
-        };
-
-        // Stack holds [docId, displayName] pairs; displayName used to check parentHint.
-        ArrayList<String[]> stack = new ArrayList<>();
-        stack.add(new String[]{rootDocId, ""});
-        while (!stack.isEmpty()) {
-            String[] current = stack.remove(stack.size() - 1);
-            String dirDocId = current[0];
-            String dirName = current[1];
-            // Built inside the try: this runs on a raw background thread, where the tree being
-            // cleared under it (a null treeUri) would otherwise crash the process.
-            try (Cursor cursor = getContentResolver().query(
-                    DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, dirDocId),
-                    projection, null, null, null)) {
-                if (cursor == null) continue;
-                while (cursor.moveToNext()) {
-                    String childDocId = cursor.getString(0);
-                    String childName = cursor.getString(1);
-                    String mimeType = cursor.getString(2);
-                    if (childDocId == null || childName == null) continue;
-                    if (DocumentsContract.Document.MIME_TYPE_DIR.equals(mimeType)) {
-                        stack.add(new String[]{childDocId, childName});
-                        continue;
-                    }
-                    matcher.match(childName, dirName,
-                            DocumentsContract.buildDocumentUriUsingTree(treeUri, childDocId));
-                }
-            } catch (Exception ignored) {
-            }
-        }
-
-        return matcher.result();
     }
 
     private boolean isPlaybackActiveOrFading() {

@@ -313,25 +313,38 @@ final class StorageBrowser {
 
     // -- recursive audio enumeration (used by remote send/receive + tag scan) -
 
-    List<Uri> collectAllAudioUrisFromDocumentTree(Uri rootDocUri, Uri treeUri) {
-        List<Uri> result = new ArrayList<>();
+    /** One file found by {@link #walkDocumentTree} or {@link #walkFileTree}. */
+    interface FileVisitor {
+        /** {@code mimeType} is null for file:// walks; {@code parentName} is the containing folder. */
+        void visit(String name, String mimeType, String parentName, Uri uri);
+    }
+
+    /**
+     * Visits every file (not folder) under {@code rootDocUri}, depth first, querying each folder
+     * exactly once; the root's {@code parentName} is "". Unreadable folders are skipped. Touches no
+     * browsing state, so it is safe off the main thread with a {@code treeUri} captured up front.
+     */
+    void walkDocumentTree(Uri treeUri, Uri rootDocUri, FileVisitor visitor) {
         String rootDocId;
         try {
             rootDocId = DocumentsContract.getDocumentId(rootDocUri);
         } catch (Exception e) {
-            return result;
+            return;
         }
         String[] projection = {
                 DocumentsContract.Document.COLUMN_DOCUMENT_ID,
                 DocumentsContract.Document.COLUMN_DISPLAY_NAME,
                 DocumentsContract.Document.COLUMN_MIME_TYPE
         };
-        ArrayList<String> stack = new ArrayList<>();
-        stack.add(rootDocId);
+        ArrayList<String[]> stack = new ArrayList<>();   // {docId, displayName}
+        stack.add(new String[]{rootDocId, ""});
         while (!stack.isEmpty()) {
-            String dirDocId = stack.remove(stack.size() - 1);
-            Uri childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, dirDocId);
-            try (Cursor cursor = resolver().query(childrenUri, projection, null, null, null)) {
+            String[] dir = stack.remove(stack.size() - 1);
+            // The query URI is built inside the try: this runs on background threads, where a tree
+            // cleared under it (a null treeUri) would otherwise crash the process.
+            try (Cursor cursor = resolver().query(
+                    DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, dir[0]),
+                    projection, null, null, null)) {
                 if (cursor == null) continue;
                 while (cursor.moveToNext()) {
                     String childDocId = cursor.getString(0);
@@ -339,19 +352,19 @@ final class StorageBrowser {
                     String mimeType = cursor.getString(2);
                     if (childDocId == null || childName == null) continue;
                     if (DocumentsContract.Document.MIME_TYPE_DIR.equals(mimeType)) {
-                        stack.add(childDocId);
-                    } else if (isAudioDocument(childName, mimeType)) {
-                        result.add(DocumentsContract.buildDocumentUriUsingTree(treeUri, childDocId));
+                        stack.add(new String[]{childDocId, childName});
+                    } else {
+                        visitor.visit(childName, mimeType, dir[1],
+                                DocumentsContract.buildDocumentUriUsingTree(treeUri, childDocId));
                     }
                 }
             } catch (Exception ignored) {
             }
         }
-        return result;
     }
 
-    List<Uri> collectAllAudioUrisFromFileDirectory(File root) {
-        List<Uri> result = new ArrayList<>();
+    /** {@link #walkDocumentTree} for a plain directory; the root's {@code parentName} is its own name. */
+    static void walkFileTree(File root, FileVisitor visitor) {
         ArrayList<File> stack = new ArrayList<>();
         stack.add(root);
         while (!stack.isEmpty()) {
@@ -359,11 +372,20 @@ final class StorageBrowser {
             File[] children = dir.listFiles();
             if (children == null) continue;
             for (File child : children) {
-                if (child == null) continue;
                 if (child.isDirectory()) stack.add(child);
-                else if (FileBrowserQueueActivity.isAudioFile(child.getName())) result.add(Uri.fromFile(child));
+                else visitor.visit(child.getName(), null, dir.getName(), Uri.fromFile(child));
             }
         }
+    }
+
+    /** Every audio file in the library, for the recursive tag scan. */
+    List<Uri> collectAllAudioUris(boolean documentTree, Uri rootDocUri, Uri treeUri, File fileRoot) {
+        List<Uri> result = new ArrayList<>();
+        FileVisitor collect = (name, mime, parentName, uri) -> {
+            if (isAudioDocument(name, mime)) result.add(uri);
+        };
+        if (documentTree) walkDocumentTree(treeUri, rootDocUri, collect);
+        else walkFileTree(fileRoot, collect);
         return result;
     }
 

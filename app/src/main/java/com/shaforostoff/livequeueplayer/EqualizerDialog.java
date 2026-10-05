@@ -22,8 +22,8 @@ import android.widget.TextView;
  *       host of that vintage over Bluetooth): a response curve and one gain row per named section,
  *       each row disclosing its own frequency and Q controls when tapped. Frequency and Q get
  *       parked once; the gain rows are what move during a milonga.</li>
- *   <li><b>Bands</b> — the graphic device equalizer, and any remote host still running the older
- *       six-band partition model, which a newer sender must keep talking to.</li>
+ *   <li><b>Bands</b> — the graphic device equalizer (below API 28), locally or on a remote host:
+ *       fixed centre frequencies, gain only.</li>
  * </ul>
  *
  * Every value — anything sitting between a ▼/▲ pair, in either layout — resets to its default on a
@@ -86,21 +86,8 @@ final class EqualizerDialog {
     short bandLevel(int band) { return 0; }
     void nudgeBand(int band, int deltaMillibels) {}
 
-    /** Flat, for every band model there is. */
+    /** Flat. */
     void resetBand(int band) {}
-
-    /** True when each band's center frequency can be moved (a remote host on the older model). */
-    boolean freqAdjustable() { return false; }
-
-    void nudgeBandFreq(int band, int direction) {}
-
-    void resetBandFreq(int band) {}
-
-    /** Lower edge of the band's affected range, milliHz. Only shown when {@link #freqAdjustable()}. */
-    int lowerEdgeMilliHz(int band) { return 0; }
-
-    /** Upper edge of the band's affected range, milliHz. Only shown when {@link #freqAdjustable()}. */
-    int upperEdgeMilliHz(int band) { return 0; }
   }
 
   /** Live handle to a shown dialog so callers can refresh values or dismiss it. */
@@ -559,24 +546,11 @@ final class EqualizerDialog {
 
   // --------------------------------------------------------------------- bands
 
-  /** Refresh every band's frequency label. A parametric band's edges are derived from its
-   *  neighbours, so moving one band shifts the displayed range of its neighbours too. */
+  /** Refresh every band's centre-frequency label. */
   private void updateFreqLabels() {
     for (int b = 0; b < bandFreqs.length; b++) {
-      if (bandFreqs[b] != null) bandFreqs[b].setText(formatBandFreq(b));
+      if (bandFreqs[b] != null) bandFreqs[b].setText(formatFreq(activity, sink.centerFreqMilliHz(b)));
     }
-  }
-
-  /** Adjustable bands show their affected range (lower – upper edge); fixed bands show their
-   *  center frequency. */
-  private CharSequence formatBandFreq(int b) {
-    if (sink.freqAdjustable()) {
-      // Stacked over two lines: the lower edge above, the upper edge below — the full range rarely
-      // fits on one line at the dialog's width.
-      return formatFreq(activity, sink.lowerEdgeMilliHz(b))
-          + "\n– " + formatFreq(activity, sink.upperEdgeMilliHz(b));
-    }
-    return formatFreq(activity, sink.centerFreqMilliHz(b));
   }
 
   private void buildBandRows(int n) {
@@ -590,10 +564,8 @@ final class EqualizerDialog {
     sectionSetupRows = new View[0];
     bandValues = new TextView[n];
     bandFreqs = new TextView[n];
-    boolean freqAdjustable = sink.freqAdjustable();
     int vpad = (int) (4 * density);
     int valueWidth = (int) (64 * density);
-    int freqWidth = (int) (72 * density);
     for (int b = 0; b < n; b++) {
       final int band = b;
       LinearLayout row = new LinearLayout(activity);
@@ -602,42 +574,10 @@ final class EqualizerDialog {
       row.setPadding(0, vpad, 0, vpad);
 
       TextView freq = new TextView(activity);
-      freq.setText(formatBandFreq(b));
+      freq.setText(formatFreq(activity, sink.centerFreqMilliHz(b)));
       freq.setTextSize(14f);
       bandFreqs[b] = freq;
-
-      if (freqAdjustable) {
-        // Older remote host: ▼/▲ move the band's center, and the label shows the resulting affected
-        // range (edges are shared with neighbours, so update all labels on a change). The gain
-        // controls follow. The frequency group takes the flexible (weighted) space.
-        freq.setGravity(Gravity.CENTER);
-        freq.setMinWidth(freqWidth);
-        Button freqDown = new Button(activity);
-        freqDown.setText("▼");
-        Button freqUp = new Button(activity);
-        freqUp.setText("▲");
-        freqDown.setOnClickListener(v -> {
-          sink.nudgeBandFreq(band, -1);
-          updateFreqLabels();
-        });
-        freqUp.setOnClickListener(v -> {
-          sink.nudgeBandFreq(band, 1);
-          updateFreqLabels();
-        });
-        resetOnDoubleTap(freq, () -> {
-          sink.resetBandFreq(band);
-          updateFreqLabels();
-        }, null);
-        LinearLayout freqGroup = new LinearLayout(activity);
-        freqGroup.setOrientation(LinearLayout.HORIZONTAL);
-        freqGroup.setGravity(Gravity.CENTER_VERTICAL);
-        freqGroup.addView(freqDown);
-        freqGroup.addView(freq);
-        freqGroup.addView(freqUp);
-        row.addView(freqGroup, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-      } else {
-        row.addView(freq, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-      }
+      row.addView(freq, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
       Button down = new Button(activity);
       down.setText("▼");

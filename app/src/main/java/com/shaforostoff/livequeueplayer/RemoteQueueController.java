@@ -68,15 +68,13 @@ final class RemoteQueueController {
 
     private EqualizerDialog.Handle eqDialog;
     private boolean eqDeterminate;            // true once any eq_state has arrived
-    private boolean eqParametric;             // true when the host runs the DynamicsProcessing path
     private int     eqNumBands;
     private short   eqMin = -1500, eqMax = 1500;          // gain range, millibels
-    private int     eqFreqMinHz = 30, eqFreqMaxHz = 16000; // adjustable freq range (parametric)
     private int[]   eqFreqs  = new int[0];    // milliHz, for display
     private short[] eqLevels = new short[0];  // gain, millibels
     private boolean eqEnabled;
-    // Section model, populated when the host sends a "sections" array. Empty against a host that
-    // predates it, in which case the band cache above is what the dialog renders.
+    // Section model, populated when a parametric host sends its "sections". Empty against a
+    // graphic-EQ host (API < 28), in which case the band cache above is what the dialog renders.
     private ParametricEq.Section[] eqSections = new ParametricEq.Section[0];
     private int[] eqSectionFreqMin = new int[0];
     private int[] eqSectionFreqMax = new int[0];
@@ -198,7 +196,6 @@ final class RemoteQueueController {
 
     void onEqStateReceived(JSONObject obj) {
         eqDeterminate = true;
-        eqParametric = "parametric".equals(obj.optString("mode", "graphic"));
         eqNumBands = obj.optInt("num_bands", 0);
         eqEnabled = obj.optBoolean("enabled", eqEnabled);
         JSONArray secs = obj.optJSONArray("sections");
@@ -239,25 +236,7 @@ final class RemoteQueueController {
             eqSectionFreqMax = freqMax;
             eqSectionFreqDefault = freqDefault;
             eqSectionQDefault = qDefault;
-        } else if (eqParametric) {
-            // Host on the superseded six-band partition model: freqs in Hz + gains in millibels.
-            eqSections = new ParametricEq.Section[0];
-            eqMin = (short) obj.optInt("gain_min", eqMin);
-            eqMax = (short) obj.optInt("gain_max", eqMax);
-            eqFreqMinHz = obj.optInt("freq_min", eqFreqMinHz);
-            eqFreqMaxHz = obj.optInt("freq_max", eqFreqMaxHz);
-            if (eqNumBands > 0) {
-                JSONArray freqs = obj.optJSONArray("freqs"); // Hz
-                JSONArray gains = obj.optJSONArray("gains"); // millibels
-                eqFreqs  = new int[eqNumBands];
-                eqLevels = new short[eqNumBands];
-                for (int i = 0; i < eqNumBands; i++) {
-                    int hz = freqs != null ? freqs.optInt(i, 0) : 0;
-                    eqFreqs[i]  = hz * 1000; // store milliHz for display
-                    eqLevels[i] = (short) (gains != null ? gains.optInt(i, 0) : 0);
-                }
-            }
-        } else {
+        } else if ("graphic".equals(obj.optString("mode", "graphic"))) {
             // Graphic host: freqs in milliHz + levels in millibels.
             eqSections = new ParametricEq.Section[0];
             eqMin = (short) obj.optInt("min", eqMin);
@@ -272,6 +251,11 @@ final class RemoteQueueController {
                     eqLevels[i] = (short) (levels != null ? levels.optInt(i, 0) : 0);
                 }
             }
+        } else {
+            // A parametric host predating the section model (its six-band partition protocol is no
+            // longer spoken): the dialog reports the equalizer as unavailable.
+            eqSections = new ParametricEq.Section[0];
+            eqNumBands = 0;
         }
         if (eqDialog != null) eqDialog.refresh();
     }
@@ -281,8 +265,8 @@ final class RemoteQueueController {
      *
      * <p>Every change is applied to the local cache first so the rows and the response curve move
      * under the finger, then sent; the host's {@code eq_state} echo is authoritative and corrects
-     * any drift. Two models are served, decided by what the host sent: the section model, and the
-     * older band model for a host that predates it.
+     * any drift. Two models are served, decided by what the host sent: the section model of a
+     * parametric host, and the band model of a graphic-EQ host (API < 28).
      */
     private final class RemoteEqSink extends EqualizerDialog.EqSink {
         @Override boolean isEnabled() { return eqEnabled; }
@@ -365,7 +349,7 @@ final class RemoteQueueController {
             btController.send("set_eq", "section", slot, "on", on);
         }
 
-        // --- band model (host predating the section model) --------------------------------------
+        // --- band model (graphic-EQ host) ---------------------------------------------------------
 
         @Override int numBands() { return eqSections.length > 0 ? 0 : eqNumBands; }
 
@@ -390,73 +374,6 @@ final class RemoteQueueController {
             eqLevels[band] = (short) level;
             btController.send("set_eq", "band", band, "value", level);
         }
-
-        @Override boolean freqAdjustable() { return eqParametric && eqSections.length == 0; }
-
-        @Override void nudgeBandFreq(int band, int direction) {
-            if (!freqAdjustable() || band < 0 || band >= eqFreqs.length) return;
-            int curHz = eqFreqs[band] / 1000;
-            // Keep a half-octave gap from each neighbour, matching that host's clamp; the
-            // authoritative eq_state echo corrects any drift anyway.
-            int loHz = band == 0 ? eqFreqMinHz : legacyGapAbove(eqFreqs[band - 1] / 1000);
-            int hiHz = band == eqFreqs.length - 1 ? eqFreqMaxHz
-                    : legacyGapBelow(eqFreqs[band + 1] / 1000);
-            if (hiHz < loHz) hiHz = loHz;
-            int newHz = Math.max(loHz, Math.min(hiHz, legacyStepFreqHz(curHz, direction)));
-            eqFreqs[band] = newHz * 1000;
-            btController.send("set_eq", "band", band, "freq", newHz);
-        }
-
-        /** That host's own default centre frequencies, so a reset lands where it would have. Only
-         *  the six-band shape ever existed, so anything else is left alone. */
-        @Override void resetBandFreq(int band) {
-            if (!freqAdjustable() || band < 0 || band >= eqFreqs.length) return;
-            if (eqFreqs.length != LEGACY_DEFAULT_FREQ_HZ.length) return;
-            int hz = LEGACY_DEFAULT_FREQ_HZ[band];
-            eqFreqs[band] = hz * 1000;
-            btController.send("set_eq", "band", band, "freq", hz);
-        }
-
-        // Edges derived from neighbours, mirroring that host (eqFreqs holds milliHz, so the mean
-        // operates on milliHz directly). First band falls to 0; last band reaches the ceiling.
-        @Override int lowerEdgeMilliHz(int band) {
-            if (band <= 0 || band >= eqFreqs.length) return 0;
-            return legacyGeometricMean(eqFreqs[band - 1], eqFreqs[band]);
-        }
-
-        @Override int upperEdgeMilliHz(int band) {
-            if (band < 0 || band >= eqFreqs.length) return 0;
-            if (band == eqFreqs.length - 1) return LEGACY_TOP_EDGE_HZ * 1000;
-            return legacyGeometricMean(eqFreqs[band], eqFreqs[band + 1]);
-        }
-    }
-
-    // Geometry of the superseded six-band partition model, kept only for driving a host that still
-    // runs it: band edges sit at the geometric mean of adjacent centres, neighbours keep a half
-    // octave apart, and one nudge moves a third of an octave.
-    private static final int LEGACY_TOP_EDGE_HZ = 20000;
-    private static final int[] LEGACY_DEFAULT_FREQ_HZ = {80, 400, 1000, 2000, 5000, 12000};
-    private static final double LEGACY_NEIGHBOUR_RATIO = 1.4142;  // 2^(1/2)
-    private static final double LEGACY_STEP_RATIO = 1.2599;       // 2^(1/3)
-
-    private static int legacyGeometricMean(int aHz, int bHz) {
-        return (int) Math.round(Math.sqrt((double) aHz * bHz));
-    }
-
-    private static int legacyGapAbove(int lowerNeighbourHz) {
-        return (int) Math.ceil(lowerNeighbourHz * LEGACY_NEIGHBOUR_RATIO);
-    }
-
-    private static int legacyGapBelow(int upperNeighbourHz) {
-        return (int) Math.floor(upperNeighbourHz / LEGACY_NEIGHBOUR_RATIO);
-    }
-
-    private static int legacyStepFreqHz(int hz, int direction) {
-        int next = direction >= 0
-                ? (int) Math.round(hz * LEGACY_STEP_RATIO)
-                : (int) Math.round(hz / LEGACY_STEP_RATIO);
-        if (next == hz) next += direction >= 0 ? 1 : -1;
-        return next;
     }
 
     void refreshAndScrollToNewTrack() {

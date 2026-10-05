@@ -2466,22 +2466,17 @@ public class FileBrowserQueueActivity extends Activity {
 
     /** Apply an equalizer change requested by the remote sender, then echo the new state back. The
      *  host's active backend (parametric on API 28+, graphic below) decides which settings store the
-     *  command is routed to. A sender still speaking the older band protocol addresses sections by
-     *  {@code band}: that index is a section slot, and its two commands land on that section's gain
-     *  and centre frequency, so it keeps working unchanged. */
+     *  command is routed to: a parametric host takes {@code section}-addressed changes, a graphic one
+     *  {@code band}-addressed gains. */
     private void handleRemoteSetEq(JSONObject obj) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             if (obj.has("enabled")) {
                 ParametricEqSettings.setEnabled(this,
                         obj.optBoolean("enabled", ParametricEqSettings.isEnabled(this)));
             }
-            int slot = obj.has("section") ? obj.optInt("section", -1) : obj.optInt("band", -1);
+            int slot = obj.optInt("section", -1);
             if (slot >= 0 && slot < ParametricEqSettings.numSections()) {
                 ParametricEq.Section cur = ParametricEqSettings.section(this, slot);
-                // "value" is the legacy band-gain key; "gain" is its section-model spelling.
-                if (obj.has("value")) {
-                    ParametricEqSettings.setGainMillibels(this, slot, obj.optInt("value", cur.gainMb));
-                }
                 if (obj.has("gain")) {
                     ParametricEqSettings.setGainMillibels(this, slot, obj.optInt("gain", cur.gainMb));
                 }
@@ -2517,30 +2512,19 @@ public class FileBrowserQueueActivity extends Activity {
             JSONObject msg = new JSONObject();
             msg.put("type", "eq_state");
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                // Parametric (DynamicsProcessing) host. Two views of the same state go out
-                // together: the "sections" array is the real model a current sender renders its
-                // curve and its frequency/Q controls from, while mode/num_bands/freqs/gains project
-                // those sections onto the older band protocol so a sender predating the section
-                // model still gets working gain and frequency control over them. A current sender
-                // keys off "sections" and ignores the projection.
+                // Parametric (DynamicsProcessing) host: the sender renders its curve and its
+                // frequency/Q controls from the "sections" array.
                 ParametricEq.Section[] sections = ParametricEqSettings.sections(this);
                 int n = sections.length;
                 msg.put("mode", "parametric");
                 msg.put("enabled", ParametricEqSettings.isEnabled(this));
-                msg.put("num_bands", n);
                 msg.put("gain_min", ParametricEqSettings.GAIN_MIN_MILLIBELS);
                 msg.put("gain_max", ParametricEqSettings.GAIN_MAX_MILLIBELS);
-                msg.put("freq_min", ParametricEqSettings.freqMinHz(0));
-                msg.put("freq_max", ParametricEqSettings.freqMaxHz(n - 1));
                 msg.put("q_min", ParametricEqSettings.Q_MIN_MILLI);
                 msg.put("q_max", ParametricEqSettings.Q_MAX_MILLI);
-                JSONArray freqs = new JSONArray();     // Hz, legacy projection
-                JSONArray gains = new JSONArray();     // millibels, legacy projection
                 JSONArray secs  = new JSONArray();
                 for (int i = 0; i < n; i++) {
                     ParametricEq.Section s = sections[i];
-                    freqs.put(s.freqHz);
-                    gains.put(s.gainMb);
                     JSONObject o = new JSONObject();
                     o.put("type", s.type);
                     o.put("freq", s.freqHz);
@@ -2558,8 +2542,6 @@ public class FileBrowserQueueActivity extends Activity {
                     o.put("q_default", ParametricEqSettings.defaultQMilli(i));
                     secs.put(o);
                 }
-                msg.put("freqs", freqs);
-                msg.put("gains", gains);
                 msg.put("sections", secs);
             } else {
                 // Graphic (Equalizer) host: fixed bands, gain only.

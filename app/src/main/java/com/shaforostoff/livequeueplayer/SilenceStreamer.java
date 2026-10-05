@@ -333,7 +333,9 @@ final class SilenceStreamer {
             PcmDecoder decoder;
             try {
                 decoder = new PcmDecoder(context, uri);
-            } catch (Exception ignored) {
+            } catch (Exception | OutOfMemoryError ignored) {
+                // OOM included: AIFF/ALAC sources are decoded into memory up front, and an Error
+                // escaping this thread would kill the process, playback and all.
                 return;
             }
             synchronized (this) {

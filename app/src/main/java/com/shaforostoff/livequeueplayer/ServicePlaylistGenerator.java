@@ -4,6 +4,8 @@ import android.content.Context;
 import android.net.Uri;
 import java.io.File;
 import java.io.FileNotFoundException;
+import java.io.IOException;
+import java.io.InputStream;
 import java.util.Locale;
 import java.util.Scanner;
 
@@ -77,14 +79,22 @@ final class ServicePlaylistGenerator {
         }
 
         void parse(Uri m3uLocation) {
+            // Runs inside the Service's onStartCommand: an exception escaping here (an opaque URI
+            // with no path, a provider returning no stream) would crash the process.
             try {
                 if ("content".equals(m3uLocation.getScheme())) {
-                    parse(new Scanner(context.getContentResolver().openInputStream(m3uLocation)), null);
+                    InputStream in = context.getContentResolver().openInputStream(m3uLocation);
+                    if (in == null) throw new FileNotFoundException();
+                    try (Scanner scanner = new Scanner(in)) {
+                        parse(scanner, null);
+                    }
                 } else {
                     File m3uFile = new File(m3uLocation.getPath());
-                    parse(new Scanner(m3uFile), m3uFile.getParentFile());
+                    try (Scanner scanner = new Scanner(m3uFile)) {
+                        parse(scanner, m3uFile.getParentFile());
+                    }
                 }
-            } catch (FileNotFoundException e) {
+            } catch (IOException | RuntimeException e) {
                 Exceptions.throwError(context, "File not found!\nLocation: " + m3uLocation);
             }
         }
@@ -104,6 +114,7 @@ final class ServicePlaylistGenerator {
                     continue;
                 var entry = new ServicePlaylist.Entry();
                 if (line.startsWith("#EXTINF:")) {
+                    if (!input.hasNextLine()) break; // truncated playlist: dangling #EXTINF
                     var infoAndName = line.split(",");
                     entry.title = infoAndName[infoAndName.length - 1];
                     entry.location = resolveLocation(input.nextLine().trim(), baseDir);

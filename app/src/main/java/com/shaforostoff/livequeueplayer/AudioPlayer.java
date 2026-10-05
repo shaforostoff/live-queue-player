@@ -117,8 +117,10 @@ class AudioPlayer extends Thread implements MediaPlayer.OnCompletionListener, Me
     /* get ready for playback; prepare() blocks (for ALAC it decodes the whole track) */
     try {
       mediaPlayer.prepare();
-    } catch (IllegalStateException | IOException e) {
-      String msg = e instanceof IOException ? Exceptions.IO : Exceptions.IllegalState;
+    } catch (IOException | RuntimeException e) {
+      // Not just the documented IOException/IllegalStateException: prepare() pulls data through our
+      // own MediaDataSources, and anything uncaught on this thread kills the process.
+      String msg = Exceptions.messageFor(e);
       mainHandler.post(() -> onPrepareFailed(msg));
       return;
     }

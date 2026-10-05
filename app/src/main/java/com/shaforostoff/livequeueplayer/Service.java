@@ -453,20 +453,11 @@ public class Service extends android.service.media.MediaBrowserService implement
             hwListener.setTrackMetadata(currentTrackTitle, sPlaybackDurationMs);
             notifyPlaybackState(true, currentIndex, entry.location);
 
-        } catch (IllegalArgumentException e) {
-            Exceptions.throwError(this, Exceptions.IllegalArgument);
-            playOrDestroy();
-            return;
-        } catch (SecurityException e) {
-            Exceptions.throwError(this, Exceptions.Security);
-            playOrDestroy();
-            return;
-        } catch (IllegalStateException e) {
-            Exceptions.throwError(this, Exceptions.IllegalState);
-            playOrDestroy();
-            return;
-        } catch (IOException e) {
-            Exceptions.throwError(this, Exceptions.IO);
+        } catch (IOException | RuntimeException | OutOfMemoryError e) {
+            // Any failure to set up a track must fail only that track. This runs inside
+            // onStartCommand, so anything that escapes — a malformed file's parser bug, an OOM on a
+            // huge one — kills the whole process, Bluetooth server included.
+            Exceptions.throwError(this, Exceptions.messageFor(e));
             playOrDestroy();
             return;
         }

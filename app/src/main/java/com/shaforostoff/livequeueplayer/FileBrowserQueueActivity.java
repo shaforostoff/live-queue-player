@@ -3670,8 +3670,11 @@ public class FileBrowserQueueActivity extends Activity {
             String[] current = stack.remove(stack.size() - 1);
             String dirDocId = current[0];
             String dirName = current[1];
-            Uri childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, dirDocId);
-            try (Cursor cursor = getContentResolver().query(childrenUri, projection, null, null, null)) {
+            // Built inside the try: this runs on a raw background thread, where the tree being
+            // cleared under it (a null treeUri) would otherwise crash the process.
+            try (Cursor cursor = getContentResolver().query(
+                    DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, dirDocId),
+                    projection, null, null, null)) {
                 if (cursor == null) continue;
                 while (cursor.moveToNext()) {
                     String childDocId = cursor.getString(0);

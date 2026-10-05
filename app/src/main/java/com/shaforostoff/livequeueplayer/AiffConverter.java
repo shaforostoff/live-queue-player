@@ -91,8 +91,11 @@ final class AiffConverter {
             String id = new String(src, pos, 4);
             int chunkSize = readInt32BE(src, pos + 4);
             int dataStart = pos + 8;
+            // A negative size (corrupt, or > 2 GB) would walk pos backwards — -8 loops forever.
+            if (chunkSize < 0) throw new IOException("AIFF: bad chunk size");
 
             if (id.equals("COMM")) {
+                if (dataStart + 18 > len) throw new IOException("AIFF: truncated COMM chunk");
                 channels = readInt16BE(src, dataStart);
                 // sampleFrames at dataStart+2 (4 bytes) — not needed
                 bitsPerSample = readInt16BE(src, dataStart + 6);
@@ -115,20 +118,26 @@ final class AiffConverter {
                     }
                 }
             } else if (id.equals("SSND")) {
+                if (dataStart + 8 > len) throw new IOException("AIFF: truncated SSND chunk");
                 // 4-byte offset into sample data, 4-byte block size, then PCM
                 int ssndOffset = readInt32BE(src, dataStart);
+                if (ssndOffset < 0) throw new IOException("AIFF: bad SSND offset");
                 ssndStart = dataStart + 8 + ssndOffset;
                 ssndSize = chunkSize - 8 - ssndOffset;
             }
 
             // chunks are word-aligned (even size)
-            pos = dataStart + chunkSize + (chunkSize & 1);
+            long next = (long) dataStart + chunkSize + (chunkSize & 1);
+            if (next > len) break;
+            pos = (int) next;
         }
 
         if (channels == 0 || sampleRate == 0 || bitsPerSample == 0)
             throw new IOException("AIFF: COMM chunk not found or incomplete");
         if (ssndStart < 0)
             throw new IOException("AIFF: SSND chunk not found");
+        if (bitsPerSample != 8 && bitsPerSample != 16 && bitsPerSample != 24 && bitsPerSample != 32)
+            throw new IOException("AIFF: unsupported bit depth: " + bitsPerSample);
 
         // Cap PCM data at MAX_BYTES (whole-sample boundary)
         int bytesPerSample = bitsPerSample / 8;
@@ -140,6 +149,9 @@ final class AiffConverter {
         int available = len - ssndStart;
         int pcmLength = (int) Math.min(Math.min(ssndSize, available), Math.min(maxPcm, Integer.MAX_VALUE));
         if (pcmLength < 0) pcmLength = 0;
+        // A truncated file can end mid-sample; the byte-swap loops below step a whole sample at a
+        // time, so a partial one would write past the end of the WAV buffer.
+        pcmLength -= pcmLength % frameSize;
 
         byte[] wav = new byte[44 + pcmLength];
 

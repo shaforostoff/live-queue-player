@@ -139,7 +139,8 @@ public class HWListener extends BroadcastReceiver implements MediaPlayerStateLis
   @Override
   public void onReceive(Context context, Intent intent) {
     final KeyEvent event = intent.getParcelableExtra(EXTRA_KEY_EVENT);
-    if (event.getAction() == KeyEvent.ACTION_DOWN) {
+    // Exported receiver: any app can send MEDIA_BUTTON here without a key event.
+    if (event != null && event.getAction() == KeyEvent.ACTION_DOWN) {
       intent = new Intent(context, Service.class);
       intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_NO_HISTORY);
       switch (event.getKeyCode()) {

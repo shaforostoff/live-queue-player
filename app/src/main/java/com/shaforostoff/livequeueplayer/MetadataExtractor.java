@@ -5,7 +5,9 @@ import android.media.MediaMetadataRetriever;
 import android.net.Uri;
 import android.os.ParcelFileDescriptor;
 
+import java.io.IOException;
 import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -30,6 +32,8 @@ class MetadataExtractor {
     private static final Pattern DATE_IN_COMMENT_PATTERN =
             Pattern.compile("((?:19|20)\\d{2}).(\\d{2}).(\\d{2})");
     private static final Pattern REPLAYGAIN_DB_PATTERN = Pattern.compile("[-+]?\\d+(?:\\.\\d+)?");
+    private static final Pattern LEADING_YEAR_PATTERN = Pattern.compile("(19|20)\\d{2}");
+    private static final Pattern NUMERIC_GENRE_PATTERN = Pattern.compile("\\(\\d+\\)");
     private static final float FALLBACK_REPLAY_GAIN = 1.0f;
 
     static class TagEntry {
@@ -38,11 +42,6 @@ class MetadataExtractor {
         String artist;
         String title;
         int bpm = -1;
-    }
-
-    private static final class BpmCandidates {
-        String main = "";
-        String fallback = "";
     }
 
     // Cache keys are stored in a shortened, reversible form to save RAM (the cache can hold the
@@ -202,9 +201,8 @@ class MetadataExtractor {
 
     float readReplayGain(Uri uri) {
         if (uri == null) return FALLBACK_REPLAY_GAIN;
-        float gain = -1f;
-        String ext = getExtension(uri);
-        switch (ext) {
+        float gain;
+        switch (getExtension(uri)) {
             case "mp3":
                 gain = readReplayGainFromId3(uri);
                 break;
@@ -237,40 +235,21 @@ class MetadataExtractor {
                 String year = null;
                 // Key 8 = METADATA_KEY_DATE (M4A files store YYYY-MM-DD here)
                 String dateKey8 = retriever.extractMetadata(8);
-                if (dateKey8 != null && dateKey8.length() >= 4) {
-                    String firstFour = dateKey8.substring(0, 4);
-                    if (firstFour.matches("\\d{4}") && (firstFour.startsWith("19") || firstFour.startsWith("20"))) {
-                        year = dateKey8;
-                    }
+                if (dateKey8 != null && LEADING_YEAR_PATTERN.matcher(dateKey8).lookingAt()) {
+                    year = dateKey8;
                 }
                 // Key 17 = METADATA_KEY_YEAR (available since API 10)
-                if (year == null || year.isEmpty()) {
-                    String yearKey17 = retriever.extractMetadata(17);
-                    if (yearKey17 != null && !yearKey17.isEmpty()) year = yearKey17;
-                }
+                if (year == null) year = nonEmpty(retriever.extractMetadata(17));
                 // Key 10 = METADATA_KEY_DATE (alternative)
-                if (year == null || year.isEmpty()) {
+                if (year == null) {
                     String dateKey10 = retriever.extractMetadata(10);
-                    if (dateKey10 != null && !dateKey10.isEmpty()) {
-                        Matcher m = YEAR_IN_STRING_PATTERN.matcher(dateKey10);
-                        if (m.find()) year = dateKey10;
-                    }
+                    if (dateKey10 != null && YEAR_IN_STRING_PATTERN.matcher(dateKey10).find()) year = dateKey10;
                 }
-                if (year != null && !year.isEmpty()) e.date = normalizeDateValue(year);
+                if (year != null) e.date = normalizeDateValue(year);
             }
-
-            if (e.genre == null) {
-                String genre = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_GENRE);
-                if (genre != null && !genre.isEmpty()) e.genre = genre;
-            }
-            if (e.artist == null) {
-                String artist = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ARTIST);
-                if (artist != null && !artist.isEmpty()) e.artist = artist;
-            }
-            if (e.title == null) {
-                String title = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_TITLE);
-                if (title != null && !title.isEmpty()) e.title = title;
-            }
+            if (e.genre == null) e.genre = nonEmpty(retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_GENRE));
+            if (e.artist == null) e.artist = nonEmpty(retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ARTIST));
+            if (e.title == null) e.title = nonEmpty(retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_TITLE));
         } catch (Exception ignored) {
         } finally {
             try { retriever.release(); } catch (Exception ignored) { }
@@ -278,101 +257,61 @@ class MetadataExtractor {
         }
     }
 
+    // ------------------------------------------------------------------------------------- ID3v2
+
+    private static final String SORT_FRAMES = "TDRC TYER TCON TPE1 TIT2 TBPM COMM";
+
     private void fillFromId3(Uri uri, TagEntry e) {
         try (InputStream stream = contentResolver.openInputStream(uri)) {
-            if (stream == null) return;
-            fillFromId3Stream(stream, e);
+            if (stream != null) fillFromId3Stream(stream, e);
         } catch (Exception ignored) {
         }
     }
 
-    private void fillFromId3Stream(InputStream stream, TagEntry e) throws Exception {
-        byte[] header = new byte[10];
-        if (!readFully(stream, header, 10)) return;
-        if (header[0] != 'I' || header[1] != 'D' || header[2] != '3') return;
-
-        int majorVersion = header[3] & 0xFF;
-        if (majorVersion < 2 || majorVersion > 4) return;
-
-        int tagSize = decodeSyncSafeInt(header, 6);
-        if (tagSize <= 0 || tagSize > (2 * 1024 * 1024)) return;
-
-        byte[] tagData = new byte[tagSize];
-        if (!readFully(stream, tagData, tagSize)) return;
-
-        int startOffset = 0;
-        boolean hasExtendedHeader = (header[5] & 0x40) != 0;
-        if (hasExtendedHeader && tagData.length >= 4) {
-            startOffset = majorVersion == 4
-                    ? decodeSyncSafeInt(tagData, 0)
-                    : decodeInt(tagData, 0);
-            if (startOffset < 0 || startOffset >= tagData.length) return;
-        }
-
+    private static void fillFromId3Stream(InputStream stream, TagEntry e) throws IOException {
         boolean needDate = e.date == null;
-        boolean needGenre = e.genre == null;
-        boolean needArtist = e.artist == null;
-        boolean needTitle = e.title == null;
-        boolean needBpm = e.bpm < 0;
-        String tdrc = null, tyer = null;
-
-        for (int offset = startOffset; offset + 10 <= tagData.length; ) {
-            if (isZeroFrameId(tagData, offset)) break;
-
-            int frameSize = majorVersion == 4
-                    ? decodeSyncSafeInt(tagData, offset + 4)
-                    : decodeInt(tagData, offset + 4);
-            if (frameSize <= 0 || offset + 10 + frameSize > tagData.length) break;
-
-            if (needDate && frameIdIs(tagData, offset, "TDRC")) {
-                String v = decodeId3Text(tagData, offset + 10, frameSize);
-                if (v.length() > 0) tdrc = normalizeDateValue(v);
-            } else if (needDate && frameIdIs(tagData, offset, "TYER")) {
-                String v = decodeId3Text(tagData, offset + 10, frameSize);
-                if (v.length() > 0) tyer = normalizeDateValue(v);
-            } else if (needGenre && frameIdIs(tagData, offset, "TCON")) {
-                String v = decodeId3Text(tagData, offset + 10, frameSize);
-                if (v.length() > 0) { e.genre = v; needGenre = false; }
-            } else if (needArtist && frameIdIs(tagData, offset, "TPE1")) {
-                String v = decodeId3Text(tagData, offset + 10, frameSize);
-                if (v.length() > 0) { e.artist = v; needArtist = false; }
-            } else if (needTitle && frameIdIs(tagData, offset, "TIT2")) {
-                String v = decodeId3Text(tagData, offset + 10, frameSize);
-                if (v.length() > 0) { e.title = v; needTitle = false; }
-            } else if (needBpm && frameIdIs(tagData, offset, "TBPM")) {
-                String v = decodeId3Text(tagData, offset + 10, frameSize);
-                if (v.length() > 0) { e.bpm = parseBpmValue(v); needBpm = false; }
-            }
-
-            if (!needDate && !needGenre && !needArtist && !needTitle && !needBpm) break;
-            offset += 10 + frameSize;
-        }
-
-        if (needDate) {
-            if (tdrc != null) e.date = tdrc;
-            else if (tyer != null) e.date = tyer;
-        }
-
-        // If date is absent or a bare year, scan the already-loaded tag bytes for a COMM frame
-        if (e.date == null || (e.date.length() > 0 && e.date.length() < 5)) {
-            for (int offset = startOffset; offset + 10 <= tagData.length; ) {
-                if (isZeroFrameId(tagData, offset)) break;
-                int frameSize = majorVersion == 4
-                        ? decodeSyncSafeInt(tagData, offset + 4)
-                        : decodeInt(tagData, offset + 4);
-                if (frameSize <= 0 || offset + 10 + frameSize > tagData.length) break;
-                if (frameIdIs(tagData, offset, "COMM")) {
-                    String comm = decodeUsltText(tagData, offset + 10, frameSize);
-                    if (!comm.isEmpty()) {
-                        Matcher m = DATE_IN_COMMENT_PATTERN.matcher(comm);
-                        if (m.find())
-                            e.date = m.group(1) + "-" + m.group(2) + "-" + m.group(3);
-                    }
+        String tdrc = null, tyer = null, comm = null;
+        for (Id3Frame f : readId3Frames(stream, SORT_FRAMES)) {
+            switch (f.id) {
+                case "TDRC": if (tdrc == null) tdrc = nonEmpty(normalizeDateValue(f.text())); break;
+                case "TYER": if (tyer == null) tyer = nonEmpty(normalizeDateValue(f.text())); break;
+                case "TCON": if (e.genre == null) e.genre = nonEmpty(f.text()); break;
+                case "TPE1": if (e.artist == null) e.artist = nonEmpty(f.text()); break;
+                case "TIT2": if (e.title == null) e.title = nonEmpty(f.text()); break;
+                case "TBPM": {
+                    String v = f.text();
+                    if (e.bpm < 0 && !v.isEmpty()) e.bpm = parseBpmValue(v);
                     break;
                 }
-                offset += 10 + frameSize;
+                case "COMM": if (comm == null) comm = decodeUsltText(f.body); break; // first only
             }
         }
+        if (needDate) e.date = tdrc != null ? tdrc : tyer;
+        applyCommentDate(e, comm);
+    }
+
+    private String readLyricsTagFromId3(Uri uri) {
+        try (InputStream stream = contentResolver.openInputStream(uri)) {
+            if (stream == null) return "";
+            for (Id3Frame f : readId3Frames(stream, "USLT")) {
+                String lyrics = decodeUsltText(f.body);
+                if (!lyrics.isEmpty()) return lyrics;
+            }
+        } catch (Exception ignored) {
+        }
+        return "";
+    }
+
+    private float readReplayGainFromId3(Uri uri) {
+        try (InputStream stream = contentResolver.openInputStream(uri)) {
+            if (stream == null) return -1f;
+            for (Id3Frame f : readId3Frames(stream, "TXXX")) {
+                float parsed = parseReplayGainLinear(decodeId3UserText(f.body, "REPLAYGAIN_TRACK_GAIN"));
+                if (parsed > 0f) return parsed;
+            }
+        } catch (Exception ignored) {
+        }
+        return -1f;
     }
 
     private void fillFromAiff(Uri uri, TagEntry e) {
@@ -381,752 +320,95 @@ class MetadataExtractor {
 
             byte[] formHeader = new byte[12];
             if (!readFully(stream, formHeader, 12)) return;
-            if (formHeader[0] != 'F' || formHeader[1] != 'O' || formHeader[2] != 'R' || formHeader[3] != 'M') return;
-            boolean isAiff = (formHeader[8] == 'A' && formHeader[9] == 'I' && formHeader[10] == 'F'
-                    && (formHeader[11] == 'F' || formHeader[11] == 'C'));
-            if (!isAiff) return;
+            if (!frameIdIs(formHeader, 0, "FORM")) return;
+            if (!frameIdIs(formHeader, 8, "AIFF") && !frameIdIs(formHeader, 8, "AIFC")) return;
 
             byte[] chunkHeader = new byte[8];
             while (readFully(stream, chunkHeader, 8)) {
-                int chunkSize = ((chunkHeader[4] & 0xFF) << 24) | ((chunkHeader[5] & 0xFF) << 16)
-                        | ((chunkHeader[6] & 0xFF) << 8) | (chunkHeader[7] & 0xFF);
-                if (chunkSize < 0) return;
-
-                if (frameIdIs(chunkHeader, 0, "ID3 ") && chunkSize >= 10 && chunkSize <= (4 * 1024 * 1024)) {
-                    byte[] id3Bytes = new byte[chunkSize];
-                    if (!readFully(stream, id3Bytes, chunkSize)) return;
-                    fillFromId3Stream(new java.io.ByteArrayInputStream(id3Bytes), e);
+                long chunkSize = decodeUnsignedInt(chunkHeader, 4);
+                // The ID3 reader streams frame by frame from here, so the chunk needs no buffering.
+                if (frameIdIs(chunkHeader, 0, "ID3 ") && chunkSize >= 10) {
+                    fillFromId3Stream(stream, e);
                     return;
                 }
-
-                long skip = chunkSize + (chunkSize & 1);
-                if (!skipFully(stream, skip)) return;
+                if (!skipFully(stream, chunkSize + (chunkSize & 1))) return;
             }
         } catch (Exception ignored) {
         }
     }
 
-    private String readLyricsTagFromId3(Uri uri) {
-        try (InputStream stream = contentResolver.openInputStream(uri)) {
-            if (stream == null) return "";
+    /** One ID3v2 frame: its id and raw body. */
+    private static final class Id3Frame {
+        final String id;
+        final byte[] body;
 
-            byte[] header = new byte[10];
-            if (!readFully(stream, header, 10)) return "";
-            if (header[0] != 'I' || header[1] != 'D' || header[2] != '3') return "";
+        Id3Frame(String id, byte[] body) {
+            this.id = id;
+            this.body = body;
+        }
 
-            int majorVersion = header[3] & 0xFF;
-            if (majorVersion < 2 || majorVersion > 4) return "";
-
-            int tagSize = decodeSyncSafeInt(header, 6);
-            if (tagSize <= 0 || tagSize > (2 * 1024 * 1024)) return "";
-
-            byte[] tagData = new byte[tagSize];
-            if (!readFully(stream, tagData, tagSize)) return "";
-
-            int startOffset = 0;
-            boolean hasExtendedHeader = (header[5] & 0x40) != 0;
-            if (hasExtendedHeader && tagData.length >= 4) {
-                startOffset = majorVersion == 4
-                        ? decodeSyncSafeInt(tagData, 0)
-                        : decodeInt(tagData, 0);
-                if (startOffset < 0 || startOffset >= tagData.length) return "";
-            }
-
-            for (int offset = startOffset; offset + 10 <= tagData.length; ) {
-                if (isZeroFrameId(tagData, offset)) break;
-
-                int frameSize = majorVersion == 4
-                        ? decodeSyncSafeInt(tagData, offset + 4)
-                        : decodeInt(tagData, offset + 4);
-                if (frameSize <= 0 || offset + 10 + frameSize > tagData.length) break;
-
-                if (frameIdIs(tagData, offset, "USLT")) {
-                    String lyrics = decodeUsltText(tagData, offset + 10, frameSize);
-                    if (lyrics.length() > 0) return lyrics;
-                }
-
-                offset += 10 + frameSize;
-            }
-            return "";
-        } catch (Exception ignored) {
-            return "";
+        String text() {
+            return decodeId3Text(body);
         }
     }
 
-    private void fillFromFlac(Uri uri, TagEntry e) {
-        try (InputStream stream = contentResolver.openInputStream(uri)) {
-            if (stream == null) return;
-            byte[] signature = new byte[4];
-            if (!readFully(stream, signature, 4)) return;
-            if (signature[0] != 'f' || signature[1] != 'L' || signature[2] != 'a' || signature[3] != 'C') return;
-            boolean isLastBlock = false;
-            while (!isLastBlock) {
-                byte[] blockHeader = new byte[4];
-                if (!readFully(stream, blockHeader, 4)) return;
-                isLastBlock = (blockHeader[0] & 0x80) != 0;
-                int blockType = blockHeader[0] & 0x7F;
-                int blockLength = ((blockHeader[1] & 0xFF) << 16)
-                        | ((blockHeader[2] & 0xFF) << 8)
-                        | (blockHeader[3] & 0xFF);
-                if (blockLength < 0 || blockLength > (16 * 1024 * 1024)) return;
-                if (blockType != 4) { if (!skipFully(stream, blockLength)) return; continue; }
-                byte[] commentData = new byte[blockLength];
-                if (!readFully(stream, commentData, blockLength)) return;
-                if (e.date == null) {
-                    String v = readVorbisCommentValue(commentData, "DATE");
-                    if (v.length() > 0) e.date = normalizeDateValue(v);
-                    if (e.date == null || (e.date.length() > 0 && e.date.length() < 5)) {
-                        String comm = readVorbisCommentValue(commentData, "COMMENT");
-                        if (!comm.isEmpty()) {
-                            Matcher m = DATE_IN_COMMENT_PATTERN.matcher(comm);
-                            if (m.find())
-                                e.date = m.group(1) + "-" + m.group(2) + "-" + m.group(3);
-                        }
-                    }
-                }
-                if (e.genre == null) {
-                    String v = readVorbisCommentValue(commentData, "GENRE");
-                    if (v.length() > 0) e.genre = v;
-                }
-                if (e.artist == null) {
-                    String v = readVorbisCommentValue(commentData, "ARTIST");
-                    if (v.length() > 0) e.artist = v;
-                }
-                if (e.title == null) {
-                    String v = readVorbisCommentValue(commentData, "TITLE");
-                    if (v.length() > 0) e.title = v;
-                }
-                if (e.bpm < 0) {
-                    String v = readVorbisCommentValue(commentData, "BPM");
-                    if (v.length() == 0) v = readVorbisCommentValue(commentData, "TEMPO");
-                    if (v.length() > 0) e.bpm = parseBpmValue(v);
-                }
-                return;
+    /**
+     * The frames of the ID3v2.3/2.4 tag at the start of {@code stream} whose id is listed in
+     * {@code wanted}, in tag order. Frames are read one at a time and the unwanted ones skipped
+     * unread, so a tag carrying megabytes of cover art costs no more than the text frames asked for.
+     */
+    private static List<Id3Frame> readId3Frames(InputStream stream, String wanted) throws IOException {
+        List<Id3Frame> frames = new ArrayList<>();
+        byte[] header = new byte[10];
+        if (!readFully(stream, header, 10) || !frameIdIs(header, 0, "ID3")) return frames;
+        int majorVersion = header[3] & 0xFF;
+        // v2.2 has 3-character ids and 6-byte frame headers; it was never parsed correctly before
+        // either (its frames never matched), so it is simply not supported.
+        if (majorVersion < 3 || majorVersion > 4) return frames;
+        long remaining = decodeSyncSafeInt(header, 6);
+
+        if ((header[5] & 0x40) != 0) {               // extended header
+            if (remaining < 4 || !readFully(stream, header, 4)) return frames;
+            remaining -= 4;
+            // v2.4 counts the size field itself; v2.3 does not.
+            long rest = majorVersion == 4 ? decodeSyncSafeInt(header, 0) - 4L : decodeInt(header, 0) & 0xFFFFFFFFL;
+            if (rest < 0 || rest > remaining || !skipFully(stream, rest)) return frames;
+            remaining -= rest;
+        }
+
+        while (remaining >= 10 && readFully(stream, header, 10)) {
+            remaining -= 10;
+            if (header[0] == 0) break;                // padding
+            int size = majorVersion == 4 ? decodeSyncSafeInt(header, 4) : decodeInt(header, 4);
+            if (size <= 0 || size > remaining) break;
+            remaining -= size;
+            String id = new String(header, 0, 4, StandardCharsets.ISO_8859_1);
+            if (wanted.contains(id) && size <= MAX_VALUE_BYTES) {
+                byte[] body = new byte[size];
+                if (!readFully(stream, body, size)) break;
+                frames.add(new Id3Frame(id, body));
+            } else if (!skipFully(stream, size)) {
+                break;
             }
-        } catch (Exception ignored) {
+        }
+        return frames;
+    }
+
+    private static String id3Charset(int encoding) {
+        switch (encoding) {
+            case 1:  return "UTF-16";
+            case 2:  return "UTF-16BE";
+            case 3:  return "UTF-8";
+            default: return "ISO-8859-1";
         }
     }
 
-    private String readLyricsTagFromFlac(Uri uri) {
-        String lyrics = readFlacVorbisComment(uri, "LYRICS");
-        if (lyrics.length() > 0) return lyrics;
-        lyrics = readFlacVorbisComment(uri, "UNSYNCEDLYRICS");
-        if (lyrics.length() > 0) return lyrics;
-        return readFlacVorbisComment(uri, "UNSYNCED LYRICS");
-    }
-
-    private String readFlacVorbisComment(Uri uri, String key) {
-        try (InputStream stream = contentResolver.openInputStream(uri)) {
-            if (stream == null) return "";
-
-            byte[] signature = new byte[4];
-            if (!readFully(stream, signature, 4)) return "";
-            if (signature[0] != 'f' || signature[1] != 'L' || signature[2] != 'a' || signature[3] != 'C') return "";
-
-            boolean isLastBlock = false;
-            while (!isLastBlock) {
-                byte[] blockHeader = new byte[4];
-                if (!readFully(stream, blockHeader, 4)) return "";
-
-                isLastBlock = (blockHeader[0] & 0x80) != 0;
-                int blockType = blockHeader[0] & 0x7F;
-                int blockLength = ((blockHeader[1] & 0xFF) << 16)
-                        | ((blockHeader[2] & 0xFF) << 8)
-                        | (blockHeader[3] & 0xFF);
-                if (blockLength < 0 || blockLength > (16 * 1024 * 1024)) return "";
-
-                if (blockType != 4) {
-                    if (!skipFully(stream, blockLength)) return "";
-                    continue;
-                }
-
-                byte[] commentData = new byte[blockLength];
-                if (!readFully(stream, commentData, blockLength)) return "";
-                return readVorbisCommentValue(commentData, key);
-            }
-            return "";
-        } catch (Exception ignored) {
-            return "";
-        }
-    }
-
-    private String readVorbisCommentValue(byte[] data, String key) {
-        if (data == null || data.length < 8) return "";
-        int offset = 0;
-        int vendorLength = decodeLittleEndianInt(data, offset);
-        if (vendorLength < 0) return "";
-        offset += 4;
-        if (offset + vendorLength > data.length) return "";
-        offset += vendorLength;
-        if (offset + 4 > data.length) return "";
-
-        int commentCount = decodeLittleEndianInt(data, offset);
-        if (commentCount < 0) return "";
-        offset += 4;
-        for (int i = 0; i < commentCount; i++) {
-            if (offset + 4 > data.length) return "";
-            int commentLength = decodeLittleEndianInt(data, offset);
-            offset += 4;
-            if (commentLength < 0 || offset + commentLength > data.length) return "";
-
-            String comment;
-            try {
-                comment = new String(data, offset, commentLength, "UTF-8");
-            } catch (Exception ignored) {
-                comment = "";
-            }
-            offset += commentLength;
-
-            int equals = comment.indexOf('=');
-            if (equals <= 0) continue;
-            String commentKey = comment.substring(0, equals);
-            if (commentKey.equalsIgnoreCase(key)) return comment.substring(equals + 1).trim();
-        }
-        return "";
-    }
-
-    private int decodeLittleEndianInt(byte[] data, int offset) {
-        if (offset + 3 >= data.length) return -1;
-        return (data[offset] & 0xFF)
-                | ((data[offset + 1] & 0xFF) << 8)
-                | ((data[offset + 2] & 0xFF) << 16)
-                | ((data[offset + 3] & 0xFF) << 24);
-    }
-
-
-    private void fillSortTagsFromMp4(Uri uri, TagEntry e) {
-        if (uri == null || (e.date != null && e.genre != null && e.title != null && e.bpm >= 0)) return;
-        BpmCandidates bpmCandidates = new BpmCandidates();
-        try (InputStream stream = contentResolver.openInputStream(uri)) {
-            if (stream == null) return;
-            readMp4SortTagValuesFromAtoms(stream, Long.MAX_VALUE, false, e, bpmCandidates);
-        } catch (Exception ignored) {
-        }
-        if (e.bpm < 0) {
-            String bpm = bpmCandidates.main.length() > 0 ? bpmCandidates.main : bpmCandidates.fallback;
-            if (bpm.length() > 0) e.bpm = parseBpmValue(bpm);
-        }
-        if (e.date == null || (e.date.length() > 0 && e.date.length() < 5)) {
-            String comm = readMp4TagValue(uri, 0xA9636D74);
-            if (!comm.isEmpty()) {
-                Matcher m = DATE_IN_COMMENT_PATTERN.matcher(comm);
-                if (m.find())
-                    e.date = m.group(1) + "-" + m.group(2) + "-" + m.group(3);
-            }
-        }
-    }
-
-    private String readLyricsTagFromMp4(Uri uri) {
-        String lyrics = readMp4TagValue(uri, 0xA96C7972);
-        if (lyrics.length() > 0) return lyrics;
-        return readMp4FreeformTagValue(uri, "com.apple.iTunes", "LYRICS");
-    }
-
-    private float readReplayGainFromId3(Uri uri) {
-        try (InputStream stream = contentResolver.openInputStream(uri)) {
-            if (stream == null) return -1f;
-
-            byte[] header = new byte[10];
-            if (!readFully(stream, header, 10)) return -1f;
-            if (header[0] != 'I' || header[1] != 'D' || header[2] != '3') return -1f;
-
-            int majorVersion = header[3] & 0xFF;
-            if (majorVersion < 2 || majorVersion > 4) return -1f;
-
-            int tagSize = decodeSyncSafeInt(header, 6);
-            if (tagSize <= 0 || tagSize > (2 * 1024 * 1024)) return -1f;
-
-            byte[] tagData = new byte[tagSize];
-            if (!readFully(stream, tagData, tagSize)) return -1f;
-
-            int startOffset = 0;
-            boolean hasExtendedHeader = (header[5] & 0x40) != 0;
-            if (hasExtendedHeader && tagData.length >= 4) {
-                startOffset = majorVersion == 4
-                        ? decodeSyncSafeInt(tagData, 0)
-                        : decodeInt(tagData, 0);
-                if (startOffset < 0 || startOffset >= tagData.length) return -1f;
-            }
-
-            for (int offset = startOffset; offset + 10 <= tagData.length; ) {
-                if (isZeroFrameId(tagData, offset)) break;
-
-                int frameSize = majorVersion == 4
-                        ? decodeSyncSafeInt(tagData, offset + 4)
-                        : decodeInt(tagData, offset + 4);
-                if (frameSize <= 0 || offset + 10 + frameSize > tagData.length) break;
-
-                if (frameIdIs(tagData, offset, "TXXX")) {
-                    String gain = decodeId3UserText(tagData, offset + 10, frameSize, "REPLAYGAIN_TRACK_GAIN");
-                    if (gain.length() == 0) {
-                        gain = decodeId3UserText(tagData, offset + 10, frameSize, "replaygain_track_gain");
-                    }
-                    float parsed = parseReplayGainLinear(gain);
-                    if (parsed > 0f) return parsed;
-                }
-
-                offset += 10 + frameSize;
-            }
-            return -1f;
-        } catch (Exception ignored) {
-            return -1f;
-        }
-    }
-
-    private float readReplayGainFromFlac(Uri uri) {
-        String gain = readFlacVorbisComment(uri, "REPLAYGAIN_TRACK_GAIN");
-        return parseReplayGainLinear(gain);
-    }
-
-    private float readReplayGainFromMp4(Uri uri) {
-        String gain = readMp4FreeformTagValue(uri, "com.apple.iTunes", "replaygain_track_gain");
-        if (gain.length() == 0) gain = readMp4FreeformTagValue(uri, "org.hydrogenaudio.replaygain", "track_gain");
-        if (gain.length() == 0) gain = readMp4FreeformTagValue(uri, "org.hydrogenaudio.replaygain", "REPLAYGAIN_TRACK_GAIN");
-        if (gain.length() == 0) gain = readMp4FreeformTagValue(uri, "com.apple.iTunes", "REPLAYGAIN_TRACK_GAIN");
-        return parseReplayGainLinear(gain);
-    }
-
-    private String readMp4FreeformTagValue(Uri uri, String targetMean, String targetName) {
-        try (InputStream stream = contentResolver.openInputStream(uri)) {
-            if (stream == null) return "";
-            return readMp4FreeformTagValueFromAtoms(stream, Long.MAX_VALUE, false, false, targetMean, targetName);
-        } catch (Exception ignored) {
-            return "";
-        }
-    }
-
-    private String readMp4TagValue(Uri uri, int targetAtomType) {
-        try (InputStream stream = contentResolver.openInputStream(uri)) {
-            if (stream == null) return "";
-            return readMp4TagValueFromAtoms(stream, Long.MAX_VALUE, targetAtomType, false, false);
-        } catch (Exception ignored) {
-            return "";
-        }
-    }
-
-    private String readMp4TagValueFromAtoms(InputStream stream,
-                                            long maxBytes,
-                                            int targetAtomType,
-                                            boolean inMeta,
-                                            boolean inIlst) throws java.io.IOException {
-        long consumed = 0;
-        while (consumed + 8 <= maxBytes) {
-            byte[] header = new byte[8];
-            if (!readFully(stream, header, 8)) return "";
-            consumed += 8;
-
-            long atomSize = decodeUnsignedInt(header, 0);
-            int atomType = decodeAtomType(header, 4);
-            long headerSize = 8;
-            if (atomSize == 1) {
-                byte[] ext = new byte[8];
-                if (!readFully(stream, ext, 8)) return "";
-                atomSize = decodeLong(ext, 0);
-                consumed += 8;
-                headerSize = 16;
-            } else if (atomSize == 0) {
-                atomSize = maxBytes - consumed + 8;
-            }
-
-            if (atomSize < headerSize || atomSize > (maxBytes - consumed + headerSize)) return "";
-            long payloadSize = atomSize - headerSize;
-
-            if (inIlst && atomType == targetAtomType) {
-                String value = readMp4IlstDataAtom(stream, payloadSize, targetAtomType);
-                if (value.length() > 0) return value;
-            } else if (isMp4ContainerAtom(atomType)) {
-                if (atomType == 0x6D657461) {
-                    if (payloadSize < 4) {
-                        if (!skipFully(stream, payloadSize)) return "";
-                    } else {
-                        if (!skipFully(stream, 4)) return "";
-                        String value = readMp4TagValueFromAtoms(stream, payloadSize - 4, targetAtomType, true, false);
-                        if (value.length() > 0) return value;
-                    }
-                } else {
-                    String value = readMp4TagValueFromAtoms(stream, payloadSize, targetAtomType, inMeta, atomType == 0x696C7374);
-                    if (value.length() > 0) return value;
-                }
-            } else {
-                if (!skipFully(stream, payloadSize)) return "";
-            }
-
-            consumed += payloadSize;
-            if (inMeta && atomType == 0x696C7374 && targetAtomType == 0x746D706F) {
-                // Keep scanning inside this meta atom, other fields may follow.
-            }
-        }
-        return "";
-    }
-
-    private void readMp4SortTagValuesFromAtoms(InputStream stream,
-                                               long maxBytes,
-                                               boolean inIlst,
-                                               TagEntry e,
-                                               BpmCandidates bpmCandidates) throws java.io.IOException {
-        long consumed = 0;
-        while (consumed + 8 <= maxBytes) {
-            byte[] header = new byte[8];
-            if (!readFully(stream, header, 8)) return;
-            consumed += 8;
-
-            long atomSize = decodeUnsignedInt(header, 0);
-            int atomType = decodeAtomType(header, 4);
-            long headerSize = 8;
-            if (atomSize == 1) {
-                byte[] ext = new byte[8];
-                if (!readFully(stream, ext, 8)) return;
-                atomSize = decodeLong(ext, 0);
-                consumed += 8;
-                headerSize = 16;
-            } else if (atomSize == 0) {
-                atomSize = maxBytes - consumed + 8;
-            }
-
-            if (atomSize < headerSize || atomSize > (maxBytes - consumed + headerSize)) return;
-            long payloadSize = atomSize - headerSize;
-
-            if (inIlst && atomType == 0xA9646179 && e.date == null) {
-                String date = readMp4IlstDataAtom(stream, payloadSize, atomType);
-                if (date.length() > 0) e.date = normalizeDateValue(date);
-            } else if (inIlst && atomType == 0xA967656E && e.genre == null) {
-                String genre = readMp4IlstDataAtom(stream, payloadSize, atomType);
-                if (genre.length() > 0) e.genre = genre;
-            } else if (inIlst && atomType == 0xA9415254 && e.artist == null) {
-                String artist = readMp4IlstDataAtom(stream, payloadSize, atomType);
-                if (artist.length() > 0) e.artist = artist;
-            } else if (inIlst && atomType == 0xA96E616D && e.title == null) {
-                String title = readMp4IlstDataAtom(stream, payloadSize, atomType);
-                if (title.length() > 0) e.title = title;
-            } else if (inIlst && atomType == 0x746D706F && bpmCandidates.main.length() == 0) {
-                String bpm = readMp4IlstDataAtom(stream, payloadSize, atomType);
-                if (bpm.length() > 0) bpmCandidates.main = bpm;
-            } else if (inIlst && atomType == 0x2D2D2D2D && bpmCandidates.fallback.length() == 0) {
-                String bpm = readMp4FreeformIlstItem(stream, payloadSize, "com.apple.iTunes", "BPM");
-                if (bpm.length() > 0) bpmCandidates.fallback = bpm;
-            } else if (isMp4ContainerAtom(atomType)) {
-                if (atomType == 0x6D657461) {
-                    if (payloadSize < 4) {
-                        if (!skipFully(stream, payloadSize)) return;
-                    } else {
-                        if (!skipFully(stream, 4)) return;
-                        readMp4SortTagValuesFromAtoms(stream, payloadSize - 4, false, e, bpmCandidates);
-                    }
-                } else {
-                    readMp4SortTagValuesFromAtoms(stream, payloadSize, atomType == 0x696C7374, e, bpmCandidates);
-                }
-            } else {
-                if (!skipFully(stream, payloadSize)) return;
-            }
-
-            consumed += payloadSize;
-            if (e.date != null
-                    && e.genre != null
-                    && e.artist != null
-                    && e.title != null
-                    && (e.bpm >= 0 || bpmCandidates.main.length() > 0 || bpmCandidates.fallback.length() > 0)) {
-                long remaining = maxBytes - consumed;
-                if (remaining > 0) skipFully(stream, remaining);
-                return;
-            }
-        }
-    }
-
-    private String readMp4FreeformTagValueFromAtoms(InputStream stream,
-                                                    long maxBytes,
-                                                    boolean inMeta,
-                                                    boolean inIlst,
-                                                    String targetMean,
-                                                    String targetName) throws java.io.IOException {
-        long consumed = 0;
-        while (consumed + 8 <= maxBytes) {
-            byte[] header = new byte[8];
-            if (!readFully(stream, header, 8)) return "";
-            consumed += 8;
-
-            long atomSize = decodeUnsignedInt(header, 0);
-            int atomType = decodeAtomType(header, 4);
-            long headerSize = 8;
-            if (atomSize == 1) {
-                byte[] ext = new byte[8];
-                if (!readFully(stream, ext, 8)) return "";
-                atomSize = decodeLong(ext, 0);
-                consumed += 8;
-                headerSize = 16;
-            } else if (atomSize == 0) {
-                atomSize = maxBytes - consumed + 8;
-            }
-
-            if (atomSize < headerSize || atomSize > (maxBytes - consumed + headerSize)) return "";
-            long payloadSize = atomSize - headerSize;
-
-            if (inIlst && atomType == 0x2D2D2D2D) {
-                String value = readMp4FreeformIlstItem(stream, payloadSize, targetMean, targetName);
-                if (value.length() > 0) return value;
-            } else if (isMp4ContainerAtom(atomType)) {
-                if (atomType == 0x6D657461) {
-                    if (payloadSize < 4) {
-                        if (!skipFully(stream, payloadSize)) return "";
-                    } else {
-                        if (!skipFully(stream, 4)) return "";
-                        String value = readMp4FreeformTagValueFromAtoms(stream, payloadSize - 4, true, false, targetMean, targetName);
-                        if (value.length() > 0) return value;
-                    }
-                } else {
-                    String value = readMp4FreeformTagValueFromAtoms(stream, payloadSize, inMeta, atomType == 0x696C7374, targetMean, targetName);
-                    if (value.length() > 0) return value;
-                }
-            } else {
-                if (!skipFully(stream, payloadSize)) return "";
-            }
-
-            consumed += payloadSize;
-        }
-        return "";
-    }
-
-    private String readMp4FreeformIlstItem(InputStream stream,
-                                           long itemPayloadSize,
-                                           String targetMean,
-                                           String targetName) throws java.io.IOException {
-        long consumed = 0;
-        String mean = "";
-        String name = "";
-        String data = "";
-
-        while (consumed + 8 <= itemPayloadSize) {
-            byte[] header = new byte[8];
-            if (!readFully(stream, header, 8)) return "";
-            consumed += 8;
-
-            long atomSize = decodeUnsignedInt(header, 0);
-            int atomType = decodeAtomType(header, 4);
-            long headerSize = 8;
-            if (atomSize == 1) {
-                byte[] ext = new byte[8];
-                if (!readFully(stream, ext, 8)) return "";
-                atomSize = decodeLong(ext, 0);
-                consumed += 8;
-                headerSize = 16;
-            }
-
-            if (atomSize < headerSize || atomSize > (itemPayloadSize - consumed + headerSize)) return "";
-            long payloadSize = atomSize - headerSize;
-
-            if (payloadSize > Integer.MAX_VALUE) {
-                if (!skipFully(stream, payloadSize)) return "";
-                consumed += payloadSize;
-                continue;
-            }
-
-            if (atomType == 0x6D65616E || atomType == 0x6E616D65) {
-                if (payloadSize < 4) {
-                    if (!skipFully(stream, payloadSize)) return "";
-                } else {
-                    byte[] bytes = new byte[(int) payloadSize];
-                    if (!readFully(stream, bytes, (int) payloadSize)) return "";
-                    String decoded = decodeMp4TextRange(bytes, 4, bytes.length - 4);
-                    if (atomType == 0x6D65616E) mean = decoded; else name = decoded;
-                }
-            } else if (atomType == 0x64617461) {
-                if (payloadSize < 8) {
-                    if (!skipFully(stream, payloadSize)) return "";
-                } else {
-                    byte[] bytes = new byte[(int) payloadSize];
-                    if (!readFully(stream, bytes, (int) payloadSize)) return "";
-                    data = decodeMp4TextRange(bytes, 8, bytes.length - 8);
-                }
-            } else {
-                if (!skipFully(stream, payloadSize)) return "";
-            }
-
-            consumed += payloadSize;
-        }
-
-        long remaining = itemPayloadSize - consumed;
-        if (remaining > 0) skipFully(stream, remaining);
-
-        if (mean.equals(targetMean) && name.equalsIgnoreCase(targetName)) return data.trim();
-        return "";
-    }
-
-    private String readMp4IlstDataAtom(InputStream stream, long itemPayloadSize, int itemAtomType)
-            throws java.io.IOException {
-        long consumed = 0;
-        while (consumed + 8 <= itemPayloadSize) {
-            byte[] header = new byte[8];
-            if (!readFully(stream, header, 8)) return "";
-            consumed += 8;
-
-            long atomSize = decodeUnsignedInt(header, 0);
-            int atomType = decodeAtomType(header, 4);
-            long headerSize = 8;
-            if (atomSize == 1) {
-                byte[] ext = new byte[8];
-                if (!readFully(stream, ext, 8)) return "";
-                atomSize = decodeLong(ext, 0);
-                consumed += 8;
-                headerSize = 16;
-            }
-
-            if (atomSize < headerSize || atomSize > (itemPayloadSize - consumed + headerSize)) return "";
-            long payloadSize = atomSize - headerSize;
-
-            if (atomType == 0x64617461) {
-                if (payloadSize < 8) {
-                    if (!skipFully(stream, payloadSize)) return "";
-                } else {
-                    byte[] info = new byte[8];
-                    if (!readFully(stream, info, 8)) return "";
-                    long dataSize = payloadSize - 8;
-                    if (dataSize < 0 || dataSize > (2 * 1024 * 1024)) {
-                        if (!skipFully(stream, dataSize)) return "";
-                    } else {
-                        byte[] value = new byte[(int) dataSize];
-                        if (!readFully(stream, value, (int) dataSize)) return "";
-                        if (itemAtomType == 0x746D706F) return decodeMp4Tempo(value);
-                        return decodeMp4Text(value);
-                    }
-                }
-            } else {
-                if (!skipFully(stream, payloadSize)) return "";
-            }
-
-            consumed += payloadSize;
-        }
-
-        long remaining = itemPayloadSize - consumed;
-        if (remaining > 0) skipFully(stream, remaining);
-        return "";
-    }
-
-    private boolean isMp4ContainerAtom(int atomType) {
-        return atomType == 0x6D6F6F76  // moov
-                || atomType == 0x75647461 // udta
-                || atomType == 0x6D657461 // meta
-                || atomType == 0x696C7374 // ilst
-                || atomType == 0x7472616B // trak
-                || atomType == 0x6D646961 // mdia
-                || atomType == 0x6D696E66 // minf
-                || atomType == 0x7374626C // stbl
-                || atomType == 0x65647473 // edts
-                || atomType == 0x6D766578; // mvex
-    }
-
-    private long decodeUnsignedInt(byte[] data, int offset) {
-        return ((long) (data[offset] & 0xFF) << 24)
-                | ((long) (data[offset + 1] & 0xFF) << 16)
-                | ((long) (data[offset + 2] & 0xFF) << 8)
-                | (long) (data[offset + 3] & 0xFF);
-    }
-
-    private long decodeLong(byte[] data, int offset) {
-        return ((long) (data[offset] & 0xFF) << 56)
-                | ((long) (data[offset + 1] & 0xFF) << 48)
-                | ((long) (data[offset + 2] & 0xFF) << 40)
-                | ((long) (data[offset + 3] & 0xFF) << 32)
-                | ((long) (data[offset + 4] & 0xFF) << 24)
-                | ((long) (data[offset + 5] & 0xFF) << 16)
-                | ((long) (data[offset + 6] & 0xFF) << 8)
-                | (long) (data[offset + 7] & 0xFF);
-    }
-
-    private int decodeAtomType(byte[] data, int offset) {
-        return ((data[offset] & 0xFF) << 24)
-                | ((data[offset + 1] & 0xFF) << 16)
-                | ((data[offset + 2] & 0xFF) << 8)
-                | (data[offset + 3] & 0xFF);
-    }
-
-    private String decodeMp4Text(byte[] data) {
-        return decodeMp4TextRange(data, 0, data != null ? data.length : 0);
-    }
-
-    private String decodeMp4TextRange(byte[] data, int offset, int length) {
-        if (data == null || offset < 0 || length <= 0 || offset + length > data.length) return "";
+    /** A text frame's first value (v2.4 separates several with NULs), trimmed. */
+    private static String decodeId3Text(byte[] body) {
+        if (body.length <= 1) return "";
         try {
-            String value = new String(data, offset, length, "UTF-8").trim();
-            if (value.length() > 0) return value;
-            return new String(data, offset, length, "ISO-8859-1").trim();
-        } catch (Exception ignored) {
-            return "";
-        }
-    }
-
-    private String decodeMp4Tempo(byte[] data) {
-        if (data == null || data.length == 0) return "";
-        if (data.length == 1) return Integer.toString(data[0] & 0xFF);
-        if (data.length >= 2) {
-            int value = ((data[0] & 0xFF) << 8) | (data[1] & 0xFF);
-            if (value > 0) return Integer.toString(value);
-        }
-        return "";
-    }
-
-    private boolean skipFully(InputStream stream, long bytesToSkip) throws java.io.IOException {
-        long remaining = bytesToSkip;
-        while (remaining > 0) {
-            long skipped = stream.skip(remaining);
-            if (skipped <= 0) {
-                if (stream.read() < 0) return false;
-                skipped = 1;
-            }
-            remaining -= skipped;
-        }
-        return true;
-    }
-
-    private boolean readFully(InputStream stream, byte[] buffer, int size) throws java.io.IOException {
-        int readTotal = 0;
-        while (readTotal < size) {
-            int read = stream.read(buffer, readTotal, size - readTotal);
-            if (read < 0) return false;
-            readTotal += read;
-        }
-        return true;
-    }
-
-    private int decodeSyncSafeInt(byte[] data, int offset) {
-        if (offset + 3 >= data.length) return -1;
-        return ((data[offset] & 0x7F) << 21)
-                | ((data[offset + 1] & 0x7F) << 14)
-                | ((data[offset + 2] & 0x7F) << 7)
-                | (data[offset + 3] & 0x7F);
-    }
-
-    private int decodeInt(byte[] data, int offset) {
-        if (offset + 3 >= data.length) return -1;
-        return ((data[offset] & 0xFF) << 24)
-                | ((data[offset + 1] & 0xFF) << 16)
-                | ((data[offset + 2] & 0xFF) << 8)
-                | (data[offset + 3] & 0xFF);
-    }
-
-    private static boolean isZeroFrameId(byte[] data, int offset) {
-        return data[offset] == 0 && data[offset + 1] == 0
-                && data[offset + 2] == 0 && data[offset + 3] == 0;
-    }
-
-    private static boolean frameIdIs(byte[] data, int offset, String id) {
-        return data[offset]     == (byte) id.charAt(0)
-            && data[offset + 1] == (byte) id.charAt(1)
-            && data[offset + 2] == (byte) id.charAt(2)
-            && data[offset + 3] == (byte) id.charAt(3);
-    }
-
-    private String decodeId3Text(byte[] data, int offset, int length) {
-        if (length <= 1 || offset + length > data.length) return "";
-
-        int encoding = data[offset] & 0xFF;
-        String charset;
-        if (encoding == 1) charset = "UTF-16";
-        else if (encoding == 2) charset = "UTF-16BE";
-        else if (encoding == 3) charset = "UTF-8";
-        else charset = "ISO-8859-1";
-
-        try {
-            String value = new String(data, offset + 1, length - 1, charset);
-            int nullTerminator = value.indexOf(' ');
+            String value = new String(body, 1, body.length - 1, id3Charset(body[0] & 0xFF));
+            int nullTerminator = value.indexOf('\u0000');
             if (nullTerminator >= 0) value = value.substring(0, nullTerminator);
             return value.trim();
         } catch (Exception ignored) {
@@ -1134,21 +416,11 @@ class MetadataExtractor {
         }
     }
 
-    private String decodeId3UserText(byte[] data,
-                                     int offset,
-                                     int length,
-                                     String targetDescription) {
-        if (data == null || targetDescription == null || length <= 1 || offset + length > data.length) return "";
-
-        int encoding = data[offset] & 0xFF;
-        String charset;
-        if (encoding == 1) charset = "UTF-16";
-        else if (encoding == 2) charset = "UTF-16BE";
-        else if (encoding == 3) charset = "UTF-8";
-        else charset = "ISO-8859-1";
-
+    /** A TXXX frame's value when its description is {@code targetDescription}, else "". */
+    private static String decodeId3UserText(byte[] body, String targetDescription) {
+        if (body.length <= 1) return "";
         try {
-            String decoded = new String(data, offset + 1, length - 1, charset);
+            String decoded = new String(body, 1, body.length - 1, id3Charset(body[0] & 0xFF));
             int nullTerminator = decoded.indexOf('\u0000');
             if (nullTerminator <= 0) return "";
             String description = decoded.substring(0, nullTerminator).trim();
@@ -1159,56 +431,21 @@ class MetadataExtractor {
         }
     }
 
-    private String normalizeDateValue(String value) {
-        if (value == null) return "";
-        String trimmed = value.trim();
-        if (trimmed.length() == 0) return "";
-        int tPos = trimmed.indexOf('T');
-        if (tPos > 0) trimmed = trimmed.substring(0, tPos);
-        return trimmed;
-    }
-
-    private String normalizeGenreValue(String value) {
-        if (value == null) return "";
-        String trimmed = value.trim();
-        if (trimmed.length() == 0) return "";
-        // ID3 TCON may contain numeric code in parentheses; keep user-friendly values only.
-        if (trimmed.matches("^\\(\\d+\\)$")) return "";
-        return trimmed;
-    }
-
-    private String normalizeLyricsValue(String value) {
-        if (value == null) return "";
-        return value.replace("\r\n", "\n").replace('\r', '\n').trim();
-    }
-
-    private String decodeUsltText(byte[] data, int offset, int length) {
-        if (data == null || length <= 4 || offset < 0 || offset + length > data.length) return "";
-
-        int encoding = data[offset] & 0xFF;
-        String charset;
-        int terminatorLength;
-        if (encoding == 1) { charset = "UTF-16"; terminatorLength = 2; }
-        else if (encoding == 2) { charset = "UTF-16BE"; terminatorLength = 2; }
-        else if (encoding == 3) { charset = "UTF-8"; terminatorLength = 1; }
-        else { charset = "ISO-8859-1"; terminatorLength = 1; }
-
-        int start = offset + 4;
-        int end = offset + length;
-        if (start >= end) return "";
-
-        int descriptionEnd = findTextTerminator(data, start, end, terminatorLength);
-        int lyricsStart = descriptionEnd + terminatorLength;
-        if (lyricsStart >= end) return "";
-
+    /** The text of a USLT or COMM frame: encoding, language, NUL-terminated description, text. */
+    private static String decodeUsltText(byte[] body) {
+        if (body.length <= 4) return "";
+        int encoding = body[0] & 0xFF;
+        int terminatorLength = encoding == 1 || encoding == 2 ? 2 : 1;
+        int textStart = findTextTerminator(body, 4, body.length, terminatorLength) + terminatorLength;
+        if (textStart >= body.length) return "";
         try {
-            return new String(data, lyricsStart, end - lyricsStart, charset).trim();
+            return new String(body, textStart, body.length - textStart, id3Charset(encoding)).trim();
         } catch (Exception ignored) {
             return "";
         }
     }
 
-    private int findTextTerminator(byte[] data, int start, int end, int terminatorLength) {
+    private static int findTextTerminator(byte[] data, int start, int end, int terminatorLength) {
         if (terminatorLength <= 1) {
             for (int i = start; i < end; i++) {
                 if (data[i] == 0) return i;
@@ -1221,7 +458,396 @@ class MetadataExtractor {
         return end;
     }
 
-    private int parseBpmValue(String value) {
+    // ------------------------------------------------------------------------- FLAC / Vorbis
+
+    private void fillFromFlac(Uri uri, TagEntry e) {
+        Map<String, String> c = readVorbisComments(uri);
+        if (c.isEmpty()) return;
+        if (e.date == null) {
+            String v = nonEmpty(c.get("DATE"));
+            if (v != null) e.date = normalizeDateValue(v);
+            applyCommentDate(e, c.get("COMMENT"));
+        }
+        if (e.genre == null) e.genre = nonEmpty(c.get("GENRE"));
+        if (e.artist == null) e.artist = nonEmpty(c.get("ARTIST"));
+        if (e.title == null) e.title = nonEmpty(c.get("TITLE"));
+        if (e.bpm < 0) {
+            String v = nonEmpty(c.get("BPM"));
+            if (v == null) v = nonEmpty(c.get("TEMPO"));
+            if (v != null) e.bpm = parseBpmValue(v);
+        }
+    }
+
+    private String readLyricsTagFromFlac(Uri uri) {
+        Map<String, String> c = readVorbisComments(uri);
+        for (String key : new String[]{"LYRICS", "UNSYNCEDLYRICS", "UNSYNCED LYRICS"}) {
+            String lyrics = nonEmpty(c.get(key));
+            if (lyrics != null) return lyrics;
+        }
+        return "";
+    }
+
+    private float readReplayGainFromFlac(Uri uri) {
+        return parseReplayGainLinear(readVorbisComments(uri).get("REPLAYGAIN_TRACK_GAIN"));
+    }
+
+    /**
+     * Every comment of a FLAC file's VORBIS_COMMENT block, keyed by upper-cased field name; the
+     * first occurrence of a field wins. Empty when the file is not FLAC or has no comments.
+     */
+    private Map<String, String> readVorbisComments(Uri uri) {
+        Map<String, String> out = new HashMap<>();
+        try (InputStream stream = contentResolver.openInputStream(uri)) {
+            if (stream == null) return out;
+            byte[] header = new byte[4];
+            if (!readFully(stream, header, 4) || !frameIdIs(header, 0, "fLaC")) return out;
+            boolean isLastBlock = false;
+            while (!isLastBlock) {
+                if (!readFully(stream, header, 4)) return out;
+                isLastBlock = (header[0] & 0x80) != 0;
+                int blockType = header[0] & 0x7F;
+                int blockLength = ((header[1] & 0xFF) << 16) | ((header[2] & 0xFF) << 8) | (header[3] & 0xFF);
+                if (blockType != 4) {
+                    if (!skipFully(stream, blockLength)) return out;
+                    continue;
+                }
+                byte[] data = new byte[blockLength];
+                if (!readFully(stream, data, blockLength)) return out;
+                parseVorbisComments(data, out);
+                return out;
+            }
+        } catch (Exception ignored) {
+        }
+        return out;
+    }
+
+    private static void parseVorbisComments(byte[] data, Map<String, String> out) {
+        int vendorLength = decodeLittleEndianInt(data, 0);
+        if (vendorLength < 0) return;
+        int offset = 4 + vendorLength;
+        int commentCount = decodeLittleEndianInt(data, offset);
+        if (commentCount < 0) return;
+        offset += 4;
+        for (int i = 0; i < commentCount; i++) {
+            int commentLength = decodeLittleEndianInt(data, offset);
+            offset += 4;
+            if (commentLength < 0 || offset + commentLength > data.length) return;
+            String comment = new String(data, offset, commentLength, StandardCharsets.UTF_8);
+            offset += commentLength;
+            int equals = comment.indexOf('=');
+            if (equals <= 0) continue;
+            out.putIfAbsent(comment.substring(0, equals).toUpperCase(Locale.ROOT),
+                    comment.substring(equals + 1).trim());
+        }
+    }
+
+    /** Little-endian int at {@code offset}, or -1 when it runs past the end (or before the start). */
+    private static int decodeLittleEndianInt(byte[] data, int offset) {
+        if (offset < 0 || offset + 3 >= data.length) return -1;
+        return (data[offset] & 0xFF)
+                | ((data[offset + 1] & 0xFF) << 8)
+                | ((data[offset + 2] & 0xFF) << 16)
+                | ((data[offset + 3] & 0xFF) << 24);
+    }
+
+    // ------------------------------------------------------------------------------------ MP4
+
+    private static final int ATOM_MOOV = 0x6D6F6F76, ATOM_UDTA = 0x75647461, ATOM_META = 0x6D657461,
+            ATOM_ILST = 0x696C7374, ATOM_TRAK = 0x7472616B, ATOM_MDIA = 0x6D646961,
+            ATOM_MINF = 0x6D696E66, ATOM_STBL = 0x7374626C, ATOM_EDTS = 0x65647473,
+            ATOM_MVEX = 0x6D766578, ATOM_DATA = 0x64617461, ATOM_MEAN = 0x6D65616E,
+            ATOM_NAME = 0x6E616D65, ATOM_FREEFORM = 0x2D2D2D2D;
+    private static final int ITEM_DATE = 0xA9646179, ITEM_GENRE = 0xA967656E, ITEM_ARTIST = 0xA9415254,
+            ITEM_TITLE = 0xA96E616D, ITEM_TEMPO = 0x746D706F, ITEM_COMMENT = 0xA9636D74,
+            ITEM_LYRICS = 0xA96C7972;
+
+    private static final String ITUNES = "com.apple.iTunes";
+    private static final String HYDROGENAUDIO = "org.hydrogenaudio.replaygain";
+
+    /**
+     * The {@code ilst} items this class reads, collected in one walk of the file: standard items by
+     * atom type, freeform ({@code ----}) items under "mean/NAME" with the name upper-cased (names
+     * are matched case-insensitively). Only non-empty values are kept; the first one wins.
+     */
+    private static final class Mp4Tags {
+        final Map<Integer, String> items = new HashMap<>();
+        final Map<String, String> freeform = new HashMap<>();
+
+        String item(int type) {
+            return items.get(type);
+        }
+
+        String freeform(String mean, String name) {
+            return freeform.get(mean + "/" + name.toUpperCase(Locale.ROOT));
+        }
+    }
+
+    private void fillSortTagsFromMp4(Uri uri, TagEntry e) {
+        if (e.date != null && e.genre != null && e.title != null && e.bpm >= 0) return;
+        Mp4Tags t = readMp4Tags(uri);
+        if (e.date == null) {
+            String date = t.item(ITEM_DATE);
+            if (date != null) e.date = normalizeDateValue(date);
+        }
+        if (e.genre == null) e.genre = t.item(ITEM_GENRE);
+        if (e.artist == null) e.artist = t.item(ITEM_ARTIST);
+        if (e.title == null) e.title = t.item(ITEM_TITLE);
+        if (e.bpm < 0) {
+            String bpm = t.item(ITEM_TEMPO);
+            if (bpm == null) bpm = t.freeform(ITUNES, "BPM");
+            if (bpm != null) e.bpm = parseBpmValue(bpm);
+        }
+        applyCommentDate(e, t.item(ITEM_COMMENT));
+    }
+
+    private String readLyricsTagFromMp4(Uri uri) {
+        Mp4Tags t = readMp4Tags(uri);
+        String lyrics = t.item(ITEM_LYRICS);
+        if (lyrics == null) lyrics = t.freeform(ITUNES, "LYRICS");
+        return lyrics != null ? lyrics : "";
+    }
+
+    private float readReplayGainFromMp4(Uri uri) {
+        Mp4Tags t = readMp4Tags(uri);
+        String gain = t.freeform(ITUNES, "REPLAYGAIN_TRACK_GAIN");
+        if (gain == null) gain = t.freeform(HYDROGENAUDIO, "TRACK_GAIN");
+        if (gain == null) gain = t.freeform(HYDROGENAUDIO, "REPLAYGAIN_TRACK_GAIN");
+        return parseReplayGainLinear(gain);
+    }
+
+    /** Walks the file once; on a read error or malformed atom, returns whatever was found so far. */
+    private Mp4Tags readMp4Tags(Uri uri) {
+        Mp4Tags tags = new Mp4Tags();
+        try (InputStream stream = contentResolver.openInputStream(uri)) {
+            if (stream != null) walkMp4(stream, Long.MAX_VALUE, false, tags);
+        } catch (Exception ignored) {
+        }
+        return tags;
+    }
+
+    /** Header of one MP4 atom: its type and payload size (header excluded). */
+    private static final class Atom {
+        final byte[] buf = new byte[8];
+        int type;
+        long headerSize;
+        long payload;
+    }
+
+    /**
+     * Reads the next atom header from a container with {@code available} bytes left. False at the
+     * end of the container, at EOF, or on a size that cannot fit; the caller then stops walking.
+     */
+    private static boolean readAtom(InputStream stream, long available, Atom a) throws IOException {
+        if (available < 8 || !readFully(stream, a.buf, 8)) return false;
+        long size = decodeUnsignedInt(a.buf, 0);
+        a.type = decodeInt(a.buf, 4);
+        a.headerSize = 8;
+        if (size == 1) {                      // 64-bit size follows the type
+            if (available < 16 || !readFully(stream, a.buf, 8)) return false;
+            size = decodeLong(a.buf, 0);
+            a.headerSize = 16;
+        } else if (size == 0) {               // extends to the end of its container
+            size = available;
+        }
+        if (size < a.headerSize || size > available) return false;
+        a.payload = size - a.headerSize;
+        return true;
+    }
+
+    private static void walkMp4(InputStream stream, long available, boolean inIlst, Mp4Tags tags)
+            throws IOException {
+        Atom a = new Atom();
+        while (readAtom(stream, available, a)) {
+            available -= a.headerSize + a.payload;
+            long payload = a.payload;
+            if (inIlst && a.type == ATOM_FREEFORM) {
+                readFreeformItem(stream, payload, tags);
+            } else if (inIlst && isWantedItem(a.type)) {
+                String value = readItemData(stream, payload, a.type == ITEM_TEMPO);
+                if (!value.isEmpty()) tags.items.putIfAbsent(a.type, value);
+            } else if (a.type == ATOM_META && payload >= 4) {
+                if (!skipFully(stream, 4)) return;      // FullBox version/flags
+                walkMp4(stream, payload - 4, false, tags);
+            } else if (a.type != ATOM_META && isMp4ContainerAtom(a.type)) {
+                walkMp4(stream, payload, a.type == ATOM_ILST, tags);
+            } else if (!skipFully(stream, payload)) {
+                return;
+            }
+        }
+    }
+
+    private static boolean isWantedItem(int type) {
+        return type == ITEM_DATE || type == ITEM_GENRE || type == ITEM_ARTIST || type == ITEM_TITLE
+                || type == ITEM_TEMPO || type == ITEM_COMMENT || type == ITEM_LYRICS;
+    }
+
+    private static boolean isMp4ContainerAtom(int type) {
+        return type == ATOM_MOOV || type == ATOM_UDTA || type == ATOM_META || type == ATOM_ILST
+                || type == ATOM_TRAK || type == ATOM_MDIA || type == ATOM_MINF || type == ATOM_STBL
+                || type == ATOM_EDTS || type == ATOM_MVEX;
+    }
+
+    /** The first {@code data} atom of a standard item, decoded; the whole item is consumed. */
+    private static String readItemData(InputStream stream, long itemPayload, boolean tempo)
+            throws IOException {
+        Atom a = new Atom();
+        String value = "";
+        long available = itemPayload;
+        while (value.isEmpty() && readAtom(stream, available, a)) {
+            available -= a.headerSize + a.payload;
+            byte[] bytes = a.type == ATOM_DATA ? readPayload(stream, a.payload) : null;
+            if (bytes == null) {
+                if (a.type == ATOM_DATA || !skipFully(stream, a.payload)) return value;
+                continue;
+            }
+            if (bytes.length >= 8) {    // 4-byte type indicator + 4-byte locale precede the value
+                value = tempo ? decodeMp4Tempo(bytes) : decodeMp4Text(bytes, 8);
+            }
+        }
+        skipFully(stream, available);
+        return value;
+    }
+
+    /** A {@code ----} item: its {@code mean}, {@code name} and {@code data} children. */
+    private static void readFreeformItem(InputStream stream, long itemPayload, Mp4Tags tags)
+            throws IOException {
+        Atom a = new Atom();
+        String mean = "", name = "", data = "";
+        long available = itemPayload;
+        while (readAtom(stream, available, a)) {
+            available -= a.headerSize + a.payload;
+            boolean wanted = a.type == ATOM_MEAN || a.type == ATOM_NAME || a.type == ATOM_DATA;
+            byte[] bytes = wanted ? readPayload(stream, a.payload) : null;
+            if (bytes == null) {
+                if (wanted || !skipFully(stream, a.payload)) return;
+                continue;
+            }
+            // mean/name carry 4 bytes of version/flags; data carries type indicator + locale.
+            if (a.type == ATOM_MEAN) mean = decodeMp4Text(bytes, 4);
+            else if (a.type == ATOM_NAME) name = decodeMp4Text(bytes, 4);
+            else data = decodeMp4Text(bytes, 8);
+        }
+        skipFully(stream, available);
+        if (!data.isEmpty()) tags.freeform.putIfAbsent(mean + "/" + name.toUpperCase(Locale.ROOT), data);
+    }
+
+    /** The payload; empty when it is too large to be a tag value (it is skipped), null at EOF. */
+    private static byte[] readPayload(InputStream stream, long size) throws IOException {
+        if (size > MAX_VALUE_BYTES) return skipFully(stream, size) ? new byte[0] : null;
+        byte[] bytes = new byte[(int) size];
+        return readFully(stream, bytes, bytes.length) ? bytes : null;
+    }
+
+    private static String decodeMp4Text(byte[] data, int offset) {
+        if (data.length <= offset) return "";
+        return new String(data, offset, data.length - offset, StandardCharsets.UTF_8).trim();
+    }
+
+    /** {@code tmpo} is a big-endian integer after the 8-byte data header, not text. */
+    private static String decodeMp4Tempo(byte[] data) {
+        int n = data.length - 8;
+        if (n == 1) return Integer.toString(data[8] & 0xFF);
+        if (n >= 2) {
+            int value = ((data[8] & 0xFF) << 8) | (data[9] & 0xFF);
+            if (value > 0) return Integer.toString(value);
+        }
+        return "";
+    }
+
+    // -------------------------------------------------------------------------------- shared
+
+    /** Largest single tag value read into memory; anything bigger (cover art) is skipped. */
+    private static final int MAX_VALUE_BYTES = 2 * 1024 * 1024;
+
+    private static String nonEmpty(String s) {
+        return s == null || s.isEmpty() ? null : s;
+    }
+
+    /**
+     * Fills in a full date from a comment like "... 1936.05.12 ..." when the tags gave none, or only
+     * a bare year — old 78 transfers often carry the recording date only in the comment.
+     */
+    private static void applyCommentDate(TagEntry e, String comment) {
+        if (comment == null || comment.isEmpty()) return;
+        if (e.date != null && (e.date.isEmpty() || e.date.length() >= 5)) return;
+        Matcher m = DATE_IN_COMMENT_PATTERN.matcher(comment);
+        if (m.find()) e.date = m.group(1) + "-" + m.group(2) + "-" + m.group(3);
+    }
+
+    private static boolean skipFully(InputStream stream, long bytesToSkip) throws IOException {
+        long remaining = bytesToSkip;
+        while (remaining > 0) {
+            long skipped = stream.skip(remaining);
+            if (skipped <= 0) {
+                if (stream.read() < 0) return false;
+                skipped = 1;
+            }
+            remaining -= skipped;
+        }
+        return true;
+    }
+
+    private static boolean readFully(InputStream stream, byte[] buffer, int size) throws IOException {
+        int readTotal = 0;
+        while (readTotal < size) {
+            int read = stream.read(buffer, readTotal, size - readTotal);
+            if (read < 0) return false;
+            readTotal += read;
+        }
+        return true;
+    }
+
+    private static int decodeSyncSafeInt(byte[] data, int offset) {
+        return ((data[offset] & 0x7F) << 21)
+                | ((data[offset + 1] & 0x7F) << 14)
+                | ((data[offset + 2] & 0x7F) << 7)
+                | (data[offset + 3] & 0x7F);
+    }
+
+    private static int decodeInt(byte[] data, int offset) {
+        return ((data[offset] & 0xFF) << 24)
+                | ((data[offset + 1] & 0xFF) << 16)
+                | ((data[offset + 2] & 0xFF) << 8)
+                | (data[offset + 3] & 0xFF);
+    }
+
+    private static long decodeUnsignedInt(byte[] data, int offset) {
+        return decodeInt(data, offset) & 0xFFFFFFFFL;
+    }
+
+    private static long decodeLong(byte[] data, int offset) {
+        return (decodeUnsignedInt(data, offset) << 32) | decodeUnsignedInt(data, offset + 4);
+    }
+
+    private static boolean frameIdIs(byte[] data, int offset, String id) {
+        for (int i = 0; i < id.length(); i++) {
+            if (data[offset + i] != (byte) id.charAt(i)) return false;
+        }
+        return true;
+    }
+
+    private static String normalizeDateValue(String value) {
+        if (value == null) return "";
+        String trimmed = value.trim();
+        int tPos = trimmed.indexOf('T');
+        if (tPos > 0) trimmed = trimmed.substring(0, tPos);
+        return trimmed;
+    }
+
+    private static String normalizeGenreValue(String value) {
+        if (value == null) return "";
+        String trimmed = value.trim();
+        // ID3 TCON may contain numeric code in parentheses; keep user-friendly values only.
+        if (NUMERIC_GENRE_PATTERN.matcher(trimmed).matches()) return "";
+        return trimmed;
+    }
+
+    private static String normalizeLyricsValue(String value) {
+        if (value == null) return "";
+        return value.replace("\r\n", "\n").replace('\r', '\n').trim();
+    }
+
+    private static int parseBpmValue(String value) {
         if (value == null) return 0;
         Matcher matcher = BPM_PATTERN.matcher(value);
         if (!matcher.find()) return 0;
@@ -1234,7 +860,7 @@ class MetadataExtractor {
         }
     }
 
-    private float parseReplayGainLinear(String value) {
+    private static float parseReplayGainLinear(String value) {
         if (value == null) return -1f;
         Matcher matcher = REPLAYGAIN_DB_PATTERN.matcher(value);
         if (!matcher.find()) return -1f;

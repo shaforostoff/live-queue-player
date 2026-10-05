@@ -22,7 +22,7 @@ import java.util.List;
 /**
  * service for playing music
  */
-public class Service extends android.service.media.MediaBrowserService implements MediaPlayerStateListener {
+public class Service extends android.service.media.MediaBrowserService {
 
     private static final String TAG = "Service";
 
@@ -70,7 +70,7 @@ public class Service extends android.service.media.MediaBrowserService implement
     private SharedPreferences.OnSharedPreferenceChangeListener queueChangeListener;
     // Held continuously from playback start through every track transition, so the CPU cannot
     // sleep in the wake-lock-free gap between an old MediaPlayer's PLAYBACK_COMPLETED state
-    // (framework releases its setWakeMode lock) and the new MediaPlayer's prepare()+start().
+    // and the new MediaPlayer's prepare()+start(). The MediaPlayers take no wake lock of their own.
     private PowerManager.WakeLock playbackWakeLock;
 
     private ServicePlaylist playlist;
@@ -302,7 +302,7 @@ public class Service extends android.service.media.MediaBrowserService implement
                         || (intent.getBooleanExtra(EXTRA_QUEUE_ALREADY_PERSISTED, false)
                             && !sIsPlaying))) {
                 sFadeOutInProgress = false;
-                audioPlayer.onMediaPlayerDestroy();
+                audioPlayer.release();
                 audioPlayer = null;
                 playlist.clear();
                 playlistPosition = 0;
@@ -498,7 +498,6 @@ public class Service extends android.service.media.MediaBrowserService implement
         }
     }
 
-    @Override
     public void setState(boolean playing) {
         if (playing) acquirePlaybackWakeLock();
         else releasePlaybackWakeLock();
@@ -517,15 +516,13 @@ public class Service extends android.service.media.MediaBrowserService implement
         return START_STICKY;
     }
 
-    @Override
+    /** Release the current engine ahead of a track change, and drop its notification. */
     public void onMediaPlayerReset() {
         notifications.onMediaPlayerReset();
-        hwListener.onMediaPlayerReset();
         if (audioPlayer != null)
-            audioPlayer.onMediaPlayerReset();
+            audioPlayer.release();
     }
 
-    @Override
     public void onMediaPlayerDestroy() {
         sFadeOutInProgress = false;
         notifyPlaybackState(false, -1, null);
@@ -706,7 +703,7 @@ public class Service extends android.service.media.MediaBrowserService implement
         ArrayList<QueueStore.Entry> persisted = QueueStore.load(this);
         if (index < 0 || index >= persisted.size()) return;
         if (audioPlayer != null) {
-            audioPlayer.onMediaPlayerDestroy();
+            audioPlayer.release();
             audioPlayer = null;
         }
         QueueStore.savePlaybackOffset(this, index);
@@ -803,7 +800,7 @@ public class Service extends android.service.media.MediaBrowserService implement
     private void onPlaybackStoppedKeepAlive() {
         sFadeOutInProgress = false;
         if (audioPlayer != null) {
-            audioPlayer.onMediaPlayerDestroy();
+            audioPlayer.release();
             audioPlayer = null;
         }
         playlist.clear();
@@ -848,10 +845,9 @@ public class Service extends android.service.media.MediaBrowserService implement
         sFadeOutInProgress = false;
         notifyPlaybackState(false, -1, null);
         onMediaPlayerReset();
-        notifications.onMediaPlayerDestroy();
         hwListener.onMediaPlayerDestroy();
         if (audioPlayer != null) {
-            audioPlayer.onMediaPlayerDestroy();
+            audioPlayer.release();
             // Clear the field so a duration report still queued from this player's prepare() is
             // dropped by the identity guard in onTrackDurationResolved() instead of running against
             // the now-released MediaSession/notification after teardown.

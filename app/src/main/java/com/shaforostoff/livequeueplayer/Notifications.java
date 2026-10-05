@@ -11,7 +11,7 @@ import java.util.Locale;
 
 
 
-class Notifications implements MediaPlayerStateListener {
+class Notifications {
 
   public static final String NOTIFICATION_CHANNEL = "nc";
   public static final int NOTIFICATION_ID = 1;
@@ -61,7 +61,6 @@ class Notifications implements MediaPlayerStateListener {
     }
   }
 
-  @Override
   public void setState(boolean playing) {
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && sessionToken != null) {
       builder.setContentText(playing ? "" : formatPosition(Service.sPlaybackPositionMs, Service.sPlaybackDurationMs));
@@ -120,12 +119,8 @@ class Notifications implements MediaPlayerStateListener {
     ((NotificationManager) service.getSystemService(Context.NOTIFICATION_SERVICE)).notify(NOTIFICATION_ID, notification);
   }
 
-  @Override
+  /** Drop the notification (the next track posts its own). */
   public void onMediaPlayerReset() {
     ((NotificationManager) service.getSystemService(Context.NOTIFICATION_SERVICE)).cancel(NOTIFICATION_ID);
-  }
-
-  @Override
-  public void onMediaPlayerDestroy() {
   }
 }

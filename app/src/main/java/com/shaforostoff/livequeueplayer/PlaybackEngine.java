@@ -24,11 +24,8 @@ interface PlaybackEngine {
     /** Apply a PLAY (true) / PAUSE (false) transport command; deferred internally until prepared. */
     void setState(boolean playing);
 
-    /** Release this engine so a new one can replace it (track change). */
-    void onMediaPlayerReset();
-
-    /** Fully tear down this engine. */
-    void onMediaPlayerDestroy();
+    /** Fully release this engine; a track change or teardown never reuses one. Idempotent. */
+    void release();
 
     void seekTo(int positionMs);
 

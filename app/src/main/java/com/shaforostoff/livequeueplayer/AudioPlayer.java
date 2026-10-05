@@ -11,7 +11,6 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
-import android.os.PowerManager;
 import android.os.SystemClock;
 
 import java.io.IOException;
@@ -20,7 +19,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 /**
  * audio playing logic class
  */
-class AudioPlayer extends Thread implements MediaPlayer.OnCompletionListener, MediaPlayerStateListener, PlaybackEngine {
+class AudioPlayer extends Thread implements MediaPlayer.OnCompletionListener, PlaybackEngine {
 
   private final Service service;
   private final MediaPlayer mediaPlayer;
@@ -41,7 +40,6 @@ class AudioPlayer extends Thread implements MediaPlayer.OnCompletionListener, Me
   // playback running but silent. See fadeOutAndStop()/cancelFadeOutAndResume().
   private final Object fadeLock = new Object();
   private final float baseGain;
-  private PowerManager.WakeLock transitionWakeLock;
   private EqController equalizer;
   private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
@@ -73,15 +71,8 @@ class AudioPlayer extends Thread implements MediaPlayer.OnCompletionListener, Me
     /* initiate new audio player */
     mediaPlayer = new MediaPlayer();
 
-    // Keep CPU awake only while playback is active.
-    mediaPlayer.setWakeMode(service.getApplicationContext(), PowerManager.PARTIAL_WAKE_LOCK);
-
-    // Bridge the gap between reset() releasing the old wake lock and start() acquiring the new
-    // one. Without this, prepare() (blocking I/O) can stall indefinitely when the CPU sleeps.
-    PowerManager pm = (PowerManager) service.getSystemService(android.content.Context.POWER_SERVICE);
-    transitionWakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "LiveQueuePlayer:TrackTransition");
-    transitionWakeLock.setReferenceCounted(false);
-    transitionWakeLock.acquire(30_000); // released after prepare()+start(); 30 s safety timeout
+    // No wake lock of its own: the Service holds one from before this player is built (so across
+    // prepare()) for as long as playback is meant to run.
 
     /* setup player variables */
     if (AiffMediaDataSource.isAiff(location)) {
@@ -134,7 +125,6 @@ class AudioPlayer extends Thread implements MediaPlayer.OnCompletionListener, Me
    *  skip landed mid-prepare, and release() is what made prepare() fail. Reporting that failure would
    *  retry or skip the track that replaced this one, so a released player stays silent. */
   private void onPrepareFailed(String msg) {
-    releaseTransitionWakeLock();
     if (released) return;
     Exceptions.throwError(service, msg);
     service.playOrDestroy();
@@ -142,10 +132,7 @@ class AudioPlayer extends Thread implements MediaPlayer.OnCompletionListener, Me
 
   /** Main thread; see {@link #onPrepareFailed} for why a released player must not report back. */
   private void onPrepared() {
-    if (released) {
-      releaseTransitionWakeLock();
-      return;
-    }
+    if (released) return;
     try {
       mediaPlayer.setVolume(baseGain, baseGain);
       // Attach the equalizer to this session and apply persisted settings. Guarded internally,
@@ -179,19 +166,10 @@ class AudioPlayer extends Thread implements MediaPlayer.OnCompletionListener, Me
       // Honor any PLAY/PAUSE that landed during the (long, for ALAC) prepare; default to play.
       Boolean pending = pendingPlayIntent;
       service.setState(pending == null || pending);
-      releaseTransitionWakeLock(); // MediaPlayer now holds its own PARTIAL_WAKE_LOCK via setWakeMode
     } catch (IllegalStateException e) {
-      releaseTransitionWakeLock();
       Exceptions.throwError(service, Exceptions.IllegalState);
       service.playOrDestroy();
     }
-  }
-
-  private void releaseTransitionWakeLock() {
-    if (transitionWakeLock != null && transitionWakeLock.isHeld()) {
-      transitionWakeLock.release();
-    }
-    transitionWakeLock = null;
   }
 
   /**
@@ -283,20 +261,6 @@ class AudioPlayer extends Thread implements MediaPlayer.OnCompletionListener, Me
     service.onMediaPlayerComplete();
   }
 
-  @Override
-  public void onMediaPlayerDestroy() {
-    releasePlayer();
-    if (!isInterrupted()) interrupt();
-  }
-
-  @Override
-  public void onMediaPlayerReset() {
-    // Track change replaces this AudioPlayer with a fresh one, so fully release instead of
-    // just resetting the MediaPlayer — otherwise the AudioDeviceCallback, AudioFocusRequest
-    // and native MediaPlayer resources leak for the rest of the queue's lifetime.
-    releasePlayer();
-  }
-
   /**
    * Fade out playback over the requested duration, then stop the service.
    */
@@ -375,10 +339,15 @@ class AudioPlayer extends Thread implements MediaPlayer.OnCompletionListener, Me
     }).start();
   }
 
-  private void releasePlayer() {
+  /**
+   * Release everything this player holds — the native MediaPlayer, the AudioDeviceCallback, the
+   * audio focus request and the EQ effect. A player is never reused: a track change builds a new
+   * one. Idempotent; an in-flight prepare() or fade notices {@code released} and stays silent.
+   */
+  @Override
+  public void release() {
     if (!released) {
       released = true;
-      releaseTransitionWakeLock();
       if (audioManager != null) {
         audioManager.unregisterAudioDeviceCallback(audioDeviceCallback);
       }
@@ -389,15 +358,6 @@ class AudioPlayer extends Thread implements MediaPlayer.OnCompletionListener, Me
       }
       mediaPlayer.release();
     }
-  }
-
-  /**
-   * release and kill service
-   */
-  @Override
-  public void interrupt() {
-    releasePlayer();
-    super.interrupt();
   }
 
   /**

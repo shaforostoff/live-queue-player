@@ -15,7 +15,7 @@ import android.view.KeyEvent;
 /**
  * Hardware Listener for button controls
  */
-public class HWListener extends BroadcastReceiver implements MediaPlayerStateListener {
+public class HWListener extends BroadcastReceiver {
 
   private Service service;
   private MediaSession mediaSession;
@@ -78,7 +78,6 @@ public class HWListener extends BroadcastReceiver implements MediaPlayerStateLis
     mediaSession.setActive(true);
   }
 
-  @Override
   public void setState(boolean playing) {
     long position = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
         ? Service.sPlaybackPositionMs
@@ -118,12 +117,7 @@ public class HWListener extends BroadcastReceiver implements MediaPlayerStateLis
     return mediaSession != null ? mediaSession.getSessionToken() : null;
   }
 
-  @Override
-  public void onMediaPlayerReset() {
-    // Keep the session alive so the next track in Browse mode can reuse it.
-  }
-
-  @Override
+  /** Release the MediaSession; the service is going away. */
   public void onMediaPlayerDestroy() {
     if (mediaSession != null) {
       mediaSession.setActive(false);

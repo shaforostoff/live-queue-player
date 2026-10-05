@@ -301,9 +301,7 @@ public class TrackBoundaryTest {
             started = playing;
         }
 
-        @Override public void onMediaPlayerReset() { released = true; started = false; }
-
-        @Override public void onMediaPlayerDestroy() { released = true; started = false; }
+        @Override public void release() { released = true; started = false; }
 
         @Override public void seekTo(int positionMs) { }
 

@@ -84,7 +84,7 @@ class AudioPlayer extends Thread implements MediaPlayer.OnCompletionListener, Me
     transitionWakeLock.acquire(30_000); // released after prepare()+start(); 30 s safety timeout
 
     /* setup player variables */
-    if (AiffConverter.isAiff(service, location)) {
+    if (AiffMediaDataSource.isAiff(location)) {
       mediaPlayer.setDataSource(new AiffMediaDataSource(service, location));
     } else if (AlacMediaDataSource.shouldUseFor(service, location)) {
       // ALAC isn't decoded by MediaPlayer; decode to PCM/WAV in memory and feed that instead.

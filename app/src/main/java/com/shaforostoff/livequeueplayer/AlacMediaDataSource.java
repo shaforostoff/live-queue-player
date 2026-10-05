@@ -28,8 +28,8 @@ import java.util.Locale;
  * (some Android builds ship one and {@link android.media.MediaPlayer} plays ALAC natively; others,
  * e.g. the Xperia 10 V, ship none). The bundled pure-Java decoder in
  * {@code com.beatofthedrum.alacdecoder} (BSD-licensed) decodes the file to PCM, which we present as
- * an in-memory WAV byte array through {@link MediaDataSource} — the same trick
- * {@link AiffMediaDataSource} uses, so the rest of the pipeline (ReplayGain, fade, equalizer, seek,
+ * an in-memory WAV byte array through {@link MediaDataSource} — like {@link AiffMediaDataSource}
+ * presents AIFF as WAV — so the rest of the pipeline (ReplayGain, fade, equalizer, seek,
  * completion) is unaffected.
  *
  * <p>ALAC and AAC share the {@code .m4a} extension, so detection is by codec MIME, not extension.
@@ -39,6 +39,8 @@ import java.util.Locale;
 final class AlacMediaDataSource extends MediaDataSource {
 
   private static final String MIME_ALAC = "audio/alac";
+  /** Cap on the in-memory WAV, so a huge file can't take the whole heap. */
+  private static final long MAX_BYTES = 100L * 1024 * 1024;
 
   /** Device-wide and immutable; cached so we don't rescan the codec list per track. */
   private static volatile Boolean sPlatformHasAlac;
@@ -218,7 +220,7 @@ final class AlacMediaDataSource extends MediaDataSource {
         int bitsPerSample  = AlacUtils.AlacGetBitsPerSample(ac);
 
         int[] dest = new int[1024 * 24 * 3]; // one ALAC frame, max 24bps (matches upstream demo)
-        long pcmCap = AiffConverter.MAX_BYTES - 44; // leave room for the WAV header
+        long pcmCap = MAX_BYTES - 44; // leave room for the WAV header
 
         // The decoded size is known up front from the stream's frame count, so allocate the final
         // WAV buffer once and decode straight into it — no growing buffer and no extra copies, which

@@ -913,10 +913,10 @@ public class Service extends android.service.media.MediaBrowserService implement
     }
 
     /**
-     * Reported by {@link AudioPlayer} on its own thread once prepare() completes and the native
-     * duration is cheaply available via {@code MediaPlayer.getDuration()}. Posted to the main thread
-     * so the progress fields, media-session metadata and broadcast are all touched there, matching
-     * where the rest of the playback state is mutated. The {@code reporter} identity check drops a
+     * Reported by {@link AudioPlayer} (on the main thread) once prepare() completes and the native
+     * duration is cheaply available via {@code MediaPlayer.getDuration()}. Applied from a posted
+     * message, after the caller's own state commit, so the progress fields, media-session metadata
+     * and broadcast are updated in one place. The {@code reporter} identity check drops a
      * stale report from a superseded player (e.g. the user skipped while a slow prepare was still
      * running), so a late duration can never clobber the track that replaced it.
      */

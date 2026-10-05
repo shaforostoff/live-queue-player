@@ -9,6 +9,8 @@ import android.media.AudioManager;
 import android.media.MediaPlayer;
 import android.net.Uri;
 import android.os.Build;
+import android.os.Handler;
+import android.os.Looper;
 import android.os.PowerManager;
 import android.os.SystemClock;
 
@@ -27,8 +29,9 @@ class AudioPlayer extends Thread implements MediaPlayer.OnCompletionListener, Me
   private final AudioDeviceCallback audioDeviceCallback;
   private AudioFocusRequest audioFocusRequest;
   private volatile boolean released;
-  private volatile boolean prepared;          // true once prepare() has returned successfully
-  private volatile Boolean pendingPlayIntent; // transport command that arrived before prepared
+  // Main thread only: set once onPrepared() runs; transport commands before that are deferred.
+  private boolean prepared;
+  private Boolean pendingPlayIntent; // transport command that arrived before prepared
   private volatile boolean fadeOutInProgress;
   private volatile boolean pausedForFocusLoss;
   private final AtomicInteger fadeToken = new AtomicInteger();
@@ -40,6 +43,7 @@ class AudioPlayer extends Thread implements MediaPlayer.OnCompletionListener, Me
   private final float baseGain;
   private PowerManager.WakeLock transitionWakeLock;
   private EqController equalizer;
+  private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
   /**
    * Initiate an audio player, throws exceptions if failed.
@@ -110,9 +114,37 @@ class AudioPlayer extends Thread implements MediaPlayer.OnCompletionListener, Me
 
   @Override
   public void run() {
-    /* get ready for playback */
+    /* get ready for playback; prepare() blocks (for ALAC it decodes the whole track) */
     try {
       mediaPlayer.prepare();
+    } catch (IllegalStateException | IOException e) {
+      String msg = e instanceof IOException ? Exceptions.IO : Exceptions.IllegalState;
+      mainHandler.post(() -> onPrepareFailed(msg));
+      return;
+    }
+    // Everything past prepare() touches Service state, the MediaSession and the notification, all of
+    // which the main thread owns, so finish there. Calling into the Service from this thread raced
+    // the main thread's own transitions on the playlist fields.
+    mainHandler.post(this::onPrepared);
+  }
+
+  /** Main thread. A released player is one the Service already replaced or tore down — typically a
+   *  skip landed mid-prepare, and release() is what made prepare() fail. Reporting that failure would
+   *  retry or skip the track that replaced this one, so a released player stays silent. */
+  private void onPrepareFailed(String msg) {
+    releaseTransitionWakeLock();
+    if (released) return;
+    Exceptions.throwError(service, msg);
+    service.playOrDestroy();
+  }
+
+  /** Main thread; see {@link #onPrepareFailed} for why a released player must not report back. */
+  private void onPrepared() {
+    if (released) {
+      releaseTransitionWakeLock();
+      return;
+    }
+    try {
       mediaPlayer.setVolume(baseGain, baseGain);
       // Attach the equalizer to this session and apply persisted settings. Guarded internally,
       // so an unsupported device just skips EQ rather than failing playback. Skip it entirely when
@@ -130,9 +162,8 @@ class AudioPlayer extends Thread implements MediaPlayer.OnCompletionListener, Me
       // prepare() has returned, so the native player is now in a valid state — transport commands
       // may touch it from here on. Anything that arrived earlier was deferred (see setState).
       prepared = true;
-      // Report the now-cheaply-available duration back to the service, replacing its old blocking
-      // MediaMetadataRetriever read on the main thread at every transition. getDuration() returns
-      // -1 for unknown/streamed sources; the service clamps that to 0 (its existing "unknown" value).
+      // getDuration() returns -1 for unknown/streamed sources; the service clamps that to 0 (its
+      // existing "unknown" value).
       int durationMs;
       try {
         durationMs = mediaPlayer.getDuration();
@@ -150,10 +181,6 @@ class AudioPlayer extends Thread implements MediaPlayer.OnCompletionListener, Me
     } catch (IllegalStateException e) {
       releaseTransitionWakeLock();
       Exceptions.throwError(service, Exceptions.IllegalState);
-      service.playOrDestroy();
-    } catch (IOException e) {
-      releaseTransitionWakeLock();
-      Exceptions.throwError(service, Exceptions.IO);
       service.playOrDestroy();
     }
   }
@@ -282,13 +309,9 @@ class AudioPlayer extends Thread implements MediaPlayer.OnCompletionListener, Me
     fadeOutInProgress = true;
     new Thread(() -> {
       try {
-        if (released || !mediaPlayer.isPlaying()) {
-          if (token == fadeToken.get() && !released) {
-            fadeOutInProgress = false;
-            service.onFadeOutComplete();
-          }
-          return;
-        }
+        // isPlaying() rather than mediaPlayer.isPlaying(): the main thread may release the player
+        // at any moment, and the raw call then throws on this thread, crashing the process.
+        if (released || !isPlaying()) return; // nothing to fade; the finally completes the stop
 
         final int steps = 40;
         final long stepDelay = Math.max(1L, durationMs / steps);
@@ -333,15 +356,19 @@ class AudioPlayer extends Thread implements MediaPlayer.OnCompletionListener, Me
         // Skip onFadeOutComplete if we were released externally (e.g. KILL while fading): the
         // service has already torn down playback and may have started a new track. Calling
         // onFadeOutComplete now would tear down that new track. Likewise skip if a cancel bumped
-        // the token — it resumed this player and owns it now. Decide under fadeLock so the
-        // token/flag read is atomic with cancel, then invoke the service callback outside the
-        // lock (it reaches back into the service and must not run while holding a playback lock).
+        // the token — it resumed this player and owns it now. The service callback runs on the
+        // main thread, which owns all playback state, and re-checks there: a KILL or cancel can
+        // still land between this decision and the posted callback running.
         boolean complete;
         synchronized (fadeLock) {
           complete = token == fadeToken.get() && !released;
           if (complete) fadeOutInProgress = false;
         }
-        if (complete) service.onFadeOutComplete();
+        if (complete) {
+          mainHandler.post(() -> {
+            if (token == fadeToken.get() && !released) service.onFadeOutComplete();
+          });
+        }
       }
     }).start();
   }

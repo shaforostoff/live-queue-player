@@ -27,11 +27,10 @@ public class Service extends android.service.media.MediaBrowserService {
     private static final String TAG = "Service";
 
     static final String EXTRA_BROWSE_MODE = "browse_mode";
-    static final String EXTRA_ENTRY_IDS = "entry_ids";
     static final String EXTRA_SEEK_TO_MS = "seek_to_ms";
-    static final String EXTRA_QUEUE_ALREADY_PERSISTED = "queue_already_persisted";
     static final String EXTRA_REPLACE_PLAYBACK = "replace_playback";
     static final String EXTRA_QUEUE_INDEX = "queue_index";
+    static final String EXTRA_CURRENT_ENTRY_ID = "current_entry_id";
     private static final String MEDIA_ROOT_ID = "root";
     private static final long PROGRESS_TICK_INTERVAL_MS = 1_000L;
     /**
@@ -196,16 +195,19 @@ public class Service extends android.service.media.MediaBrowserService {
                 promoteToForeground();
                 return;
             }
+            if (action == Launcher.PLAY_FROM_QUEUE_INDEX) {
+                playQueueRequest(intent);
+                return;
+            }
             if (audioPlayer == null) {
                 if (action == Launcher.KILL || action == Launcher.STOP) {
                     onPlaybackStoppedKeepAlive();
                 }
                 if (action == Launcher.PLAY || action == Launcher.PLAY_PAUSE) {
-                    // Media-button route from the activity: the persisted queue is the source
-                    // of truth for what to play. Allowed from background because this onStart
-                    // was triggered by a MediaSession callback, which the OS treats as system-
-                    // initiated.
-                    playFromQueueStore();
+                    // Media-button route from the activity: resume the persisted queue at the
+                    // persisted offset. Allowed from background because this onStart was
+                    // triggered by a MediaSession callback, which the OS treats as system-initiated.
+                    playFromQueueIndex(QueueStore.loadPlaybackOffset(this));
                 }
                 if (action == Launcher.CLEAR_QUEUE) {
                     playlist.clear();
@@ -213,9 +215,6 @@ public class Service extends android.service.media.MediaBrowserService {
                 }
                 if (action == Launcher.APPEND_QUEUE) {
                     appendQueueFromIntent(intent);
-                }
-                if (action == Launcher.PLAY_FROM_QUEUE_INDEX) {
-                    playFromQueueIndex(intent.getIntExtra(EXTRA_QUEUE_INDEX, -1));
                 }
                 return;
             }
@@ -251,11 +250,11 @@ public class Service extends android.service.media.MediaBrowserService {
                     audioPlayer.fadeOutAndStop(AudioOutputRouter.getFadeOutSeconds(this) * 1_000L);
                 }
                 case Launcher.APPEND_QUEUE -> appendQueueFromIntent(intent);
-                case Launcher.SET_PENDING_QUEUE -> setPendingQueue(intent);
+                case Launcher.APPEND_BROWSE_TAIL -> appendBrowseTail();
+                case Launcher.SET_PENDING_QUEUE ->
+                    setPendingQueue(intent.getIntExtra(EXTRA_CURRENT_ENTRY_ID, -1));
                 case Launcher.CLEAR_QUEUE -> clearPendingQueue();
                 case Launcher.CLEAR_PLAYED_QUEUE -> clearPlayedQueue();
-                case Launcher.PLAY_FROM_QUEUE_INDEX ->
-                    playFromQueueIndex(intent.getIntExtra(EXTRA_QUEUE_INDEX, -1));
                 case Launcher.SEEK -> {
                     int seekToMs = intent.getIntExtra(EXTRA_SEEK_TO_MS, -1);
                     if (seekToMs >= 0 && audioPlayer != null) seekTo(seekToMs);
@@ -267,8 +266,8 @@ public class Service extends android.service.media.MediaBrowserService {
                 case Launcher.KILL -> onPlaybackStoppedKeepAlive();
             }
         } else {
-            // Reached only via startForegroundService() (see FileBrowserQueueActivity
-            // .startPlaybackService), so satisfy its startForeground() deadline before any
+            // A browse-mode track or an external share (ACTION_VIEW/SEND/SEND_MULTIPLE), reached
+            // via startForegroundService(), so satisfy its startForeground() deadline before any
             // branch below can skip it or block on I/O.
             ensureForeground();
             sBrowseMode = intent.getBooleanExtra(EXTRA_BROWSE_MODE, false);
@@ -284,44 +283,15 @@ public class Service extends android.service.media.MediaBrowserService {
             // the authoritative isFadeOutInProgress() here guarantees a new track started during a
             // fade replaces the fading player instead of being appended onto it (which would leave
             // the faded-to-silent track "playing" and the new one merely queued).
-            // Also replace an idle leftover player when the caller is an explicit queue-play request
-            // (EXTRA_QUEUE_ALREADY_PERSISTED). A paused track — or one dropped by
-            // onAudioFocusLoss() — keeps audioPlayer non-null and this service foreground
-            // indefinitely, while the activity sees sIsPlaying==false and therefore sends
-            // playQueueFrom() WITHOUT EXTRA_REPLACE_PLAYBACK. Without this clause such an intent
-            // fell straight into the double-start guard below and was dropped: tapping a Play Queue
-            // row after a pause did nothing at all, silently, until something else tore the player
-            // down (observed on the Xperia 10 V after a player sat paused overnight — the queue
-            // taps only re-posted the foreground notification). sIsPlaying is a safe discriminator
-            // against the genuine media-key duplicate the guard exists for: playEntryFromPlaylist()
-            // commits notifyPlaybackState(true, ...) synchronously, so a player started by the
-            // racing media key is already marked playing by the time this intent is handled.
             if (audioPlayer != null
                     && (intent.getBooleanExtra(EXTRA_REPLACE_PLAYBACK, false)
-                        || audioPlayer.isFadeOutInProgress()
-                        || (intent.getBooleanExtra(EXTRA_QUEUE_ALREADY_PERSISTED, false)
-                            && !sIsPlaying))) {
+                        || audioPlayer.isFadeOutInProgress())) {
                 sFadeOutInProgress = false;
                 audioPlayer.release();
                 audioPlayer = null;
                 playlist.clear();
                 playlistPosition = 0;
                 retriedAtPosition = -1;
-            }
-            // Double-start race guard. playQueueFrom() starts this foreground service AND dispatches
-            // a media-play key (the Android 14+ background-FGS-start workaround). If the media key
-            // wins, it routes to playFromQueueStore(), which loads the already-persisted queue and
-            // sets audioPlayer. This ACTION_SEND_MULTIPLE intent then arrives as a redundant
-            // duplicate — appending its URIs now would double the queue both in memory (replaying
-            // the whole set) and in the store. EXTRA_QUEUE_ALREADY_PERSISTED is set only by
-            // playQueueFrom (never a genuine append), so with a player already live AND playing
-            // (the replace clause above has already taken any idle leftover) this intent is always
-            // that duplicate: bail before mutating the playlist or the store.
-            if (audioPlayer != null && intent.getBooleanExtra(EXTRA_QUEUE_ALREADY_PERSISTED, false)) {
-                // The app is otherwise silent on this path; a dropped queue-play request is
-                // indistinguishable from a dead tap in logcat without it.
-                Log.w(TAG, "dropping duplicate queue-play intent (player already live and playing)");
-                return;
             }
             int sizeBefore = playlist.size();
             switch (intent.getAction()) {
@@ -338,7 +308,6 @@ public class Service extends android.service.media.MediaBrowserService {
                     }
                 }
             }
-            applyEntryIds(sizeBefore, intent.getIntArrayExtra(EXTRA_ENTRY_IDS));
             ArrayList<QueueStore.Entry> newEntries = new ArrayList<>();
             newEntries.ensureCapacity(playlist.size());
             for (int i = sizeBefore; i < playlist.size(); i++) {
@@ -346,11 +315,10 @@ public class Service extends android.service.media.MediaBrowserService {
                 newEntries.add(new QueueStore.Entry(e.title, e.location));
             }
             if (audioPlayer == null) {
-                if (!intent.getBooleanExtra(EXTRA_QUEUE_ALREADY_PERSISTED, false)) {
-                    QueueStore.clear(this);
-                    QueueStore.save(this, newEntries);
-                }
-                playEntryFromPlaylist();
+                QueueStore.clear(this);
+                QueueStore.save(this, newEntries);
+                // Nothing usable in the intent (no stream, an empty playlist file): nothing to play.
+                if (playlistPosition < playlist.size()) playEntryFromPlaylist();
             } else {
                 ArrayList<QueueStore.Entry> stored = QueueStore.load(this);
                 stored.addAll(newEntries);
@@ -464,9 +432,8 @@ public class Service extends android.service.media.MediaBrowserService {
 
     /**
      * Keep the persisted playback offset pointing at the track that actually plays. It used to be
-     * written only when playback started (playQueueFrom in the activity, playFromQueueIndex here),
-     * so after any auto-advance a stop followed by a resume via {@link #playFromQueueStore()}
-     * replayed the queue from the original start row instead of the last-played track. Resolved
+     * written only when playback started (playFromQueueIndex), so after any auto-advance a stop
+     * followed by a resume (a PLAY with no player, which starts at the persisted offset) replayed the queue from the original start row instead of the last-played track. Resolved
      * through the stable entry id rather than offset+index arithmetic, because queue edits made
      * mid-playback (remove, move, clear-played) renumber the persisted rows. Id-less playback
      * (browse mode, external ACTION_VIEW/SEND shares) is left untouched: those flows never carried
@@ -554,59 +521,56 @@ public class Service extends android.service.media.MediaBrowserService {
     }
 
     /**
-     * Atomically replace the pending queue (every track after the currently playing one) with the
-     * URIs carried in {@code intent}'s {@link Intent#EXTRA_STREAM}. Done in a single onStart
-     * invocation — rather than a CLEAR_QUEUE followed by a separate APPEND_QUEUE — so that an
-     * auto-advance PLAYBACK_COMPLETED callback, which is dispatched on this same main-thread
-     * message queue, cannot interleave between the clear and the re-append and observe an empty
-     * pending playlist (which would stop playback mid-set). Called on every queue edit made while
-     * a track is playing, so this window would otherwise be hit constantly over a long session.
+     * Re-read the pending queue (everything after the playing track) from {@link QueueStore}, where
+     * the activity has just saved its edit. The playing row is named by its stable entry id, since
+     * edits renumber rows; when the store no longer has it, the pending tracks are left alone.
+     *
+     * <p>Truncate and re-append happen in this one onStart invocation, so an auto-advance
+     * PLAYBACK_COMPLETED callback — dispatched on this same main-thread message queue — can never
+     * observe an empty pending playlist between the two and stop playback mid-set. Called on every
+     * queue edit made while a track is playing, so that window would otherwise be hit constantly.
      */
-    private void setPendingQueue(Intent intent) {
-        if (playlistPosition < 0) playlistPosition = 0;
-        // Drop the existing pending tracks, keeping the currently playing one (playlistPosition - 1).
-        while (playlist.size() > playlistPosition) {
-            playlist.remove(playlist.size() - 1);
+    private void setPendingQueue(int currentEntryId) {
+        if (currentEntryId <= 0) return;
+        ArrayList<QueueStore.Entry> persisted = QueueStore.load(this);
+        int current = -1;
+        for (int i = 0; i < persisted.size() && current < 0; i++) {
+            if (persisted.get(i).id == currentEntryId) current = i;
         }
-        // Append the replacement pending set in the same invocation.
-        int sizeBefore = playlist.size();
-        ArrayList<?> stream = intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM);
-        if (stream != null) {
-            ArrayList<Uri> uriList = new ArrayList<>(stream.size());
-            for (Object item : stream) {
-                if (item instanceof Uri uri) uriList.add(uri);
-            }
-            if (!uriList.isEmpty()) playlist.generate(uriList);
+        if (current < 0) return;
+        dropPendingTracks();
+        for (int i = current + 1; i < persisted.size(); i++) {
+            playlist.add(ServicePlaylist.Entry.of(persisted.get(i)));
         }
-        // Carry the stable queue-entry ids across so the now-playing row keeps resolving by id
-        // (not the fragile offset+URI heuristic) once one of these pending tracks starts.
-        applyEntryIds(sizeBefore, intent.getIntArrayExtra(EXTRA_ENTRY_IDS));
         sHasPendingTracks = playlistPosition < playlist.size();
         publishState();
     }
 
     /**
-     * Stamp the freshly-appended playlist entries (those at [{@code sizeBefore}, size)) with the
-     * caller-supplied stable queue-entry ids, positionally. No-op when {@code entryIds} is null.
+     * Append the rest of the browsed folder, which the activity saved to {@link QueueStore} as it
+     * went to the background (see FileBrowserQueueActivity.queueRemainingBrowseTracks).
      */
-    private void applyEntryIds(int sizeBefore, int[] entryIds) {
-        if (entryIds == null) return;
-        for (int i = 0; i < entryIds.length && (sizeBefore + i) < playlist.size(); i++) {
-            playlist.get(sizeBefore + i).queueEntryId = entryIds[i];
+    private void appendBrowseTail() {
+        for (Uri uri : QueueStore.loadBrowseTail(this)) {
+            playlist.add(ServicePlaylist.Entry.of(ServicePlaylistGenerator.titleFor(uri), uri, -1));
         }
+        sHasPendingTracks = playlistPosition < playlist.size();
+        publishState();
     }
 
-    /**
-     * Remove all tracks queued after the currently playing one.
-     */
+    /** Remove all tracks queued after the currently playing one. */
     private void clearPendingQueue() {
+        dropPendingTracks();
+        sHasPendingTracks = false;
+        publishState();
+    }
+
+    private void dropPendingTracks() {
         if (playlistPosition < 0) playlistPosition = 0;
+        // Keeps the currently playing entry (playlistPosition - 1).
         while (playlist.size() > playlistPosition) {
             playlist.remove(playlist.size() - 1);
         }
-        // Update the state of whether there are pending tracks
-        sHasPendingTracks = playlistPosition < playlist.size();
-        publishState();
     }
 
     /**
@@ -670,54 +634,60 @@ public class Service extends android.service.media.MediaBrowserService {
     }
 
     /**
-     * Load the persisted queue from {@link QueueStore} and start playback from the persisted
-     * offset. Called when a Launcher.PLAY arrives with no active player — typically because
-     * the activity dispatched a media-play key and the MediaSession routed it back here.
+     * A request to start the persisted queue at {@link #EXTRA_QUEUE_INDEX}: a Play Queue tap or a
+     * remote play_track (through startForegroundService), or an Android Auto row (through the
+     * MediaSession). The queue itself is read from {@link QueueStore}, where the activity saved it
+     * just before; the intent used to carry every URI from the start row on, and a long queue in
+     * one Parcel ran into the 1 MB binder limit.
      */
-    private void playFromQueueStore() {
-        if (audioPlayer != null) return;
-        ArrayList<QueueStore.Entry> persisted = QueueStore.load(this);
-        int offset = QueueStore.loadPlaybackOffset(this);
-        if (persisted.isEmpty() || offset < 0 || offset >= persisted.size()) return;
-
-        playlist.clear();
-        playlistPosition = 0;
-        for (int i = offset; i < persisted.size(); i++) {
-            QueueStore.Entry e = persisted.get(i);
-            ServicePlaylist.Entry pe = new ServicePlaylist.Entry();
-            pe.title = e.name != null ? e.name : "";
-            pe.location = e.uri;
-            pe.queueEntryId = e.id;
-            playlist.add(pe);
+    private void playQueueRequest(Intent intent) {
+        // Started with startForegroundService(): satisfy its startForeground() deadline before any
+        // branch below can return.
+        ensureForeground();
+        // Double-start race guard. playQueueFrom() sends this AND dispatches a media-play key (the
+        // Android 14+ background-FGS-start workaround). If the key wins, it has already started the
+        // same persisted queue at the same offset, so this is a duplicate, and replacing would cut
+        // the track that just started. A live, playing, non-fading player means exactly that unless
+        // the caller asked to replace it: playEntryFromPlaylist() commits sIsPlaying synchronously.
+        // A paused leftover player — or one dropped by onAudioFocusLoss() — is not playing, so a
+        // queue tap after a pause still replaces it. (That case once fell into this guard, and a
+        // tap on a Play Queue row after a long pause silently did nothing.)
+        if (audioPlayer != null && sIsPlaying && !audioPlayer.isFadeOutInProgress()
+                && !intent.getBooleanExtra(EXTRA_REPLACE_PLAYBACK, false)) {
+            // The app is otherwise silent on this path; a dropped queue-play request is
+            // indistinguishable from a dead tap in logcat without it.
+            Log.w(TAG, "dropping duplicate queue-play intent (player already live and playing)");
+            return;
         }
-        playEntryFromPlaylist();
+        if (!playFromQueueIndex(intent.getIntExtra(EXTRA_QUEUE_INDEX, -1)) && audioPlayer == null) {
+            // A stale index, nothing to play: don't leave the placeholder notification pinned.
+            onPlaybackStoppedKeepAlive();
+        }
     }
 
     /**
-     * Start playback of the persisted queue beginning at {@code index}. Routed here from a
-     * MediaSession onPlayFromMediaId callback (e.g. tapping a row in Android Auto). Mirrors
-     * {@link #playFromQueueStore()} but with a caller-chosen offset, and replaces any track
-     * already playing.
+     * Play the persisted queue from row {@code index}, replacing whatever is loaded. Also the resume
+     * path: a PLAY with no player starts the queue at the persisted offset. False (and nothing
+     * changed) when the row doesn't exist.
      */
-    private void playFromQueueIndex(int index) {
+    private boolean playFromQueueIndex(int index) {
         ArrayList<QueueStore.Entry> persisted = QueueStore.load(this);
-        if (index < 0 || index >= persisted.size()) return;
+        if (index < 0 || index >= persisted.size()) return false;
         if (audioPlayer != null) {
+            sFadeOutInProgress = false;
             audioPlayer.release();
             audioPlayer = null;
         }
+        retriedAtPosition = -1;
+        sBrowseMode = false;
         QueueStore.savePlaybackOffset(this, index);
         playlist.clear();
         playlistPosition = 0;
         for (int i = index; i < persisted.size(); i++) {
-            QueueStore.Entry e = persisted.get(i);
-            ServicePlaylist.Entry pe = new ServicePlaylist.Entry();
-            pe.title = e.name != null ? e.name : "";
-            pe.location = e.uri;
-            pe.queueEntryId = e.id;
-            playlist.add(pe);
+            playlist.add(ServicePlaylist.Entry.of(persisted.get(i)));
         }
         playEntryFromPlaylist();
+        return true;
     }
 
     /**

@@ -21,6 +21,7 @@ final class QueueStore {
     static final String KEY_QUEUE = "persisted_queue_v1";
     private static final String KEY_PLAYBACK_OFFSET = "playback_offset";
     private static final String KEY_ANCHOR_ID = "anchor_entry_id";
+    private static final String KEY_BROWSE_TAIL = "browse_tail";
     private static final String KEY_NAME = "name";
     private static final String KEY_URI  = "uri";
     private static final String KEY_ID   = "id";
@@ -129,6 +130,26 @@ final class QueueStore {
 
     static int loadPlaybackOffset(Context context) {
         return prefs(context).getInt(KEY_PLAYBACK_OFFSET, 0);
+    }
+
+    /**
+     * The rest of the browsed folder after the playing track, handed to the Service when the
+     * activity goes to the background so browse playback carries on through the folder.
+     */
+    static void saveBrowseTail(Context context, List<Uri> uris) {
+        JSONArray array = new JSONArray();
+        for (Uri uri : uris) array.put(uri.toString());
+        prefs(context).edit().putString(KEY_BROWSE_TAIL, array.toString()).apply();
+    }
+
+    static List<Uri> loadBrowseTail(Context context) {
+        List<Uri> uris = new ArrayList<>();
+        try {
+            JSONArray array = new JSONArray(prefs(context).getString(KEY_BROWSE_TAIL, "[]"));
+            for (int i = 0; i < array.length(); i++) uris.add(Uri.parse(array.getString(i)));
+        } catch (Exception ignored) {
+        }
+        return uris;
     }
 
     /** Persists the insert-anchor entry id; {@code anchorEntryId <= 0} clears it. */

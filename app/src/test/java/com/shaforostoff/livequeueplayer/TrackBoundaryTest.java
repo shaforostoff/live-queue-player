@@ -132,17 +132,112 @@ public class TrackBoundaryTest {
 
     @Test
     public void setPendingQueueThenCompletion_advancesIntoReplacement() {
-        startQueue(2);                    // [t0, t1], playing t0
+        persistQueue(1, 2);
+        playFromIndex(0, false);          // [1, 2], playing 1
         prepareCurrent();
-        // Replace the pending queue (everything after the current track) with two fresh tracks.
-        sendSelfWithUris(Launcher.SET_PENDING_QUEUE, uris(2));
+        // The activity saves an edit — 2 replaced by 10 and 11 — and names the playing row by id.
+        persistQueue(1, 10, 11);
+        Intent i = selfIntent(Launcher.SET_PENDING_QUEUE);
+        i.putExtra(Service.EXTRA_CURRENT_ENTRY_ID, 1);
+        service.onStartCommand(i, 0, nextId());
         invariants();
         assertTrue(Service.sHasPendingTracks);
+        assertEquals("pending set re-read from the store", 3, reflectPlaylistSize());
 
         service.onMediaPlayerComplete();  // must advance into the replacement set, not stop
         invariants();
         assertEquals(1, Service.sCurrentIndex);
+        assertEquals(10, Service.sCurrentEntryId);
         assertTrue(Service.sIsPlaying);
+    }
+
+    @Test
+    public void setPendingQueue_withThePlayingRowGone_leavesPendingAlone() {
+        persistQueue(1, 2);
+        playFromIndex(0, false);
+        prepareCurrent();
+        persistQueue(5, 6, 7);
+        Intent i = selfIntent(Launcher.SET_PENDING_QUEUE);
+        i.putExtra(Service.EXTRA_CURRENT_ENTRY_ID, 1);
+        service.onStartCommand(i, 0, nextId());
+        invariants();
+        assertEquals(2, reflectPlaylistSize());
+    }
+
+    @Test
+    public void queuePlay_startsAtTheRequestedRowOfTheStore() {
+        persistQueue(1, 2, 3, 4);
+        playFromIndex(2, false);
+        invariants();
+        assertEquals(0, Service.sCurrentIndex);
+        assertEquals(3, Service.sCurrentEntryId);
+        assertEquals("rows from the start row on", 2, reflectPlaylistSize());
+        assertEquals(2, QueueStore.loadPlaybackOffset(service));
+        assertFalse(Service.sBrowseMode);
+    }
+
+    /** The media-key route got there first: the request is the duplicate and must not restart. */
+    @Test
+    public void queuePlay_whileAlreadyPlaying_isDroppedAsDuplicate() {
+        persistQueue(1, 2);
+        playFromIndex(0, false);
+        prepareCurrent();
+        FakeEngine playing = service.lastEngine;
+        playFromIndex(0, false);
+        invariants();
+        assertTrue("the playing track must not be restarted", playing == service.lastEngine);
+        assertTrue(Service.sIsPlaying);
+    }
+
+    @Test
+    public void queuePlay_withReplace_replacesThePlayingTrack() {
+        persistQueue(1, 2, 3);
+        playFromIndex(0, false);
+        prepareCurrent();
+        FakeEngine old = service.lastEngine;
+        playFromIndex(2, true);
+        invariants();
+        assertTrue(old.released);
+        assertTrue(old != service.lastEngine);
+        assertEquals(3, Service.sCurrentEntryId);
+    }
+
+    /** A paused leftover player is not a duplicate: a queue tap after a pause must still play. */
+    @Test
+    public void queuePlay_afterPause_replacesTheLeftoverPlayer() {
+        persistQueue(1, 2);
+        playFromIndex(0, false);
+        prepareCurrent();
+        sendSelf(Launcher.PAUSE);
+        FakeEngine paused = service.lastEngine;
+        playFromIndex(1, false);
+        invariants();
+        assertTrue(paused != service.lastEngine);
+        assertEquals(2, Service.sCurrentEntryId);
+    }
+
+    @Test
+    public void playWithNoPlayer_resumesTheStoreAtItsOffset() {
+        persistQueue(1, 2, 3);
+        QueueStore.savePlaybackOffset(service, 1);
+        sendSelf(Launcher.PLAY);
+        invariants();
+        assertEquals(2, Service.sCurrentEntryId);
+        assertEquals(2, reflectPlaylistSize());
+    }
+
+    @Test
+    public void browseTail_isAppendedFromTheStore() {
+        startQueue(1);
+        prepareCurrent();
+        QueueStore.saveBrowseTail(service, uris(3));
+        sendSelf(Launcher.APPEND_BROWSE_TAIL);
+        invariants();
+        assertTrue(Service.sHasPendingTracks);
+        assertEquals(4, reflectPlaylistSize());
+        service.onMediaPlayerComplete();
+        invariants();
+        assertEquals(1, Service.sCurrentIndex);
     }
 
     @Test
@@ -193,15 +288,29 @@ public class TrackBoundaryTest {
     }
 
     private void sendSelf(byte action) {
-        Intent i = new Intent();                 // action == null → "called from self" branch
-        i.putExtra(Launcher.TYPE, action);
-        service.onStartCommand(i, 0, nextId());
+        service.onStartCommand(selfIntent(action), 0, nextId());
     }
 
-    private void sendSelfWithUris(byte action, ArrayList<Uri> uris) {
-        Intent i = new Intent();
+    private static Intent selfIntent(byte action) {
+        Intent i = new Intent();                 // action == null → "called from self" branch
         i.putExtra(Launcher.TYPE, action);
-        i.putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris);
+        return i;
+    }
+
+    /** Save a queue to the store, as the activity does before every queue command. */
+    private void persistQueue(int... ids) {
+        ArrayList<QueueStore.Entry> entries = new ArrayList<>();
+        for (int id : ids) {
+            entries.add(new QueueStore.Entry("t" + id, Uri.parse("file:///music/q" + id + ".mp3"), id));
+        }
+        QueueStore.save(service, entries);
+    }
+
+    /** The activity's queue-play request (playQueueFrom). */
+    private void playFromIndex(int index, boolean replace) {
+        Intent i = selfIntent(Launcher.PLAY_FROM_QUEUE_INDEX);
+        i.putExtra(Service.EXTRA_QUEUE_INDEX, index);
+        if (replace) i.putExtra(Service.EXTRA_REPLACE_PLAYBACK, true);
         service.onStartCommand(i, 0, nextId());
     }
 

@@ -1877,24 +1877,12 @@ public class FileBrowserQueueActivity extends Activity {
             return;
         }
 
-        // Replace the service's pending tracks (everything after the current one) in a single
-        // atomic command. Splitting this into a CLEAR then a separate APPEND lets an auto-advance
-        // track-completion callback slip in between the two and stop playback (it would see an
-        // empty pending playlist); SET_PENDING_QUEUE clears and re-appends in one onStart pass.
-        int nextIndex = currentPlayingQueueIndex + 1;
-        int count = Math.max(0, queueEntries.size() - nextIndex);
-        ArrayList<Uri> pendingUris = new ArrayList<>(count);
-        int[] ids = new int[count];
-        for (int i = nextIndex; i < queueEntries.size(); i++) {
-            QueueEntry e = queueEntries.get(i);
-            pendingUris.add(e.uri);
-            ids[i - nextIndex] = e.id;
-        }
+        // The edit is already persisted (every caller saves the queue first). The Service re-reads
+        // everything after the playing row from the store, in one atomic onStart pass; the row is
+        // named by its stable id because the edit may have renumbered it.
         Intent intent = new Intent(this, Service.class);
         intent.putExtra(Launcher.TYPE, Launcher.SET_PENDING_QUEUE);
-        intent.putParcelableArrayListExtra(Intent.EXTRA_STREAM, pendingUris);
-        // Carry stable ids so an auto-advanced track still resolves to the right queue row by id.
-        intent.putExtra(Service.EXTRA_ENTRY_IDS, ids);
+        intent.putExtra(Service.EXTRA_CURRENT_ENTRY_ID, queueEntries.get(currentPlayingQueueIndex).id);
         startService(intent);
     }
 
@@ -2267,32 +2255,22 @@ public class FileBrowserQueueActivity extends Activity {
             return;
         }
 
-        // Persist queue + start position so the Service's MediaSession onPlay callback can
-        // read them. We then trigger playback two ways:
+        // Persist queue + start position: the Service reads the queue from the store, both for
+        // this request (which carries only the start row) and for the MediaSession onPlay
+        // callback. We then trigger playback two ways:
         //  1. startForegroundService(intent) — fast path; works when the app is in the
         //     foreground or the Service is already running.
         //  2. dispatchMediaPlayKey() — fallback for Android 14+ when the Activity is in the
         //     background. The OS routes the key through MediaSessionManager to our MediaSession
         //     callback; foreground-service starts originating from there are exempt from the
         //     background-FGS-start restrictions that defer (1) until the device is unlocked.
-        // Whichever path arrives first wins; the second becomes a no-op once audioPlayer is set.
+        // Whichever path arrives first wins; the Service drops the second as a duplicate.
         persistQueue();
         setPlaybackOffset(position);
 
-        int count = queueEntries.size() - position;
-        ArrayList<Uri> uris = new ArrayList<>(count);
-        int[] ids = new int[count];
-        for (int i = position; i < queueEntries.size(); i++) {
-            QueueEntry e = queueEntries.get(i);
-            uris.add(e.uri);
-            ids[i - position] = e.id;
-        }
         Intent intent = new Intent(this, Service.class);
-        intent.setAction(ACTION_SEND_MULTIPLE_COMPAT);
-        intent.setType("audio/*");
-        intent.putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris);
-        intent.putExtra(Service.EXTRA_ENTRY_IDS, ids);
-        intent.putExtra(Service.EXTRA_QUEUE_ALREADY_PERSISTED, true);
+        intent.putExtra(Launcher.TYPE, Launcher.PLAY_FROM_QUEUE_INDEX);
+        intent.putExtra(Service.EXTRA_QUEUE_INDEX, position);
 
         queueTransitionActive = true;
         queueTransitionStartedAtMs = SystemClock.elapsedRealtime();
@@ -2308,9 +2286,9 @@ public class FileBrowserQueueActivity extends Activity {
             if (!forceImmediateRestart) {
                 // Only dispatch the media-play key when starting from a stopped/idle state — that's
                 // where the FGS-start exemption from a MediaSession callback actually matters. During
-                // a fade-out the service is already alive, so the KILL + ACTION_SEND_MULTIPLE intents
-                // above are sufficient and a racing media-key PLAY arriving before the KILL would
-                // call cancelFadeOutAndResume() on the current (wrong) track.
+                // a fade-out the service is already alive, so the replacing intent above is
+                // sufficient, and a racing media-key PLAY arriving before it would call
+                // cancelFadeOutAndResume() on the current (wrong) track.
                 dispatchMediaPlayKey();
             }
         } else {
@@ -2320,7 +2298,7 @@ public class FileBrowserQueueActivity extends Activity {
             // ForegroundServiceStartNotAllowedException, taking the Bluetooth server down with
             // it. The media-key route is the sanctioned path: the MediaSession dispatch
             // temp-allowlists the process, and its PLAY callback plays the queue + offset
-            // persisted above (playFromQueueStore), so it starts the same track.
+            // persisted above, so it starts the same track.
             dispatchMediaPlayKey();
         }
 
@@ -2900,9 +2878,11 @@ public class FileBrowserQueueActivity extends Activity {
             }
         }
         if (uris.isEmpty()) return;
+        // Through the store, not the intent: a big folder's URIs in one Parcel exceed the binder
+        // transaction limit, and startService() then throws here in onStop.
+        QueueStore.saveBrowseTail(this, uris);
         Intent appendIntent = new Intent(this, Service.class);
-        appendIntent.putExtra(Launcher.TYPE, Launcher.APPEND_QUEUE);
-        appendIntent.putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris);
+        appendIntent.putExtra(Launcher.TYPE, Launcher.APPEND_BROWSE_TAIL);
         startService(appendIntent);
     }
 

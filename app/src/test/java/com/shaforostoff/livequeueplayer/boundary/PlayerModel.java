@@ -21,8 +21,8 @@ import java.util.List;
  * </ul>
  *
  * <p>Scope: this models the <b>active-playback</b> machine (a live {@code audioPlayer}), which is
- * where the boundary races live. It deliberately does not model the persisted-store resume paths
- * ({@code playFromQueueStore}/{@code playFromQueueIndex}); when playback stops, an episode re-seeds
+ * where the boundary races live. It deliberately does not model the persisted-store start path
+ * ({@code playFromQueueIndex}, a queue play or a resume); when playback stops, an episode re-seeds
  * with {@link #seed} (mirroring a fresh external start intent). See docs/testing-race-conditions.md.
  */
 final class PlayerModel {

@@ -40,6 +40,7 @@ public class Launcher extends Activity {
     public static final byte PLAY_FROM_QUEUE_INDEX = 13;
     public static final byte SET_PENDING_QUEUE = 14;
     public static final byte HOST_SESSION = 15;
+    public static final byte APPEND_BROWSE_TAIL = 16;
 
     private Button stopAfterCurrentButton;
     private final Runnable stateListener = this::updateStopAfterCurrentButtonState;

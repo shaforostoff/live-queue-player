@@ -40,6 +40,8 @@ class HWListener {
         Intent i = new Intent(service, Service.class);
         i.putExtra(Launcher.TYPE, Launcher.PLAY_FROM_QUEUE_INDEX);
         i.putExtra(Service.EXTRA_QUEUE_INDEX, index);
+        // A row tapped in Android Auto replaces whatever is playing.
+        i.putExtra(Service.EXTRA_REPLACE_PLAYBACK, true);
         service.startService(i);
       }
       @Override public void onSeekTo(long pos) {

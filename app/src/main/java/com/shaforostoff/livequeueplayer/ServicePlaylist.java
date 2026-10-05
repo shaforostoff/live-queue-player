@@ -28,6 +28,19 @@ final class ServicePlaylist extends ArrayList<ServicePlaylist.Entry> {
         String title;
         Uri location;
         int queueEntryId = -1;
+
+        static Entry of(String title, Uri location, int queueEntryId) {
+            Entry e = new Entry();
+            e.title = title != null ? title : "";
+            e.location = location;
+            e.queueEntryId = queueEntryId;
+            return e;
+        }
+
+        /** A row of the persisted queue, keeping its stable entry id. */
+        static Entry of(QueueStore.Entry stored) {
+            return of(stored.name, stored.uri, stored.id);
+        }
     }
 }
 

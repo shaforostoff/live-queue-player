@@ -109,8 +109,8 @@ as seriously as any other.
 
 **Scope / caveats.**
 - The model mirrors the **active-playback** machine, where the races live. It does **not** model the
-  persisted-store resume paths (`playFromQueueStore` / `playFromQueueIndex`); when playback stops, an
-  episode re-seeds with a fresh start instead.
+  persisted-store start path (`playFromQueueIndex`, for a queue play or a resume); when playback
+  stops, an episode re-seeds with a fresh start instead. Step 2 covers that path directly.
 - The model is a hand-written mirror. Its value is (a) an executable spec, (b) a regression net when
   the code changes, (c) the oracle Step 2 reuses. **When you change the boundary logic in `Service`
   or `AudioPlayer`, update `PlayerModel.apply()` to match** — a divergence there is the point, not a

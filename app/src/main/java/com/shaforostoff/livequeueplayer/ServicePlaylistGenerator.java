@@ -39,7 +39,7 @@ final class ServicePlaylistGenerator {
      * null from getPath(), so {@code new File(getPath())} would throw — crashing the service when
      * the persisted queue is replayed on launch.
      */
-    private static String titleFor(Uri location) {
+    static String titleFor(Uri location) {
         String path = location.getPath();
         if (path != null) {
             String name = new File(path).getName();

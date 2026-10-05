@@ -28,14 +28,6 @@
       a:name="com.google.android.gms.car.application"
       a:resource="@xml/automotive_app_desc"/>
 
-    <receiver
-      a:name=".HWListener"
-      a:exported="true">
-      <intent-filter>
-        <action a:name="android.intent.action.MEDIA_BUTTON" />
-      </intent-filter>
-    </receiver>
-
     <service
       a:name=".Service"
       a:exported="true"

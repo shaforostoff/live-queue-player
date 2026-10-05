@@ -1,43 +1,35 @@
 package com.shaforostoff.livequeueplayer;
 
-import static android.content.Intent.EXTRA_KEY_EVENT;
-
-import android.content.BroadcastReceiver;
-import android.content.Context;
 import android.content.Intent;
 import android.media.MediaMetadata;
 import android.media.session.MediaSession;
 import android.media.session.PlaybackState;
 import android.os.Build;
 import android.os.Bundle;
-import android.view.KeyEvent;
 
 /**
- * Hardware Listener for button controls
+ * Owns the service's MediaSession: media keys (headset, Bluetooth, the activity's own dispatched
+ * PLAY), system transport controls and MediaBrowser clients all arrive through its callback.
  */
-public class HWListener extends BroadcastReceiver {
+class HWListener {
 
-  private Service service;
+  private final Service service;
   private MediaSession mediaSession;
   private PlaybackState.Builder playbackStateBuilder;
 
-  public HWListener() {
-    super();
-  }
-
-  public HWListener(Service service) {
+  HWListener(Service service) {
     this.service = service;
   }
 
   void create() {
     mediaSession = new MediaSession(service, HWListener.class.toString());
 
+    // Media keys go through the framework's default onMediaButtonEvent, which maps them onto the
+    // callbacks below: PLAY/PAUSE/STOP/NEXT directly, and PLAY_PAUSE or the headset hook to onPlay
+    // or onPause from the current PlaybackState once the double-tap window passes (a double tap
+    // skips). This used to also forward every key itself, so a PLAY_PAUSE toggled once at once and
+    // then again when the framework's delayed onPlay/onPause landed on the already-toggled state.
     mediaSession.setCallback(new MediaSession.Callback() {
-      @Override
-      public boolean onMediaButtonEvent(Intent mediaButtonIntent) {
-        onReceive(service, mediaButtonIntent);
-        return super.onMediaButtonEvent(mediaButtonIntent);
-      }
       @Override public void onPlay()           { send(Launcher.PLAY); }
       @Override public void onPause()          { send(Launcher.PAUSE); }
       @Override public void onSkipToNext()     { send(Launcher.SKIP); }
@@ -125,27 +117,4 @@ public class HWListener extends BroadcastReceiver {
       mediaSession = null;
     }
   }
-
-  /**
-   * Responds to media keycodes (ie. from bluetooth ear phones, etc.).
-   * Does not connect directly to service variable because service may not be initialized.
-   */
-  @Override
-  public void onReceive(Context context, Intent intent) {
-    final KeyEvent event = intent.getParcelableExtra(EXTRA_KEY_EVENT);
-    // Exported receiver: any app can send MEDIA_BUTTON here without a key event.
-    if (event != null && event.getAction() == KeyEvent.ACTION_DOWN) {
-      intent = new Intent(context, Service.class);
-      intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_NO_HISTORY);
-      switch (event.getKeyCode()) {
-        case KeyEvent.KEYCODE_MEDIA_PLAY -> intent.putExtra(Launcher.TYPE, Launcher.PLAY);
-        case KeyEvent.KEYCODE_MEDIA_PAUSE -> intent.putExtra(Launcher.TYPE, Launcher.PAUSE);
-        case KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE ->
-          intent.putExtra(Launcher.TYPE, Launcher.PLAY_PAUSE);
-        case KeyEvent.KEYCODE_MEDIA_STOP -> intent.putExtra(Launcher.TYPE, Launcher.KILL);
-      }
-      context.startService(intent);
-    }
-  }
 }
-

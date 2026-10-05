@@ -3,6 +3,7 @@ package com.shaforostoff.livequeueplayer;
 import android.net.Uri;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -91,12 +92,6 @@ final class TrackMatcher {
         return sb.toString();
     }
 
-    private static String[] parentHints(List<BluetoothQueueBridge.TrackRequest> requests) {
-        String[] hints = new String[requests.size()];
-        for (int i = 0; i < hints.length; i++) hints[i] = parentFolderFromPath(requests.get(i).path);
-        return hints;
-    }
-
     /** Returns the immediate parent folder name from a '/'-separated path, or "" if none. */
     static String parentFolderFromPath(String path) {
         int lastSlash = path.lastIndexOf('/');
@@ -112,74 +107,87 @@ final class TrackMatcher {
     }
 
     /**
-     * Matches one library file against every request by name, with a parent-folder hint and an
-     * extension-stripped fallback, filling the priority arrays. Hint matches outrank plain name
-     * matches, which outrank extension-stripped matches (see {@link #mergeMatchResults}). Shared by
-     * the SAF tree walk, the file walk, and the in-memory tag-cache lookup.
+     * Lookup key under which two names are equal exactly when {@link TextNormalizer#equalsIgnoreCase}
+     * calls them equal: the composed form, folded per char the way {@link String#equalsIgnoreCase}
+     * compares (lower case of the upper case).
      */
-    private static void matchByNameAndHint(String childName, String dirName, Uri childUri,
-            List<BluetoothQueueBridge.TrackRequest> requests, String[] hints,
-            Uri[] hintMatches, Uri[] nameMatches, Uri[] extMatches) {
-        for (int i = 0; i < requests.size(); i++) {
-            if (hintMatches[i] != null) continue;
-            if (!TextNormalizer.equalsIgnoreCase(childName, requests.get(i).file)) continue;
-            String hint = hints[i];
-            if (hint.length() > 0 && TextNormalizer.equalsIgnoreCase(dirName, hint)) hintMatches[i] = childUri;
-            else if (nameMatches[i] == null) nameMatches[i] = childUri;
+    private static String matchKey(String name) {
+        String composed = TextNormalizer.compose(name);
+        char[] folded = new char[composed.length()];
+        for (int i = 0; i < folded.length; i++) {
+            folded[i] = Character.toLowerCase(Character.toUpperCase(composed.charAt(i)));
         }
-        applyExtFallbackMatch(stripExtension(childName), childUri, requests, hintMatches, nameMatches, extMatches);
-    }
-
-    private static void applyExtFallbackMatch(String childNoExt, Uri childUri,
-            List<BluetoothQueueBridge.TrackRequest> requests, Uri[] hintMatches, Uri[] nameMatches, Uri[] extMatches) {
-        for (int i = 0; i < requests.size(); i++) {
-            if (hintMatches[i] != null || nameMatches[i] != null || extMatches[i] != null) continue;
-            if (TextNormalizer.equalsIgnoreCase(childNoExt, stripExtension(requests.get(i).file))) {
-                extMatches[i] = childUri;
-            }
-        }
-    }
-
-    private static List<Uri> mergeMatchResults(Uri[] hintMatches, Uri[] nameMatches, Uri[] extMatches) {
-        List<Uri> results = new ArrayList<>(hintMatches.length);
-        for (int i = 0; i < hintMatches.length; i++) {
-            Uri r = hintMatches[i];
-            if (r == null) r = nameMatches[i];
-            if (r == null) r = extMatches[i];
-            results.add(r);
-        }
-        return results;
+        return new String(folded);
     }
 
     /**
-     * Stateful scaffold shared by the library walks (SAF tree, file tree, tag cache): owns the
-     * per-request priority arrays and parent hints, takes one library file at a time via
-     * {@link #match}, and {@link #result} merges the priorities into one URI per request
-     * (null where unmatched).
+     * Matches library files, one at a time via {@link #match}, against a batch of requests by file
+     * name. Shared by the SAF tree walk, the file walk and the in-memory tag-cache lookup. A match
+     * whose parent folder equals the request's parent folder outranks a plain name match, which
+     * outranks a match on the name with the extension stripped; within a rank the first file wins.
+     * {@link #result} gives one URI per request (null where unmatched).
+     *
+     * <p>The requests are indexed by name up front, so each library file costs two map lookups no
+     * matter how many requests are pending — a library of tens of thousands of files is walked
+     * against every request in the batch.
      */
     static final class Accumulator {
-        private final List<BluetoothQueueBridge.TrackRequest> requests;
         private final String[] hints;
         private final Uri[] hintMatches;
         private final Uri[] nameMatches;
         private final Uri[] extMatches;
+        private final Map<String, List<Integer>> byName = new HashMap<>();
+        private final Map<String, List<Integer>> byStem = new HashMap<>();
 
         Accumulator(List<BluetoothQueueBridge.TrackRequest> requests) {
-            this.requests = requests;
             int n = requests.size();
-            hints = parentHints(requests);
+            hints = new String[n];
             hintMatches = new Uri[n];
             nameMatches = new Uri[n];
             extMatches  = new Uri[n];
+            for (int i = 0; i < n; i++) {
+                BluetoothQueueBridge.TrackRequest request = requests.get(i);
+                hints[i] = parentFolderFromPath(request.path);
+                index(byName, matchKey(request.file), i);
+                index(byStem, matchKey(stripExtension(request.file)), i);
+            }
+        }
+
+        private static void index(Map<String, List<Integer>> map, String key, int request) {
+            List<Integer> list = map.get(key);
+            if (list == null) map.put(key, list = new ArrayList<>(1));
+            list.add(request);
         }
 
         void match(String childName, String dirName, Uri childUri) {
-            matchByNameAndHint(childName, dirName, childUri,
-                    requests, hints, hintMatches, nameMatches, extMatches);
+            List<Integer> named = byName.get(matchKey(childName));
+            if (named != null) {
+                for (int i : named) {
+                    if (hintMatches[i] != null) continue;
+                    String hint = hints[i];
+                    if (hint.length() > 0 && TextNormalizer.equalsIgnoreCase(dirName, hint)) hintMatches[i] = childUri;
+                    else if (nameMatches[i] == null) nameMatches[i] = childUri;
+                }
+            }
+            List<Integer> stemmed = byStem.get(matchKey(stripExtension(childName)));
+            if (stemmed != null) {
+                for (int i : stemmed) {
+                    if (hintMatches[i] == null && nameMatches[i] == null && extMatches[i] == null) {
+                        extMatches[i] = childUri;
+                    }
+                }
+            }
         }
 
         List<Uri> result() {
-            return mergeMatchResults(hintMatches, nameMatches, extMatches);
+            List<Uri> results = new ArrayList<>(hintMatches.length);
+            for (int i = 0; i < hintMatches.length; i++) {
+                Uri r = hintMatches[i];
+                if (r == null) r = nameMatches[i];
+                if (r == null) r = extMatches[i];
+                results.add(r);
+            }
+            return results;
         }
     }
 }

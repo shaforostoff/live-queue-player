@@ -3,10 +3,8 @@ package com.shaforostoff.livequeueplayer;
 import android.Manifest;
 import android.app.Activity;
 import android.app.AlertDialog;
-import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
-import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.content.UriPermission;
@@ -141,8 +139,8 @@ public class FileBrowserQueueActivity extends Activity {
     static volatile boolean sActivityStarted;
     private boolean queueTransitionActive;
     private long queueTransitionStartedAtMs;
-    /** How long a play intent may stay unconfirmed by a Service broadcast before the optimistic
-     *  transition state is abandoned. The confirming broadcast is sent synchronously when the
+    /** How long a play intent may stay unconfirmed by a Service state update before the optimistic
+     *  transition state is abandoned. The confirming update is published synchronously when the
      *  track starts (or playback fails), so this fires only when it was genuinely lost. */
     private static final long QUEUE_TRANSITION_TIMEOUT_MS = 10_000L;
     private int currentPlayingQueueIndex = -1;
@@ -172,7 +170,7 @@ public class FileBrowserQueueActivity extends Activity {
     private Uri pendingBackScrollUri;
     private BluetoothController btController;
     private RemoteQueueController remoteQueueController;
-    private String lastBroadcastPushedPlayKey;
+    private String lastPushedPlayKey;
     private View localQueuePanel;
     private View remoteQueuePanel;
     private boolean localQueueShownInRemoteMode = false;
@@ -188,82 +186,8 @@ public class FileBrowserQueueActivity extends Activity {
     private Uri lastHighlightedBrowseUri;
     private Uri lastHighlightedPreviewUri;
     private ListView fileBrowserList;
-    private final BroadcastReceiver playbackStateReceiver = new BroadcastReceiver() {
-        @Override
-        public void onReceive(android.content.Context context, Intent intent) {
-            if (!Service.ACTION_PLAYBACK_STATE.equals(intent.getAction())) return;
-
-            int prevPlayingIndex = currentPlayingQueueIndex;
-            boolean isPlaying = intent.getBooleanExtra(Service.EXTRA_IS_PLAYING, false);
-            int serviceIndex = intent.getIntExtra(Service.EXTRA_CURRENT_INDEX, -1);
-            int entryId = intent.getIntExtra(Service.EXTRA_CURRENT_ENTRY_ID, -1);
-            Uri currentUri = intent.getParcelableExtra(Service.EXTRA_CURRENT_URI);
-            boolean serviceBrowseMode = intent.getBooleanExtra(Service.EXTRA_BROWSE_MODE, false);
-            currentTrackPositionMs = intent.getIntExtra(
-                    Service.EXTRA_PLAYBACK_POSITION_MS,
-                    Service.sPlaybackPositionMs);
-            currentTrackDurationMs = intent.getIntExtra(
-                    Service.EXTRA_PLAYBACK_DURATION_MS,
-                    Service.sPlaybackDurationMs);
-            // The fading button state is derived from Service.sFadeOutInProgress (see
-            // isStopFadeInProgress()), so every broadcast just re-applies the current state.
-            applyStopButtonState();
-
-            if (serviceIndex < 0) {
-                SilenceStreamer.reinitIfOutputChanged(FileBrowserQueueActivity.this);
-                if (browseTransitionActive && !isStopFadeInProgress()) {
-                    // Transient stop between sendStopNowCommand() and the new browse track starting.
-                    // Keep browse state intact; the next broadcast will update us.
-                    return;
-                }
-                if (isQueueTransitionActive() && !isStopFadeInProgress()) {
-                    return;
-                }
-                clearBrowseState();
-                currentPlayingQueueIndex = -1;
-                if (isStopFadeInProgress()) {
-                    onFadeOutFinished();
-                } else {
-                    setPlaybackOffset(0);
-                    resetCurrentTrackProgress();
-                }
-            } else if (serviceBrowseMode) {
-                // Only the broadcast for the track we actually asked for ends the transition. A
-                // progress tick for the outgoing track can still be in flight when
-                // playBrowseFile() arms browseTransitionActive (sendBroadcast round-trips through
-                // the ActivityManager, so delivery lags the tap by a few ms). Clearing the flag on
-                // that stale tick lets the KILL's index=-1 broadcast fall through to
-                // clearBrowseState(), which nulls browseFileUri — and only onStart() can undo
-                // that, because the 1s poll's self-heal is itself guarded on browseFileUri being
-                // non-null. The track kept playing with no row highlight and no folder
-                // auto-advance (maybeQueueNextBrowseTrack bails on a null browseFileUri) until the
-                // user left the app and came back.
-                if (currentUri != null
-                        && (currentUri.equals(browseFileUri) || currentUri.equals(browseNextUri))) {
-                    browseTransitionActive = false;
-                }
-                currentPlayingQueueIndex = -1;
-                if (browseNextUri != null && browseNextUri.equals(currentUri)) {
-                    browseFileUri = browseNextUri;
-                    browseNextQueued = false;
-                    browseNextUri = null;
-                }
-            } else {
-                queueTransitionActive = false;
-                currentPlayingQueueIndex = resolvePlayingQueueIndex(entryId, serviceIndex, currentUri);
-                if (currentPlayingQueueIndex >= 0 && currentPlayingQueueIndex != prevPlayingIndex) {
-                    scrollTo(queueList, currentPlayingQueueIndex);
-                }
-            }
-
-            clearAnchorIfPlaybackReached();
-            refreshQueuePlaybackRows(prevPlayingIndex);
-            refreshFilePlaybackRows();
-            maybeQueueNextBrowseTrack();
-            pushPlayStateIfChanged();
-        }
-    };
-    private boolean playbackReceiverRegistered;
+    // Runs syncWithServiceState() on every state change the Service publishes (see onStart/onStop).
+    private final Runnable serviceStateListener = this::syncWithServiceState;
     private final Handler uiHandler = new Handler(Looper.getMainLooper());
     private final Runnable playbackStateSyncRunnable = new Runnable() {
         @Override
@@ -527,7 +451,7 @@ public class FileBrowserQueueActivity extends Activity {
                 stopPlaybackWithFadeout();
             }
             // A local stop/resume must notify a connected client too, just as the remote
-            // stop_playback / resume_playback handlers do (the later broadcast is deduped).
+            // stop_playback / resume_playback handlers do (the later state update is deduped).
             if (mode == Mode.REMOTE_RECEIVE) pushPlayState();
         });
 
@@ -1925,8 +1849,8 @@ public class FileBrowserQueueActivity extends Activity {
      * Clears the insert anchor once playback has reached (or moved past) the anchored track —
      * whether started by a tap or by auto-advance. Inserting above an already-playing track makes
      * no sense, so the anchor is dropped. Called from every place that updates the playing index
-     * (tap, playback broadcast, and the 1s poll) so auto-advance is covered even if a discrete
-     * broadcast is missed or resolves a step late. Only repaints the row that lost the marker.
+     * (tap, playback state update, and the 1s poll) so auto-advance is covered even if a discrete
+     * update is missed or resolves a step late. Only repaints the row that lost the marker.
      */
     private void clearAnchorIfPlaybackReached() {
         if (anchorEntryId <= 0 || currentPlayingQueueIndex < 0) return;
@@ -2447,7 +2371,7 @@ public class FileBrowserQueueActivity extends Activity {
     private int currentPlayingEntryId() {
         // Prefer the Service's entry id: it is authoritative and updates on every auto-advance,
         // while currentPlayingQueueIndex is a UI cache that is only maintained while this
-        // activity is started (the playback receiver and 1s poll are torn down in onStop). The
+        // activity is started (the state listener and 1s poll are torn down in onStop). The
         // Bluetooth bridge keeps answering request_queue while the host screen is off, so serving
         // current_id from the cache reported the previous track to remote clients even after an
         // explicit refresh. During a locally initiated transition the optimistic cache is fresher
@@ -2463,9 +2387,9 @@ public class FileBrowserQueueActivity extends Activity {
 
     /**
      * True while a locally initiated play intent is believed to be in flight to the Service —
-     * the optimistic "playing" window between startService() and the Service's first broadcast
+     * the optimistic "playing" window between startService() and the Service's first state update
      * for the new track. Time-bounded, because the flag is only cleared by observing that
-     * broadcast (or the poll): if it never arrives — every track in the intent failed, or the
+     * update (or the poll): if it never arrives — every track in the intent failed, or the
      * stopped-state guard swallowed it — the raw flag stays true forever, and everything derived
      * from it reports a phantom "playing" state that deadlocks remote clients (play_track
      * rejected, stop_playback a no-op). All readers must use this accessor, not the field.
@@ -2483,7 +2407,7 @@ public class FileBrowserQueueActivity extends Activity {
     private String remotePlaybackState() {
         boolean fading = Service.sFadeOutInProgress;
         // queueTransitionActive treated as "playing": mirrors the sFadeOutInProgress sync pattern
-        // so pushPlayState() sends the correct state before the async service broadcast arrives.
+        // so pushPlayState() sends the correct state before the async service state update arrives.
         return fading ? "fading" : (Service.sIsPlaying || isQueueTransitionActive() ? "playing" : "stopped");
     }
 
@@ -2500,7 +2424,7 @@ public class FileBrowserQueueActivity extends Activity {
             msg.put("current_id", currentPlayingEntryId());
             if ("fading".equals(state)) msg.put("fade_duration_ms", fadeDurationMs());
             btController.sendRaw(msg.toString());
-            lastBroadcastPushedPlayKey = playStateKey();
+            lastPushedPlayKey = playStateKey();
         } catch (Exception ignored) {
         }
     }
@@ -2511,13 +2435,13 @@ public class FileBrowserQueueActivity extends Activity {
 
     /**
      * Pushes the current play state to a connected client, but only when it differs from what we
-     * last pushed. Called from both the playback broadcast and the 1s poll so a stop the host
+     * last pushed. Called on every service state update and the 1s poll so a stop the host
      * reaches on its own — e.g. a fade-out finishing — still reaches the client even if the
-     * discrete broadcast is missed. No-op unless we're the remote host.
+     * discrete update is missed. No-op unless we're the remote host.
      */
     private void pushPlayStateIfChanged() {
         if (mode == Mode.REMOTE_RECEIVE && btController != null
-                && !playStateKey().equals(lastBroadcastPushedPlayKey)) {
+                && !playStateKey().equals(lastPushedPlayKey)) {
             pushPlayState();
         }
     }
@@ -3532,7 +3456,7 @@ public class FileBrowserQueueActivity extends Activity {
     /**
      * Single source of truth for "is a fade-out currently in progress" — read directly from
      * the Service's static field. The UI follows whatever the Service reports, with the usual
-     * one-broadcast / one-sync-tick of latency rather than maintaining a local optimistic copy.
+     * one-update / one-sync-tick of latency rather than maintaining a local optimistic copy.
      */
     private boolean isStopFadeInProgress() {
         return Service.sFadeOutInProgress;
@@ -3587,7 +3511,7 @@ public class FileBrowserQueueActivity extends Activity {
             browseNextQueued = false;
             browseNextUri = null;
         }
-        registerPlaybackStateReceiver();
+        Service.addStateListener(serviceStateListener);
         syncWithServiceState();
         scrollToHighlightedFileEntry();
         uiHandler.removeCallbacks(playbackStateSyncRunnable);
@@ -3608,6 +3532,11 @@ public class FileBrowserQueueActivity extends Activity {
         }
     }
 
+    /**
+     * Brings the UI in line with the Service's playback state. Runs on every change the Service
+     * publishes and on the 1s poll, which also covers what the Service doesn't announce: progress,
+     * a preview ending on its own, and the queue-transition timeout.
+     */
     private void syncWithServiceState() {
         // A preview that reached its end (or lost its output) clears PreviewManager.isPreviewActive
         // from the streaming thread. Notice that here, so the row highlight and the browser stop
@@ -3618,43 +3547,56 @@ public class FileBrowserQueueActivity extends Activity {
         }
         int prevPlayingIndex = currentPlayingQueueIndex;
         int serviceIndex = Service.sCurrentIndex;
-        int entryId = Service.sCurrentEntryId;
         Uri serviceUri = Service.sCurrentUri;
-        boolean serviceBrowseMode = Service.sBrowseMode;
         currentTrackPositionMs = Service.sPlaybackPositionMs;
         currentTrackDurationMs = Service.sPlaybackDurationMs;
+        // The fading button state is derived from Service.sFadeOutInProgress (see
+        // isStopFadeInProgress()), so every update just re-applies the current state.
         applyStopButtonState();
         if (serviceIndex < 0) {
             SilenceStreamer.reinitIfOutputChanged(this);
-            if (browseTransitionActive && !isStopFadeInProgress()) {
-                // Transient stop between sendStopNowCommand() and the browse track starting.
+            // A transient stop between the old track's teardown and the new one starting — a browse
+            // tap (sendStopNowCommand() then the new track) or a queue play still in flight. Keep the
+            // optimistic state; the next update settles it.
+            if ((browseTransitionActive || isQueueTransitionActive()) && !isStopFadeInProgress()) {
                 return;
             }
-            if (isQueueTransitionActive() && !isStopFadeInProgress()) {
-                return;
-            }
+            clearBrowseState();
+            currentPlayingQueueIndex = -1;
             if (isStopFadeInProgress()) {
                 onFadeOutFinished();
-                return;
-            }
-            currentPlayingQueueIndex = -1;
-            setPlaybackOffset(0);
-            resetCurrentTrackProgress();
-        } else {
-            if (serviceBrowseMode) {
-                currentPlayingQueueIndex = -1;
-                if (browseNextUri != null && browseNextUri.equals(serviceUri)) {
-                    browseFileUri = browseNextUri;
-                    browseNextQueued = false;
-                    browseNextUri = null;
-                } else if (serviceUri != null && !serviceUri.equals(browseFileUri)) {
-                    browseFileUri = serviceUri;
-                    browseNextQueued = false;
-                    browseNextUri = null;
-                }
             } else {
-                queueTransitionActive = false;
-                currentPlayingQueueIndex = resolvePlayingQueueIndex(entryId, serviceIndex, serviceUri);
+                setPlaybackOffset(0);
+                resetCurrentTrackProgress();
+            }
+        } else if (Service.sBrowseMode) {
+            currentPlayingQueueIndex = -1;
+            // Only the update for the track we actually asked for ends the transition. A progress
+            // update for the outgoing track can still be in flight when playBrowseFile() arms
+            // browseTransitionActive. Clearing the flag on that stale update lets the KILL's
+            // index=-1 update fall through to clearBrowseState(), which nulls browseFileUri — the
+            // track then kept playing with no row highlight and no folder auto-advance
+            // (maybeQueueNextBrowseTrack bails on a null browseFileUri).
+            if (serviceUri != null
+                    && (serviceUri.equals(browseFileUri) || serviceUri.equals(browseNextUri))) {
+                browseTransitionActive = false;
+            }
+            if (browseNextUri != null && browseNextUri.equals(serviceUri)) {
+                browseFileUri = browseNextUri;
+                browseNextQueued = false;
+                browseNextUri = null;
+            } else if (!browseTransitionActive && serviceUri != null && !serviceUri.equals(browseFileUri)) {
+                // The service moved on while we weren't watching (e.g. the activity was stopped).
+                // Not mid-transition: there a stale update for the outgoing track would undo the tap.
+                browseFileUri = serviceUri;
+                browseNextQueued = false;
+                browseNextUri = null;
+            }
+        } else {
+            queueTransitionActive = false;
+            currentPlayingQueueIndex = resolvePlayingQueueIndex(Service.sCurrentEntryId, serviceIndex, serviceUri);
+            if (currentPlayingQueueIndex >= 0 && currentPlayingQueueIndex != prevPlayingIndex) {
+                scrollTo(queueList, currentPlayingQueueIndex);
             }
         }
         clearAnchorIfPlaybackReached();
@@ -3688,7 +3630,7 @@ public class FileBrowserQueueActivity extends Activity {
         // As the remote host, state observation must outlive the visible activity: the app-scoped
         // Bluetooth bridge keeps delivering client commands while the screen is off, and those
         // handlers serve state derived from fields (queueTransitionActive,
-        // currentPlayingQueueIndex) that only the receiver and the 1s poll keep in sync — and the
+        // currentPlayingQueueIndex) that only the state listener and the 1s poll keep in sync — and the
         // poll is also what pushes play_state changes (auto-advance, fade finishing) to the
         // client. Tearing them down froze that state mid-session: the client was never told about
         // advances, and a play_track processed while stopped left queueTransitionActive stuck
@@ -3697,7 +3639,7 @@ public class FileBrowserQueueActivity extends Activity {
         // the teardown there (it otherwise wakes the main thread every second for a whole DJ set
         // spent in another app); onStart re-registers and re-syncs on return, onDestroy cleans up.
         if (mode != Mode.REMOTE_RECEIVE) {
-            unregisterPlaybackStateReceiver();
+            Service.removeStateListener(serviceStateListener);
             uiHandler.removeCallbacks(playbackStateSyncRunnable);
         }
         resetFileBrowserPreview();
@@ -3785,7 +3727,7 @@ public class FileBrowserQueueActivity extends Activity {
     @Override
     protected void onDestroy() {
         uiHandler.removeCallbacks(playbackStateSyncRunnable);
-        unregisterPlaybackStateReceiver();
+        Service.removeStateListener(serviceStateListener);
         if (remoteQueueController != null) remoteQueueController.shutdown();
         // Preserve the app-scoped Bluetooth bridge across configuration changes (e.g. rotation);
         // only tear the connection down when the activity is genuinely finishing.
@@ -3805,26 +3747,6 @@ public class FileBrowserQueueActivity extends Activity {
         // next submit(), crashing the process. In-flight tasks self-cancel via the fileEntriesVersion
         // / isDestroyed() guards in their UI callbacks.
         super.onDestroy();
-    }
-
-    private void registerPlaybackStateReceiver() {
-        if (playbackReceiverRegistered) return;
-        IntentFilter filter = new IntentFilter(Service.ACTION_PLAYBACK_STATE);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(playbackStateReceiver, filter, RECEIVER_NOT_EXPORTED);
-        } else {
-            registerReceiver(playbackStateReceiver, filter);
-        }
-        playbackReceiverRegistered = true;
-    }
-
-    private void unregisterPlaybackStateReceiver() {
-        if (!playbackReceiverRegistered) return;
-        try {
-            unregisterReceiver(playbackStateReceiver);
-        } catch (IllegalArgumentException ignored) {
-        }
-        playbackReceiverRegistered = false;
     }
 
     // -- data models ---------------------------------------------------------

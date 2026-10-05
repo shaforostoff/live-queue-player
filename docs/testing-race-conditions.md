@@ -161,8 +161,8 @@ The same invariants, embedded in `Service` itself and checked at runtime in **de
 a violation crashes *loudly at the point of corruption* with a stack trace — instead of surfacing
 tracks later as mystery silence — during ordinary debug use, monkey runs, or a Step-4 chaos run.
 
-- `assertBoundaryInvariants()` is called from `sendPlaybackStateBroadcast()` — the state-committed
-  chokepoint, hit at the end of every boundary mutation and on each progress tick — guarded by
+- `assertBoundaryInvariants()` is called from `publishState()` — the state-committed chokepoint, hit
+  at the end of every boundary mutation — and on each progress tick, guarded by
   `if (BuildConfig.DEBUG && !destroyed)`.
 - A second precondition in `playEntryFromPlaylist()` names an out-of-range advance instead of letting
   it throw a bare `IndexOutOfBoundsException`.
@@ -186,7 +186,7 @@ is how they are proven not to false-positive.
 > `staleDurationReportAfterDestroy_isDroppedNotRepublished` in the Step-2 suite.
 
 If you add or reorder boundary state mutations, keep the debug asserts honest: they must hold at every
-`sendPlaybackStateBroadcast()` call. Genuinely-transient teardown states belong behind the
+`publishState()` call. Genuinely-transient teardown states belong behind the
 `destroyed` guard, not asserted.
 
 ## When you touch the boundary code
@@ -194,6 +194,6 @@ If you add or reorder boundary state mutations, keep the debug asserts honest: t
 1. Update `PlayerModel.apply()` to mirror the change; run Step 3 — a new invariant violation is a
    design bug or a spec you need to revise.
 2. Add/adjust a Step-2 case for the concrete scenario.
-3. Keep the Step-5 asserts holding at every `sendPlaybackStateBroadcast()`; put real teardown-only
+3. Keep the Step-5 asserts holding at every `publishState()`; put real teardown-only
    transients behind the `destroyed` guard.
 4. `./gradlew testDebugUnitTest` must be green, **including the mutation self-tests**.

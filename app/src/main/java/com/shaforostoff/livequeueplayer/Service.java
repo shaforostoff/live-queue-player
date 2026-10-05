@@ -26,23 +26,14 @@ public class Service extends android.service.media.MediaBrowserService implement
 
     private static final String TAG = "Service";
 
-    static final String ACTION_PLAYBACK_STATE = "com.shaforostoff.livequeueplayer.PLAYBACK_STATE";
-    static final String EXTRA_CURRENT_INDEX = "current_index";
-    static final String EXTRA_IS_PLAYING = "is_playing";
-    static final String EXTRA_CURRENT_URI = "current_uri";
-    static final String EXTRA_PLAYBACK_POSITION_MS = "playback_position_ms";
-    static final String EXTRA_PLAYBACK_DURATION_MS = "playback_duration_ms";
-    static final String EXTRA_HAS_PENDING_TRACKS = "has_pending_tracks";
-    static final String EXTRA_FADE_OUT_IN_PROGRESS = "fade_out_in_progress";
     static final String EXTRA_BROWSE_MODE = "browse_mode";
     static final String EXTRA_ENTRY_IDS = "entry_ids";
-    static final String EXTRA_CURRENT_ENTRY_ID = "current_entry_id";
     static final String EXTRA_SEEK_TO_MS = "seek_to_ms";
     static final String EXTRA_QUEUE_ALREADY_PERSISTED = "queue_already_persisted";
     static final String EXTRA_REPLACE_PLAYBACK = "replace_playback";
     static final String EXTRA_QUEUE_INDEX = "queue_index";
     private static final String MEDIA_ROOT_ID = "root";
-    private static final long PLAYBACK_PROGRESS_BROADCAST_INTERVAL_MS = 1_000L;
+    private static final long PROGRESS_TICK_INTERVAL_MS = 1_000L;
     /**
      * How long this service may hold foreground status with nothing playing before it retires.
      * A paused track — or a remote-host session — otherwise pins the service (and its silence
@@ -51,7 +42,8 @@ public class Service extends android.service.media.MediaBrowserService implement
      */
     private static final long IDLE_RETIRE_TIMEOUT_MS = 60 * 60 * 1_000L;
 
-    // Readable by the activity to re-sync state after missed broadcasts (e.g. screen off)
+    // The playback state, read by the activities. Every committed change is announced to the
+    // state listeners below; they and the activity's own 1s poll read these fields.
     static volatile boolean sIsPlaying = false;
     static volatile int sCurrentIndex = -1;
     static volatile Uri sCurrentUri = null;
@@ -65,6 +57,10 @@ public class Service extends android.service.media.MediaBrowserService implement
      *  whether service intents are currently permitted (a process with a live FGS is not
      *  "background" to the OS, regardless of screen state). */
     static volatile boolean sForegroundActive = false;
+
+    /** In-process observers (the activities), main thread only. See {@link #publishState()}. */
+    private static final List<Runnable> sStateListeners = new ArrayList<>();
+    private static final Handler sListenerHandler = new Handler(Looper.getMainLooper());
 
     private HWListener hwListener;
     private Notifications notifications;
@@ -97,8 +93,10 @@ public class Service extends android.service.media.MediaBrowserService implement
             if (!sIsPlaying) return;
             refreshProgressSnapshot();
             hwListener.updatePlaybackPosition(sPlaybackPositionMs);
-            sendPlaybackStateBroadcast();
-            progressHandler.postDelayed(this, PLAYBACK_PROGRESS_BROADCAST_INTERVAL_MS);
+            // No publishState(): only the position moved, and the activity's own 1s poll redraws
+            // progress from sPlaybackPositionMs. Still a state-commit point for the debug check.
+            if (BuildConfig.DEBUG && !destroyed) assertBoundaryInvariants();
+            progressHandler.postDelayed(this, PROGRESS_TICK_INTERVAL_MS);
         }
     };
     private final Handler idleHandler = new Handler(Looper.getMainLooper());
@@ -249,7 +247,7 @@ public class Service extends android.service.media.MediaBrowserService implement
                 case Launcher.SKIP -> playNextEntry();
                 case Launcher.STOP -> {
                     sFadeOutInProgress = true;
-                    sendPlaybackStateBroadcast();
+                    publishState();
                     audioPlayer.fadeOutAndStop(AudioOutputRouter.getFadeOutSeconds(this) * 1_000L);
                 }
                 case Launcher.APPEND_QUEUE -> appendQueueFromIntent(intent);
@@ -587,7 +585,7 @@ public class Service extends android.service.media.MediaBrowserService implement
         // (not the fragile offset+URI heuristic) once one of these pending tracks starts.
         applyEntryIds(sizeBefore, intent.getIntArrayExtra(EXTRA_ENTRY_IDS));
         sHasPendingTracks = playlistPosition < playlist.size();
-        sendPlaybackStateBroadcast();
+        publishState();
     }
 
     /**
@@ -611,7 +609,7 @@ public class Service extends android.service.media.MediaBrowserService implement
         }
         // Update the state of whether there are pending tracks
         sHasPendingTracks = playlistPosition < playlist.size();
-        sendPlaybackStateBroadcast();
+        publishState();
     }
 
     /**
@@ -645,7 +643,7 @@ public class Service extends android.service.media.MediaBrowserService implement
         progressAnchorElapsedMs = sIsPlaying ? SystemClock.elapsedRealtime() : 0L;
         sPlaybackPositionMs = positionMs;
         hwListener.updatePlaybackPosition(positionMs);
-        sendPlaybackStateBroadcast();
+        publishState();
     }
 
     /**
@@ -889,7 +887,7 @@ public class Service extends android.service.media.MediaBrowserService implement
         // Update pending tracks state based on current playlist position
         sHasPendingTracks = playlistPosition < playlist.size();
         updateIdleRetireTimer();
-        sendPlaybackStateBroadcast();
+        publishState();
     }
 
     private void initializeProgressForTrack(Uri trackUri) {
@@ -917,7 +915,7 @@ public class Service extends android.service.media.MediaBrowserService implement
             sPlaybackDurationMs = Math.max(0, durationMs);
             hwListener.setTrackMetadata(currentTrackTitle, sPlaybackDurationMs);
             refreshProgressSnapshot();
-            sendPlaybackStateBroadcast();
+            publishState();
         });
     }
 
@@ -942,29 +940,29 @@ public class Service extends android.service.media.MediaBrowserService implement
         progressAnchorElapsedMs = 0L;
     }
 
-    private void sendPlaybackStateBroadcast() {
+    /** Registers {@code listener} to run on the main thread after every playback-state change. */
+    static void addStateListener(Runnable listener) {
+        if (!sStateListeners.contains(listener)) sStateListeners.add(listener);
+    }
+
+    static void removeStateListener(Runnable listener) {
+        sStateListeners.remove(listener);
+    }
+
+    private void publishState() {
         // Debug-only tripwire (Step 5). This method is the state-committed chokepoint — called at the
-        // end of every boundary mutation and on each progress tick — so checking here catches an
-        // inconsistency the instant it is published, with a stack trace at the point of corruption,
-        // rather than tracks later as mystery silence. Compiled out of release builds.
+        // end of every boundary mutation — so checking here catches an inconsistency the instant it
+        // is published, with a stack trace at the point of corruption, rather than tracks later as
+        // mystery silence. Compiled out of release builds.
         if (BuildConfig.DEBUG && !destroyed) assertBoundaryInvariants();
 
-        Intent intent = new Intent(ACTION_PLAYBACK_STATE);
-        // Confine to our own package: every receiver is in-app (the activity and Launcher), and an
-        // implicit broadcast would otherwise let other apps read the current-track URI or inject a
-        // spoofed state to desync our UI. Receivers already register as NOT_EXPORTED on API 33+;
-        // this closes the same hole on older releases.
-        intent.setPackage(getPackageName());
-        intent.putExtra(EXTRA_IS_PLAYING, sIsPlaying);
-        intent.putExtra(EXTRA_CURRENT_INDEX, sCurrentIndex);
-        intent.putExtra(EXTRA_CURRENT_URI, sCurrentUri);
-        intent.putExtra(EXTRA_PLAYBACK_POSITION_MS, sPlaybackPositionMs);
-        intent.putExtra(EXTRA_PLAYBACK_DURATION_MS, sPlaybackDurationMs);
-        intent.putExtra(EXTRA_HAS_PENDING_TRACKS, sHasPendingTracks);
-        intent.putExtra(EXTRA_FADE_OUT_IN_PROGRESS, sFadeOutInProgress);
-        intent.putExtra(EXTRA_BROWSE_MODE, sBrowseMode);
-        intent.putExtra(EXTRA_CURRENT_ENTRY_ID, sCurrentEntryId);
-        sendBroadcast(intent);
+        // Every observer lives in this process and reads the static fields above, so nothing needs
+        // to go through system_server (this used to be a broadcast carrying copies of them). Posted
+        // rather than called inline, as the broadcast was delivered, so a listener never runs in the
+        // middle of the Service's own state transition.
+        for (Runnable listener : sStateListeners) {
+            sListenerHandler.post(listener);
+        }
     }
 
     /**
@@ -1005,7 +1003,7 @@ public class Service extends android.service.media.MediaBrowserService implement
         sIsPlaying = false;
         stopProgressTicks();
         updateIdleRetireTimer();
-        sendPlaybackStateBroadcast();
+        publishState();
     }
 
     void onAudioFocusResume(int currentPositionMs) {
@@ -1018,12 +1016,12 @@ public class Service extends android.service.media.MediaBrowserService implement
         sIsPlaying = true;
         startProgressTicks();
         updateIdleRetireTimer();
-        sendPlaybackStateBroadcast();
+        publishState();
     }
 
     private void startProgressTicks() {
         progressHandler.removeCallbacks(progressTickRunnable);
-        progressHandler.postDelayed(progressTickRunnable, PLAYBACK_PROGRESS_BROADCAST_INTERVAL_MS);
+        progressHandler.postDelayed(progressTickRunnable, PROGRESS_TICK_INTERVAL_MS);
     }
 
     private void stopProgressTicks() {

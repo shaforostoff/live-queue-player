@@ -2,10 +2,7 @@ package com.shaforostoff.livequeueplayer;
 
 import android.app.Activity;
 import android.app.AlertDialog;
-import android.content.BroadcastReceiver;
-import android.content.Context;
 import android.content.Intent;
-import android.content.IntentFilter;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -45,7 +42,7 @@ public class Launcher extends Activity {
     public static final byte HOST_SESSION = 15;
 
     private Button stopAfterCurrentButton;
-    private BroadcastReceiver playbackStateReceiver;
+    private final Runnable stateListener = this::updateStopAfterCurrentButtonState;
 
     /**
      * redirect call to actual logic
@@ -161,19 +158,8 @@ public class Launcher extends Activity {
 
              findViewById(R.id.show_license).setOnClickListener(v -> showLicenseDialog());
 
-             // Register broadcast receiver to update button state
-             playbackStateReceiver = new BroadcastReceiver() {
-                 @Override
-                 public void onReceive(Context context, Intent intent) {
-                     updateStopAfterCurrentButtonState();
-                 }
-             };
-             IntentFilter filter = new IntentFilter(Service.ACTION_PLAYBACK_STATE);
-             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                 registerReceiver(playbackStateReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
-             } else {
-                 registerReceiver(playbackStateReceiver, filter);
-             }
+             // Follow playback state for the stop-after-current button (removed in onDestroy).
+             Service.addStateListener(stateListener);
 
              // Initial state update
              updateStopAfterCurrentButtonState();
@@ -249,13 +235,7 @@ public class Launcher extends Activity {
     @Override
     protected void onDestroy() {
         super.onDestroy();
-        if (playbackStateReceiver != null) {
-            try {
-                unregisterReceiver(playbackStateReceiver);
-            } catch (IllegalArgumentException ignored) {
-                // Receiver was not registered
-            }
-        }
+        Service.removeStateListener(stateListener);
     }
 
     private void showLicenseDialog() {

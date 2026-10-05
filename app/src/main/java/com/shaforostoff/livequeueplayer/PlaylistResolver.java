@@ -96,6 +96,22 @@ final class PlaylistResolver {
         return resolveDocumentTargetUri(playlistUri, pathValue);
     }
 
+    /**
+     * Every line of a playlist resolved, index-aligned with {@code lines} (null where nothing
+     * playable exists). A document-tree playlist goes through {@link #resolveDocumentUrisBatch} — one
+     * listing per folder the playlist touches instead of one SAF query per line; a file playlist
+     * resolves line by line, which is plain {@code File} lookups. {@code treeUri} is captured by the
+     * caller, since this runs off the main thread.
+     */
+    List<Uri> resolveAll(File playlistFile, Uri playlistUri, List<String> lines, Uri treeUri) {
+        if (playlistFile == null && treeUri != null) {
+            return resolveDocumentUrisBatch(playlistUri, lines, treeUri);
+        }
+        List<Uri> uris = new ArrayList<>(lines.size());
+        for (String line : lines) uris.add(resolveTargetUri(playlistFile, playlistUri, line));
+        return uris;
+    }
+
     /** A playlist line as a File: absolute if it starts with '/', otherwise relative to the playlist. */
     private static File playlistRelativeFile(File playlistDir, String pathValue) {
         return pathValue.startsWith("/") ? new File(pathValue) : new File(playlistDir, pathValue);

@@ -1632,15 +1632,17 @@ public class FileBrowserQueueActivity extends Activity {
     // Reads and resolves the playlist off the main thread (file I/O + per-line URI resolution can
     // be slow on SAF/content providers), then applies the result and shows toasts on the UI thread.
     private void addPlaylistToQueue(FileEntry playlistEntry) {
+        final Uri treeUri = storageBrowser.getCurrentTreeUri();
         tagReadExecutor.submit(() -> {
             List<String> lines = playlistResolver.readLines(playlistEntry.uri);
+            List<Uri> uris = playlistResolver.resolveAll(playlistEntry.file, playlistEntry.uri, lines, treeUri);
 
-            // Resolve each entry using same-directory logic (exact + different extension).
             ArrayList<QueueEntry> resolvedEntries = new ArrayList<>(lines.size());
             ArrayList<String> missingNamesToToast = new ArrayList<>();
             int missingCount = 0;
-            for (String line : lines) {
-                Uri uri = playlistResolver.resolveTargetUri(playlistEntry.file, playlistEntry.uri, line);
+            for (int i = 0; i < lines.size(); i++) {
+                String line = lines.get(i);
+                Uri uri = uris.get(i);
                 if (uri == null) {
                     if (missingNamesToToast.size() < 2) {
                         missingNamesToToast.add(PlaylistResolver.displayName(line));
@@ -2151,20 +2153,11 @@ public class FileBrowserQueueActivity extends Activity {
         final Uri treeUri = storageBrowser.getCurrentTreeUri();
         tagReadExecutor.submit(() -> {
             List<String> lines = playlistResolver.readLines(playlistEntry.uri);
+            List<Uri> uris = playlistResolver.resolveAll(playlistEntry.file, playlistEntry.uri, lines, treeUri);
             List<FileEntry> tracks = new ArrayList<>(lines.size());
-            if (playlistEntry.file == null && treeUri != null) {
-                List<Uri> uris = playlistResolver.resolveDocumentUrisBatch(playlistEntry.uri, lines, treeUri);
-                for (int i = 0; i < lines.size(); i++) {
-                    Uri uri = uris.get(i);
-                    if (uri != null)
-                        tracks.add(new FileEntry(uri, PlaylistResolver.displayName(lines.get(i)), false));
-                }
-            } else {
-                for (String line : lines) {
-                    Uri uri = playlistResolver.resolveTargetUri(playlistEntry.file, playlistEntry.uri, line);
-                    if (uri != null)
-                        tracks.add(new FileEntry(uri, PlaylistResolver.displayName(line), false));
-                }
+            for (int i = 0; i < lines.size(); i++) {
+                if (uris.get(i) != null)
+                    tracks.add(new FileEntry(uris.get(i), PlaylistResolver.displayName(lines.get(i)), false));
             }
             runOnUiThread(() -> {
                 if (versionAtStart != fileEntriesVersion) return;

@@ -11,7 +11,13 @@ import java.util.List;
 
 final class QueueStore {
 
-    private static final String PREFS = "live_queue_player";
+    /**
+     * The queue's own prefs file. It used to live in the settings file ("live_queue_player"), and a
+     * SharedPreferences write always rewrites the whole file — so every EQ tap, output change or
+     * fade setting rewrote the entire serialized queue as well.
+     */
+    private static final String PREFS = "play_queue";
+    private static final String LEGACY_PREFS = "live_queue_player";
     static final String KEY_QUEUE = "persisted_queue_v1";
     private static final String KEY_PLAYBACK_OFFSET = "playback_offset";
     private static final String KEY_ANCHOR_ID = "anchor_entry_id";
@@ -24,7 +30,28 @@ final class QueueStore {
 
     /** Backing prefs for the queue; also where queue-change listeners register. */
     static SharedPreferences prefs(Context context) {
-        return context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        SharedPreferences prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        migrateFromSettingsFile(context, prefs);
+        return prefs;
+    }
+
+    /**
+     * Moves a queue saved by an older version out of the settings file, once. Cheap on every later
+     * call: three lookups in the (already loaded) settings map, which no longer holds these keys.
+     */
+    private static synchronized void migrateFromSettingsFile(Context context, SharedPreferences prefs) {
+        SharedPreferences legacy = context.getSharedPreferences(LEGACY_PREFS, Context.MODE_PRIVATE);
+        if (!legacy.contains(KEY_QUEUE) && !legacy.contains(KEY_PLAYBACK_OFFSET)
+                && !legacy.contains(KEY_ANCHOR_ID)) {
+            return;
+        }
+        SharedPreferences.Editor to = prefs.edit();
+        if (legacy.contains(KEY_QUEUE)) to.putString(KEY_QUEUE, legacy.getString(KEY_QUEUE, null));
+        if (legacy.contains(KEY_PLAYBACK_OFFSET)) to.putInt(KEY_PLAYBACK_OFFSET, legacy.getInt(KEY_PLAYBACK_OFFSET, 0));
+        if (legacy.contains(KEY_ANCHOR_ID)) to.putInt(KEY_ANCHOR_ID, legacy.getInt(KEY_ANCHOR_ID, 0));
+        // commit(), not apply(): the copy must be on disk before the original is dropped.
+        if (!to.commit()) return;
+        legacy.edit().remove(KEY_QUEUE).remove(KEY_PLAYBACK_OFFSET).remove(KEY_ANCHOR_ID).apply();
     }
 
     static final class Entry {
@@ -44,12 +71,11 @@ final class QueueStore {
     }
 
     static void save(Context context, List<Entry> entries) {
-        SharedPreferences prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
-        SharedPreferences.Editor edit = prefs.edit();
+        SharedPreferences.Editor edit = prefs(context).edit();
 
         if (entries == null || entries.isEmpty()) {
             edit.remove(KEY_QUEUE);
-            commit(edit);
+            edit.apply();
             return;
         }
 
@@ -67,13 +93,12 @@ final class QueueStore {
         }
 
         edit.putString(KEY_QUEUE, array.toString());
-        commit(edit);
+        edit.apply();
     }
 
     static ArrayList<Entry> load(Context context) {
         ArrayList<Entry> result = new ArrayList<>();
-        SharedPreferences prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
-        String raw = prefs.getString(KEY_QUEUE, null);
+        String raw = prefs(context).getString(KEY_QUEUE, null);
         if (raw == null || raw.length() == 0) return result;
 
         try {
@@ -97,45 +122,33 @@ final class QueueStore {
     }
 
     static void savePlaybackOffset(Context context, int offset) {
-        SharedPreferences.Editor edit = context
-                .getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-                .edit();
+        SharedPreferences.Editor edit = prefs(context).edit();
         edit.putInt(KEY_PLAYBACK_OFFSET, offset);
-        commit(edit);
+        edit.apply();
     }
 
     static int loadPlaybackOffset(Context context) {
-        return context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-                      .getInt(KEY_PLAYBACK_OFFSET, 0);
+        return prefs(context).getInt(KEY_PLAYBACK_OFFSET, 0);
     }
 
     /** Persists the insert-anchor entry id; {@code anchorEntryId <= 0} clears it. */
     static void saveAnchor(Context context, int anchorEntryId) {
-        SharedPreferences.Editor edit = context
-                .getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-                .edit();
+        SharedPreferences.Editor edit = prefs(context).edit();
         if (anchorEntryId > 0) edit.putInt(KEY_ANCHOR_ID, anchorEntryId);
         else edit.remove(KEY_ANCHOR_ID);
-        commit(edit);
+        edit.apply();
     }
 
     /** Returns the persisted insert-anchor entry id, or 0 when none is set. */
     static int loadAnchor(Context context) {
-        return context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-                      .getInt(KEY_ANCHOR_ID, 0);
+        return prefs(context).getInt(KEY_ANCHOR_ID, 0);
     }
 
     static void clear(Context context) {
-        SharedPreferences.Editor edit = context
-                .getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-                .edit();
+        SharedPreferences.Editor edit = prefs(context).edit();
         edit.remove(KEY_QUEUE);
         edit.remove(KEY_PLAYBACK_OFFSET);
         edit.remove(KEY_ANCHOR_ID);
-        commit(edit);
-    }
-
-    private static void commit(SharedPreferences.Editor edit) {
         edit.apply();
     }
 }

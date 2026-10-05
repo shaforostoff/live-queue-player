@@ -114,11 +114,6 @@ class MetadataExtractor {
         this.contentResolver = contentResolver;
     }
 
-    @SuppressWarnings("unused")
-    boolean isLyricsCached(Uri uri) {
-        return false;
-    }
-
     boolean isAllTagsCached(Uri uri) {
         if (uri == null) return false;
         TagEntry e = tagCache.get(uriToKey(uri));

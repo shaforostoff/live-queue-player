@@ -1504,11 +1504,6 @@ public class FileBrowserQueueActivity extends Activity {
         if (entry == null || entry.uri == null) {
             return;
         }
-        if (metadataExtractor.isLyricsCached(entry.uri)) {
-            showLyricsOverlay(entry.name, metadataExtractor.readLyricsTag(entry.uri));
-            return;
-        }
-
         new Thread(() -> {
             String lyrics = metadataExtractor.readLyricsTag(entry.uri);
             runOnUiThread(() -> showLyricsOverlay(entry.name, lyrics));

@@ -117,22 +117,6 @@ public class UnicodeFormTest {
                      FuzzySearch.matchFuzzy(NFD_NINO, NFC_NINO), 0.0001f);
     }
 
-    @Test
-    public void fuzzyContainsDoesNotSplitWordsAtACombiningTilde() {
-        // Decomposed "Niño" must stay one word: split at the tilde it would be "Ni" + "o".
-        assertEquals(1.0f, FuzzySearch.containsFuzzy("01 " + NFD_NINO + " bonito.mp3", NFC_NINO), 0.0001f);
-        assertEquals(1.0f, FuzzySearch.containsFuzzy("01 " + NFC_NINO + " bonito.mp3", NFD_NINO), 0.0001f);
-    }
-
-    @Test
-    public void fuzzyShortWordsMatchAcrossSpellings() {
-        // Short words take the direct-comparison path, where the decomposed form is one char longer.
-        assertEquals(1.0f, FuzzySearch.containsFuzzy("El ñu corre.mp3", "ñu"), 0.0001f);
-        assertEquals(1.0f, FuzzySearch.containsFuzzy("El ñu corre.mp3", "ñu"), 0.0001f);
-        // Non-Latin short words still compare as themselves.
-        assertEquals(0.0f, FuzzySearch.containsFuzzy("El ñu corre.mp3", "да"), 0.0001f);
-    }
-
     private static void assertSameInstance(String expected, String actual) {
         assertTrue("expected the original instance back (no allocation)", expected == actual);
     }

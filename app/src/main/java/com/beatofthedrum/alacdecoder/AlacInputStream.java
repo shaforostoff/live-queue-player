@@ -1,8 +1,6 @@
 package com.beatofthedrum.alacdecoder;
 
 import java.io.DataInputStream;
-import java.io.FileInputStream;
-import java.io.IOException;
 import java.io.InputStream;
 
 /**
@@ -18,15 +16,5 @@ public class AlacInputStream extends DataInputStream {
      */
     public AlacInputStream(InputStream in) {
         super(in);
-    }
-
-    public void seek(long pos) {
-        if (in instanceof FileInputStream) {
-            try {
-                ((FileInputStream) in).getChannel().position(pos);
-            } catch (IOException e) {
-                e.printStackTrace();
-            }
-        }
     }
 }

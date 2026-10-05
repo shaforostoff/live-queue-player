@@ -228,11 +228,6 @@ public class Launcher extends Activity {
     }
 
     @Override
-    protected void onStart() {
-        super.onStart();
-    }
-
-    @Override
     protected void onDestroy() {
         super.onDestroy();
         Service.removeStateListener(stateListener);

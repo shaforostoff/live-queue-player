@@ -284,49 +284,4 @@ public class AlacUtils
 
 		return 1;
 	}
-
-    /**
-     * sets position in pcm samples
-     * @param ac alac context
-     * @param position position in pcm samples to go to
-     */
-
-    public static void AlacSetPosition(AlacContext ac, long position) {
-        DemuxResT res = ac.demux_res;
-
-        int current_position = 0;
-        int current_sample = 0;
-        SampleDuration sample_info = new SampleDuration();
-        for (int i = 0; i < res.stsc.length; i++) {
-            ChunkInfo chunkInfo = res.stsc[i];
-            int last_chunk;
-
-            if (i < res.stsc.length - 1) {
-                last_chunk = res.stsc[i + 1].first_chunk;
-            } else {
-                last_chunk = res.stco.length;
-            }
-
-            for (int chunk = chunkInfo.first_chunk; chunk <= last_chunk; chunk++) {
-                int pos = res.stco[chunk - 1];
-                int sample_count = chunkInfo.samples_per_chunk;
-                while (sample_count > 0) {
-                    int ret = get_sample_info(res, current_sample, sample_info);
-                    if (ret == 0) return;
-                    current_position += sample_info.sample_duration;
-                    if (position < current_position) {
-                        ac.input_stream.seek(pos);
-                        ac.current_sample_block = current_sample;
-                        ac.offset =
-                                (int) (position - (current_position - sample_info.sample_duration))
-                                        * AlacGetNumChannels(ac);
-                        return;
-                    }
-                    pos += sample_info.sample_byte_size;
-                    current_sample++;
-                    sample_count--;
-                }
-            }
-        }
-    }
 }

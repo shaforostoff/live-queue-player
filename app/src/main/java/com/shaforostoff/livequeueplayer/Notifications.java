@@ -34,9 +34,8 @@ class Notifications {
       var importance = NotificationManager.IMPORTANCE_LOW;
       var notificationChannel = new NotificationChannel(NOTIFICATION_CHANNEL, name, importance);
       notificationChannel.setDescription(description);
+      // IMPORTANCE_LOW already makes no sound; a channel can't be changed after it is created.
       ((NotificationManager) service.getSystemService(Context.NOTIFICATION_SERVICE)).createNotificationChannel(notificationChannel);
-      notificationChannel.setSound(null, null);
-      notificationChannel.setVibrationPattern(null);
     }
   }
 

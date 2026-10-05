@@ -88,7 +88,6 @@ final class StorageBrowser {
 
     boolean isBrowsingDocumentTree() { return browsingDocumentTree; }
     Uri getCurrentTreeUri() { return currentTreeUri; }
-    boolean isDocumentStackEmpty() { return documentUriStack.isEmpty(); }
     boolean hasDocumentLocation() { return currentTreeUri != null && !documentUriStack.isEmpty(); }
     Uri getDocumentRootUri() { return documentUriStack.isEmpty() ? null : documentUriStack.get(0); }
     Uri getCurrentDocumentUri() {

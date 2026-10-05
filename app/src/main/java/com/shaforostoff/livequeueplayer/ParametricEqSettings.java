@@ -98,10 +98,6 @@ final class ParametricEqSettings {
     return NUM_SECTIONS;
   }
 
-  static int typeOf(int slot) {
-    return inRange(slot) ? TYPES[slot] : ParametricEq.TYPE_PEAK;
-  }
-
   static int labelRes(int slot) {
     return inRange(slot) ? LABELS[slot] : R.string.eq_section_generic;
   }

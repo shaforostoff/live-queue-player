@@ -221,12 +221,11 @@ final class ParametricEq {
     return Math.max(DB_FLOOR, Math.min(DB_CEILING, db));
   }
 
-  /** Largest boost anywhere on the curve, in dB — the headroom a boost-heavy setup needs. */
-  static double peakBoostDb(Section[] sections) {
+  /** Largest boost on the painted curve ({@link #bandGainsDb}), in dB, or 0 when it only cuts —
+   *  the headroom a boost-heavy setup needs. */
+  static double peakBoostDb(float[] bandGainsDb) {
     double peak = 0;
-    for (int b = 0; b < BAND_COUNT; b++) {
-      peak = Math.max(peak, responseDb(sections, bandCenterHz(b)));
-    }
+    for (float gain : bandGainsDb) peak = Math.max(peak, gain);
     return peak;
   }
 

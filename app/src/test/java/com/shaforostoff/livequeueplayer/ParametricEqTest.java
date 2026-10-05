@@ -178,10 +178,10 @@ public class ParametricEqTest {
 
   @Test
   public void peakBoostReportsTheHeadroomABoostNeeds() {
-    assertEquals(0.0, ParametricEq.peakBoostDb(new ParametricEq.Section[] {
-        on(ParametricEq.TYPE_LOW_SHELF, 160, 700, -600)}), EXACT);
-    assertEquals(6.0, ParametricEq.peakBoostDb(new ParametricEq.Section[] {
-        on(ParametricEq.TYPE_PEAK, 1000, 700, 600)}), 0.3);
+    assertEquals(0.0, ParametricEq.peakBoostDb(ParametricEq.bandGainsDb(new ParametricEq.Section[] {
+        on(ParametricEq.TYPE_LOW_SHELF, 160, 700, -600)})), EXACT);
+    assertEquals(6.0, ParametricEq.peakBoostDb(ParametricEq.bandGainsDb(new ParametricEq.Section[] {
+        on(ParametricEq.TYPE_PEAK, 1000, 700, 600)})), 0.3);
   }
 
   /** Worst absolute departure of the painted band gains from the target curve, above {@link #FROM_HZ}. */

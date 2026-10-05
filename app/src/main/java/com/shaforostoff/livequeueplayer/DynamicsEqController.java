@@ -84,12 +84,12 @@ final class DynamicsEqController implements EqController {
       // curve makes the switch seamless.
       effect.setEnabled(true);
 
-      boolean on = ParametricEqSettings.isEnabled(context);
-      ParametricEq.Section[] sections = on ? ParametricEqSettings.sections(context) : null;
-      float[] gainsDb = on ? ParametricEq.bandGainsDb(sections) : new float[ParametricEq.BAND_COUNT];
+      // Off is a null section list, which paints flat: all zeros, so it never engages the limiter.
+      float[] gainsDb = ParametricEq.bandGainsDb(
+          ParametricEqSettings.isEnabled(context) ? ParametricEqSettings.sections(context) : null);
 
       pushCurve(effect, gainsDb);
-      pushLimiter(effect, on && ParametricEq.peakBoostDb(sections) > LIMITER_ENGAGE_DB);
+      pushLimiter(effect, ParametricEq.peakBoostDb(gainsDb) > LIMITER_ENGAGE_DB);
     } catch (RuntimeException ignored) {
       // Session went away mid-update; ignore.
     }

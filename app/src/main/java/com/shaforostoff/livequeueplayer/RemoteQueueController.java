@@ -1,22 +1,15 @@
 package com.shaforostoff.livequeueplayer;
 
 import android.app.Activity;
-import android.graphics.Bitmap;
-import android.graphics.Canvas;
 import android.graphics.drawable.ColorDrawable;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.SparseArray;
 import android.util.TypedValue;
-import android.view.HapticFeedbackConstants;
 import android.view.LayoutInflater;
-import android.view.MotionEvent;
 import android.view.View;
-import android.view.ViewConfiguration;
 import android.view.ViewGroup;
 import android.widget.BaseAdapter;
-import android.widget.FrameLayout;
-import android.widget.ImageView;
 import android.widget.ListView;
 import android.widget.Button;
 import android.widget.PopupWindow;
@@ -46,33 +39,6 @@ final class RemoteQueueController {
         TrackEntry(int id) { this.id = id; }
     }
 
-    private static final class SwipeState {
-        float downX, downY;
-        int   startPosition = -1;
-        boolean handled;
-        View swipingView;
-        View contentView;
-
-        void resetView() {
-            if (contentView != null) { contentView.setTranslationX(0); contentView = null; }
-            swipingView = null;
-        }
-    }
-
-    private static final class DragState {
-        int currentPosition = -1;
-        boolean active;
-        View ghostView;
-        float touchOffsetX, touchOffsetY;
-
-        void reset() {
-            currentPosition = -1;
-            active = false;
-            ghostView = null;
-            touchOffsetX = touchOffsetY = 0;
-        }
-    }
-
     private final Activity activity;
     private final BluetoothController btController;
     private final ListView queueList;
@@ -86,12 +52,12 @@ final class RemoteQueueController {
     private final SparseArray<TrackEntry> metaCache    = new SparseArray<>();
 
     private final QueueAdapter adapter;
+    private final ListGestures gestures;
     private final Handler uiHandler = new Handler(Looper.getMainLooper());
 
     private int     currentId     = -1;
     private int     anchorId      = 0;     // entry id of the remote insert anchor (0 = none)
     private String  playbackState = "stopped";
-    private int     draggingIndex = -1;
     private boolean scrollToNewTrackPending;
     private Runnable fadeEndRunnable;
 
@@ -142,7 +108,31 @@ final class RemoteQueueController {
         adapter = new QueueAdapter();
         queueList.setAdapter(adapter);
 
+        gestures = new ListGestures(activity, queueList)
+                .onSwipeLeft(this::removeAt)
+                .onSwipeRight(this::toggleAnchorAt)
+                // The playing track can't be picked up; the host decides where the rest may go.
+                .enableDrag(pos -> pos < queueEntries.size() && queueEntries.get(pos).id != currentId,
+                        target -> true,
+                        (from, to) -> {
+                            queueEntries.add(to, queueEntries.remove(from));
+                            adapter.notifyDataSetChanged();
+                        },
+                        (pos, cancelled) -> {
+                            adapter.notifyDataSetChanged();
+                            if (!cancelled && pos < queueEntries.size()) {
+                                try {
+                                    JSONObject cmd = new JSONObject();
+                                    cmd.put("type", "move_track");
+                                    cmd.put("id", queueEntries.get(pos).id);
+                                    cmd.put("to_position", pos);
+                                    btController.sendRaw(cmd.toString());
+                                } catch (Exception ignored) {}
+                            }
+                        });
+
         queueList.setOnItemClickListener((parent, view, position, id) -> {
+            if (gestures.consumeSuppressedClick()) return;
             if ("playing".equals(playbackState)) return;
             if (position < 0 || position >= queueEntries.size()) return;
             try {
@@ -159,7 +149,6 @@ final class RemoteQueueController {
         volumeButton.setOnClickListener(v -> showVolumePopup());
         eqButton.setOnClickListener(v -> showEqDialog());
 
-        installGestureHandler(queueList);
         updatePlaybackButtons();
     }
 
@@ -682,8 +671,22 @@ final class RemoteQueueController {
         playButton.setVisibility("fading".equals(playbackState)  ? View.VISIBLE : View.GONE);
     }
 
+    /** Optimistically removes the swiped track and tells the host. */
+    private void removeAt(int pos) {
+        if (pos < 0 || pos >= queueEntries.size()) return;
+        int trackId = queueEntries.remove(pos).id;
+        adapter.notifyDataSetChanged();
+        try {
+            JSONObject cmd = new JSONObject();
+            cmd.put("type", "remove_track");
+            cmd.put("id", trackId);
+            btController.sendRaw(cmd.toString());
+        } catch (Exception ignored) {}
+    }
+
     /** Optimistically toggles the remote insert anchor on the swiped track and tells the host. */
     private void toggleAnchorAt(int pos) {
+        if (pos < 0 || pos >= queueEntries.size()) return;
         TrackEntry entry = queueEntries.get(pos);
         if (entry.id == currentId) return;   // the playing track can't be an anchor
         anchorId = (anchorId == entry.id) ? 0 : entry.id;
@@ -694,212 +697,6 @@ final class RemoteQueueController {
             cmd.put("id", entry.id);
             btController.sendRaw(cmd.toString());
         } catch (Exception ignored) {}
-    }
-
-    private void installGestureHandler(ListView list) {
-        SwipeState swipeState     = new SwipeState();
-        DragState  dragState      = new DragState();
-        float      verticalSlop   = 40f * activity.getResources().getDisplayMetrics().density;
-        Runnable[] longPressRunnable = {null};
-        int[]      dragOriginId   = {-1};
-        // The drag may only arm while the finger is essentially still. Past the system touch slop
-        // the ListView has already committed to scrolling, so anything beyond it - however slowly
-        // it got there - is a scroll, never a hold.
-        float      dragArmSlop    = ViewConfiguration.get(activity).getScaledTouchSlop();
-        long       dragArmDelay   = FileBrowserQueueActivity.queueDragArmDelay();
-        int[]      downScroll     = {0, 0};   // firstVisiblePosition + its top offset, at ACTION_DOWN
-
-        list.setOnTouchListener((v, event) -> {
-            switch (event.getAction()) {
-
-                case MotionEvent.ACTION_DOWN: {
-                    downScroll[0] = list.getFirstVisiblePosition();
-                    downScroll[1] = list.getChildCount() > 0 ? list.getChildAt(0).getTop() : 0;
-                    swipeState.downX         = event.getX();
-                    swipeState.downY         = event.getY();
-                    swipeState.startPosition = list.pointToPosition((int) event.getX(), (int) event.getY());
-                    swipeState.handled       = false;
-                    swipeState.swipingView   = null;
-                    swipeState.contentView   = null;
-                    dragState.reset();
-                    dragOriginId[0] = -1;
-                    if (longPressRunnable[0] != null) {
-                        uiHandler.removeCallbacks(longPressRunnable[0]);
-                        longPressRunnable[0] = null;
-                    }
-                    if (swipeState.startPosition >= 0) {
-                        int firstVisible = list.getFirstVisiblePosition();
-                        int childIndex   = swipeState.startPosition - firstVisible;
-                        if (childIndex >= 0 && childIndex < list.getChildCount()) {
-                            swipeState.swipingView = list.getChildAt(childIndex);
-                            swipeState.contentView = swipeState.swipingView.findViewById(R.id.swipe_content);
-                            if (swipeState.contentView == null) swipeState.contentView = swipeState.swipingView;
-                            int[] itemScreenPos = new int[2];
-                            swipeState.swipingView.getLocationOnScreen(itemScreenPos);
-                            dragState.touchOffsetX = event.getRawX() - itemScreenPos[0];
-                            dragState.touchOffsetY = event.getRawY() - itemScreenPos[1];
-                        }
-                        int pos = swipeState.startPosition;
-                        longPressRunnable[0] = () -> {
-                            if (!swipeState.handled && !dragState.active && swipeState.swipingView != null) {
-                                if (pos >= 0 && pos < queueEntries.size()
-                                        && queueEntries.get(pos).id == currentId) {
-                                    longPressRunnable[0] = null;
-                                    return;
-                                }
-                                // The list scrolled under the finger (slow drag, or a fling still
-                                // settling): the row is no longer where it was touched.
-                                if (list.getFirstVisiblePosition() != downScroll[0]
-                                        || (list.getChildCount() > 0
-                                                && list.getChildAt(0).getTop() != downScroll[1])) {
-                                    longPressRunnable[0] = null;
-                                    return;
-                                }
-                                View src = swipeState.swipingView;
-                                Bitmap bmp = Bitmap.createBitmap(src.getWidth(), src.getHeight(), Bitmap.Config.ARGB_8888);
-                                src.draw(new Canvas(bmp));
-                                ImageView ghost = new ImageView(activity);
-                                ghost.setImageBitmap(bmp);
-                                ghost.setAlpha(0.85f);
-                                ghost.setElevation(8f * activity.getResources().getDisplayMetrics().density);
-                                ViewGroup decor = (ViewGroup) activity.getWindow().getDecorView();
-                                int[] decorPos = new int[2];
-                                decor.getLocationOnScreen(decorPos);
-                                int[] itemPos = new int[2];
-                                src.getLocationOnScreen(itemPos);
-                                decor.addView(ghost, new FrameLayout.LayoutParams(src.getWidth(), src.getHeight()));
-                                ghost.setX(itemPos[0] - decorPos[0]);
-                                ghost.setY(itemPos[1] - decorPos[1]);
-                                src.setAlpha(0f);
-                                dragState.ghostView       = ghost;
-                                dragState.currentPosition = pos;
-                                dragState.active          = true;
-                                draggingIndex             = pos;
-                                if (pos >= 0 && pos < queueEntries.size()) {
-                                    dragOriginId[0] = queueEntries.get(pos).id;
-                                }
-                                longPressRunnable[0] = null;
-                                list.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
-                                list.getParent().requestDisallowInterceptTouchEvent(true);
-                                FileBrowserQueueActivity.cancelListTouch(list);
-                            }
-                        };
-                        uiHandler.postDelayed(longPressRunnable[0], dragArmDelay);
-                    }
-                    return false;
-                }
-
-                case MotionEvent.ACTION_MOVE: {
-                    if (dragState.active) {
-                        if (dragState.ghostView != null) {
-                            ViewGroup decor = (ViewGroup) activity.getWindow().getDecorView();
-                            int[] decorPos = new int[2];
-                            decor.getLocationOnScreen(decorPos);
-                            dragState.ghostView.setX(event.getRawX() - dragState.touchOffsetX - decorPos[0]);
-                            dragState.ghostView.setY(event.getRawY() - dragState.touchOffsetY - decorPos[1]);
-                        }
-                        int targetPos = list.pointToPosition((int) event.getX(), (int) event.getY());
-                        if (targetPos >= 0 && targetPos < queueEntries.size()
-                                && targetPos != dragState.currentPosition) {
-                            queueEntries.add(targetPos, queueEntries.remove(dragState.currentPosition));
-                            dragState.currentPosition = targetPos;
-                            draggingIndex             = targetPos;
-                            adapter.notifyDataSetChanged();
-                        }
-                        return true;
-                    }
-
-                    if (swipeState.handled || swipeState.startPosition < 0) return swipeState.handled;
-                    float dx = event.getX() - swipeState.downX;
-                    float dy = event.getY() - swipeState.downY;
-
-                    if (Math.hypot(dx, dy) > dragArmSlop && longPressRunnable[0] != null) {
-                        uiHandler.removeCallbacks(longPressRunnable[0]);
-                        longPressRunnable[0] = null;
-                    }
-                    if (Math.abs(dy) > verticalSlop && Math.abs(dy) > Math.abs(dx)) {
-                        swipeState.resetView();
-                        swipeState.startPosition = -1;
-                        return false;
-                    }
-                    if (dx < 0 && swipeState.swipingView != null) {
-                        swipeState.contentView.setTranslationX(Math.max(dx, -swipeState.contentView.getWidth()));
-                        list.getParent().requestDisallowInterceptTouchEvent(true);
-                        if (swipeState.contentView.getWidth() > 0
-                                && Math.abs(dx) >= swipeState.contentView.getWidth() / 2f) {
-                            swipeState.handled = true;
-                            swipeState.resetView();
-                            int pos = swipeState.startPosition;
-                            if (pos >= 0 && pos < queueEntries.size()) {
-                                int trackId = queueEntries.get(pos).id;
-                                queueEntries.remove(pos);
-                                adapter.notifyDataSetChanged();
-                                try {
-                                    JSONObject cmd = new JSONObject();
-                                    cmd.put("type", "remove_track");
-                                    cmd.put("id", trackId);
-                                    btController.sendRaw(cmd.toString());
-                                } catch (Exception ignored) {}
-                            }
-                        }
-                        return true;
-                    }
-                    if (dx > 0 && swipeState.swipingView != null) {
-                        swipeState.contentView.setTranslationX(Math.min(dx, swipeState.contentView.getWidth()));
-                        list.getParent().requestDisallowInterceptTouchEvent(true);
-                        if (swipeState.contentView.getWidth() > 0
-                                && Math.abs(dx) >= swipeState.contentView.getWidth() / 2f) {
-                            swipeState.handled = true;
-                            swipeState.resetView();
-                            int pos = swipeState.startPosition;
-                            if (pos >= 0 && pos < queueEntries.size()) {
-                                toggleAnchorAt(pos);
-                            }
-                        }
-                        return true;
-                    }
-                    return false;
-                }
-
-                case MotionEvent.ACTION_UP:
-                case MotionEvent.ACTION_CANCEL: {
-                    if (longPressRunnable[0] != null) {
-                        uiHandler.removeCallbacks(longPressRunnable[0]);
-                        longPressRunnable[0] = null;
-                    }
-                    if (dragState.active) {
-                        if (dragState.ghostView != null) {
-                            ((ViewGroup) activity.getWindow().getDecorView()).removeView(dragState.ghostView);
-                            if (swipeState.swipingView != null) swipeState.swipingView.setAlpha(1f);
-                        }
-                        int finalPos = dragState.currentPosition;
-                        int trackId  = dragOriginId[0];
-                        dragState.reset();
-                        draggingIndex = -1;
-                        adapter.notifyDataSetChanged();
-                        if (trackId >= 0 && event.getAction() != MotionEvent.ACTION_CANCEL) {
-                            try {
-                                JSONObject cmd = new JSONObject();
-                                cmd.put("type", "move_track");
-                                cmd.put("id", trackId);
-                                cmd.put("to_position", finalPos);
-                                btController.sendRaw(cmd.toString());
-                            } catch (Exception ignored) {}
-                        }
-                        return true;
-                    }
-                    if (!swipeState.handled) v.performClick();
-                    swipeState.resetView();
-                    boolean handled = swipeState.handled;
-                    swipeState.startPosition = -1;
-                    swipeState.handled       = false;
-                    return handled;
-                }
-
-                default:
-                    return false;
-            }
-        });
     }
 
     private final class QueueAdapter extends BaseAdapter {
@@ -934,7 +731,7 @@ final class RemoteQueueController {
             View     content    = convertView.findViewById(R.id.swipe_content);
             View     anchorMarker = convertView.findViewById(R.id.anchor_marker);
 
-            convertView.setAlpha(position == draggingIndex ? 0f : 1f);
+            convertView.setAlpha(position == gestures.dragPosition() ? 0f : 1f);
             content.setTranslationX(0);
 
             boolean isCurrent = (currentId >= 0 && entry.id == currentId);

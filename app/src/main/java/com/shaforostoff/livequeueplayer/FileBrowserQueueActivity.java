@@ -26,27 +26,20 @@ import android.text.TextWatcher;
 import android.provider.DocumentsContract;
 import android.provider.MediaStore;
 import android.util.TypedValue;
-import android.graphics.Bitmap;
-import android.graphics.Canvas;
 import android.graphics.Rect;
 import android.graphics.drawable.ClipDrawable;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.LayerDrawable;
 import android.view.Gravity;
-import android.view.HapticFeedbackConstants;
-import android.view.MotionEvent;
 import android.view.LayoutInflater;
 import android.view.View;
-import android.view.ViewConfiguration;
 import android.view.ViewGroup;
 import android.view.WindowInsets;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.EditText;
 import android.widget.BaseAdapter;
 import android.widget.Button;
-import android.widget.FrameLayout;
-import android.widget.ImageView;
 import android.widget.ListView;
 import android.widget.ScrollView;
 import android.widget.TextView;
@@ -91,47 +84,9 @@ public class FileBrowserQueueActivity extends Activity {
     enum TagState { UNKNOWN, LOADING, RESOLVED }
 
     @FunctionalInterface
-    private interface SwipeAction { void onSwipe(int position); }
-    @FunctionalInterface
-    private interface SwipePredicate { boolean test(int position); }
-    @FunctionalInterface
     private interface IndexedTask { void run(int index); }
     @FunctionalInterface
     private interface RelativePathResolver { String resolve(Uri entryUri); }
-
-    private static final class SwipeState {
-        float downX, downY;
-        int startPosition = -1;
-        boolean handled;
-        boolean swiping;
-        View swipingView;
-        View contentView;
-
-        void resetView() {
-            if (contentView != null) {
-                contentView.setTranslationX(0);
-                contentView = null;
-            }
-            swipingView = null;
-            swiping = false;
-        }
-    }
-
-    private static final class DragState {
-        int currentPosition = -1;
-        boolean active;
-        View ghostView;
-        float touchOffsetX;
-        float touchOffsetY;
-
-        void reset() {
-            currentPosition = -1;
-            active = false;
-            ghostView = null;
-            touchOffsetX = 0;
-            touchOffsetY = 0;
-        }
-    }
 
     private static final int PERMISSION_REQUEST_CODE = 2001;
     private static final int TREE_REQUEST_CODE = 2002;
@@ -142,8 +97,6 @@ public class FileBrowserQueueActivity extends Activity {
     private static final String PREF_PLAYLIST_FOLDER_URI  = "playlist_folder_uri";
     private static final String PREF_PLAYLIST_FOLDER_NAME = "playlist_folder_name";
     private static final long PLAYBACK_SYNC_INTERVAL_MS = 1_000L;
-    /** Hold time on top of the system long-press timeout before a queue row starts dragging. */
-    private static final long DRAG_ARM_EXTRA_MS = 250L;
     private static final int PROGRESS_LEVEL_MAX = 10_000;
     private static final int SORT_FILENAME = 0;
     private static final int SORT_YEAR = 1;
@@ -193,17 +146,10 @@ public class FileBrowserQueueActivity extends Activity {
      *  track starts (or playback fails), so this fires only when it was genuinely lost. */
     private static final long QUEUE_TRANSITION_TIMEOUT_MS = 10_000L;
     private int currentPlayingQueueIndex = -1;
-    private int draggingQueueIndex = -1;
-    // set when a swipe gesture starts so the ListView's item-click (fired on finger
-    // release) is ignored, even if the swipe didn't move far enough to trigger its action
-    private boolean suppressItemClick;
-    // Active swipe state for the queue list. Held as a field (not a local in the gesture handler)
-    // so per-row refreshes can skip the row currently being swiped instead of clobbering it.
-    private final SwipeState queueSwipeState = new SwipeState();
-    private final SwipeState fileSwipeState = new SwipeState();
-    // swipe slop thresholds (px), resolved once from display density
-    private float swipeVerticalSlop;
-    private float swipeHorizontalSlop;
+    // Swipe/drag handling for the two lists. Held as fields so per-row refreshes can skip the row
+    // currently being swiped instead of clobbering it, and the queue adapter can hide a dragged row.
+    private ListGestures fileGestures;
+    private ListGestures queueGestures;
     // row colours shared by the file-browser and queue adapters, resolved once
     private int themeBackgroundColor;
     private int progressTrackColor;
@@ -338,8 +284,6 @@ public class FileBrowserQueueActivity extends Activity {
         setContentView(R.layout.activity_file_browser_queue);
 
         // -- resolve shared metrics & colours once --------------------------
-        swipeVerticalSlop = dp(40f);
-        swipeHorizontalSlop = dp(20f);
         TypedValue bg = new TypedValue();
         getTheme().resolveAttribute(android.R.attr.colorBackground, bg, true);
         themeBackgroundColor = bg.data;
@@ -461,7 +405,7 @@ public class FileBrowserQueueActivity extends Activity {
 
         // -- file browser: tap to preview (when secondary output active) or add
         fileBrowserList.setOnItemClickListener((parent, view, position, id) -> {
-            if (suppressItemClick) { suppressItemClick = false; return; }
+            if (fileGestures.consumeSuppressedClick()) return;
             FileEntry entry = filteredFileEntries.get(position);
             if (entry.isDirectory()) {
                 if (entry.file != null) navigateTo(entry.file);
@@ -490,11 +434,14 @@ public class FileBrowserQueueActivity extends Activity {
                 }
             }
         });
-        installFileBrowserSwipeAdd(fileBrowserList);
+        // Swipe right adds: folders enqueue their tracks, playlists expand, files add.
+        fileGestures = new ListGestures(this, fileBrowserList)
+                .swipeIf(pos -> pos < filteredFileEntries.size())
+                .onSwipeRight(this::handleFileBrowserSwipe);
 
         // -- queue: tap item to play when stopped ----------------------------
         queueList.setOnItemClickListener((parent, view, position, id) -> {
-            if (suppressItemClick) { suppressItemClick = false; return; }
+            if (queueGestures.consumeSuppressedClick()) return;
             if (localQueueShownInRemoteMode && position == currentPlayingQueueIndex && isPlaybackActiveOrFading()) {
                 showLyricsOverlayForQueueEntry(queueEntries.get(position));
                 return;
@@ -518,7 +465,29 @@ public class FileBrowserQueueActivity extends Activity {
                 //Toast.makeText(this, "Swipe right: remove. Stop playback to play this track", Toast.LENGTH_SHORT).show();
             }
         });
-        installQueueGestureHandler(queueList);
+        queueGestures = new ListGestures(this, queueList)
+                .swipeIf(pos -> pos != currentPlayingQueueIndex || localQueueShownInRemoteMode)
+                .onRowTouched(this::labelQueueSwipeHints)
+                // Left swipe removes; mirror the change to a connected client (no-op off-host).
+                .onSwipeLeft(pos -> {
+                    if (removeQueueAt(pos)) notifyRemoteQueueChanged();
+                })
+                // Right swipe: send to remote in remote mode, otherwise set/clear the insert anchor.
+                .onSwipeRight(pos -> {
+                    if (localQueueShownInRemoteMode) {
+                        sendQueueEntryToRemote(pos);
+                    } else {
+                        toggleAnchor(pos);
+                        notifyRemoteQueueChanged();
+                    }
+                })
+                // The playing track stays put; others may pass over it only at either end.
+                .enableDrag(pos -> pos != currentPlayingQueueIndex,
+                        target -> target != currentPlayingQueueIndex
+                                || currentPlayingQueueIndex == queueEntries.size() - 1
+                                || currentPlayingQueueIndex == 0,
+                        this::moveQueueItem,
+                        (pos, cancelled) -> onQueueDragDropped());
 
         // -- navigation & playback buttons -----------------------------------
         clearButton.setOnClickListener(v -> clearQueueAndStopPlayback());
@@ -2034,48 +2003,6 @@ public class FileBrowserQueueActivity extends Activity {
         return dips * getResources().getDisplayMetrics().density;
     }
 
-    /** Initialises a swipe gesture on ACTION_DOWN: records the touch origin, resets the
-     *  swipe state, and resolves the touched row + its swipe-content view (left null when
-     *  the row is absent or {@code canSwipe} rejects it). */
-    private void beginSwipeGesture(ListView list, SwipeState s, MotionEvent e, SwipePredicate canSwipe) {
-        s.downX = e.getX();
-        s.downY = e.getY();
-        s.startPosition = list.pointToPosition((int) e.getX(), (int) e.getY());
-        s.handled = false;
-        s.swiping = false;
-        s.swipingView = null;
-        s.contentView = null;
-        suppressItemClick = false;
-        if (s.startPosition < 0) return;
-        int childIndex = s.startPosition - list.getFirstVisiblePosition();
-        if (childIndex >= 0 && childIndex < list.getChildCount()
-                && (canSwipe == null || canSwipe.test(s.startPosition))) {
-            s.swipingView = list.getChildAt(childIndex);
-            s.contentView = s.swipingView.findViewById(R.id.swipe_content);
-            if (s.contentView == null) s.contentView = s.swipingView;
-        }
-    }
-
-    /** Translates the swiped row for one direction and fires {@code action} once it is
-     *  dragged past half its width. Returns true if the touch was consumed as a swipe. */
-    private boolean applySwipeMove(ListView list, SwipeState s, float dx, float slop,
-                                   boolean toLeft, SwipeAction action) {
-        if (s.swipingView == null || action == null) return false;
-        if (toLeft ? dx >= -slop : dx <= slop) return false;
-        s.swiping = true;
-        float eff = toLeft ? dx + slop : dx - slop;
-        int w = s.contentView.getWidth();
-        s.contentView.setTranslationX(toLeft ? Math.max(eff, -w) : Math.min(eff, w));
-        list.getParent().requestDisallowInterceptTouchEvent(true);
-        if (w > 0 && Math.abs(eff) >= w / 2f) {
-            s.handled = true;
-            int pos = s.startPosition;
-            s.resetView();
-            action.onSwipe(pos);
-        }
-        return true;
-    }
-
     /**
      * Re-binds a single visible queue row in place via the adapter's getView, leaving every other
      * row — and any in-progress swipe translation on it — untouched. No-op if the row is off-screen
@@ -2083,7 +2010,7 @@ public class FileBrowserQueueActivity extends Activity {
      */
     private void rebindQueueRow(int position) {
         if (queueAdapter == null || queueList == null || position < 0) return;
-        if (queueSwipeState.swiping && position == queueSwipeState.startPosition) return;
+        if (queueGestures.isSwiping(position)) return;
         int child = position - queueList.getFirstVisiblePosition();
         if (child < 0 || child >= queueList.getChildCount()) return;
         queueAdapter.getView(position, queueList.getChildAt(child), queueList);
@@ -2112,7 +2039,7 @@ public class FileBrowserQueueActivity extends Activity {
             int pos = first + child;
             if (pos >= filteredFileEntries.size()) return;
             if (!uri.equals(filteredFileEntries.get(pos).uri)) continue;
-            if (fileSwipeState.swiping && pos == fileSwipeState.startPosition) return;
+            if (fileGestures.isSwiping(pos)) return;
             fileAdapter.getView(pos, fileBrowserList.getChildAt(child), fileBrowserList);
             return;
         }
@@ -2140,270 +2067,22 @@ public class FileBrowserQueueActivity extends Activity {
         lastHighlightedPreviewUri = previewUri;
     }
 
-    /**
-     * Cancels the swipe when the finger has moved dominantly vertically past the slop — the
-     * gesture is a list scroll, not a swipe. Returns true if cancelled.
-     */
-    private boolean cancelSwipeIfVerticalScroll(SwipeState s, float dx, float dy) {
-        if (Math.abs(dy) > swipeVerticalSlop && Math.abs(dy) > Math.abs(dx)) {
-            s.resetView();
-            s.startPosition = -1;
-            return true;
+    private void labelQueueSwipeHints(View row, int position) {
+        TextView start = row.findViewById(R.id.swipe_hint_start);
+        if (start != null) {
+            start.setText(localQueueShownInRemoteMode ? R.string.swipe_hint_send : R.string.swipe_hint_anchor);
         }
-        return false;
+        TextView end = row.findViewById(R.id.swipe_hint_end);
+        if (end != null) end.setText(R.string.swipe_hint_remove);
     }
 
-    /**
-     * Shared ACTION_UP/ACTION_CANCEL tail of both swipe listeners: suppresses the pending item
-     * click after a real swipe, forwards the click otherwise, and resets the gesture state.
-     * Returns what the touch listener should return (whether the gesture was handled).
-     */
-    private boolean finishSwipe(SwipeState s, View v) {
-        if (s.swiping) suppressItemClick = true;
-        if (!s.handled) v.performClick();
-        s.resetView();
-        boolean handled = s.handled;
-        s.startPosition = -1;
-        s.handled = false;
-        return handled;
-    }
-
-    /**
-     * How long a queue row must be held before it starts dragging: the system long-press timeout
-     * (so the accessibility touch-and-hold delay is honoured) plus a margin, since reordering is
-     * rare next to scrolling and a plain long-press does nothing else here. Both queues share it.
-     */
-    static long queueDragArmDelay() {
-        return ViewConfiguration.getLongPressTimeout() + DRAG_ARM_EXTRA_MS;
-    }
-
-    /**
-     * Hands the ListView an ACTION_CANCEL once a drag takes over the gesture. The list saw our
-     * ACTION_DOWN and nothing after it, so without this it keeps the row pressed, keeps its tap
-     * callbacks pending and stays in touch mode for the rest of the drag. Fed to onTouchEvent
-     * rather than dispatchTouchEvent so it bypasses this very listener and our drag state survives.
-     */
-    static void cancelListTouch(ListView list) {
-        long now = SystemClock.uptimeMillis();
-        MotionEvent cancel = MotionEvent.obtain(now, now, MotionEvent.ACTION_CANCEL, 0f, 0f, 0);
-        list.onTouchEvent(cancel);
-        cancel.recycle();
-    }
-
-    private void installQueueGestureHandler(ListView list) {
-        SwipeState swipeState = queueSwipeState;
-        DragState dragState = new DragState();
-        Runnable[] longPressRunnable = {null};
-        // The drag may only arm while the finger is essentially still. Past the system touch slop
-        // the ListView has already committed to scrolling, so anything beyond it - however slowly
-        // it got there - is a scroll, never a hold.
-        float dragArmSlop = ViewConfiguration.get(this).getScaledTouchSlop();
-        long  dragArmDelay = queueDragArmDelay();
-        int[] downScroll = {0, 0};   // firstVisiblePosition + its top offset, sampled at ACTION_DOWN
-
-        list.setOnTouchListener((v, event) -> {
-            switch (event.getAction()) {
-                case MotionEvent.ACTION_DOWN: {
-                    dragState.reset();
-                    downScroll[0] = list.getFirstVisiblePosition();
-                    downScroll[1] = list.getChildCount() > 0 ? list.getChildAt(0).getTop() : 0;
-                    if (longPressRunnable[0] != null) {
-                        uiHandler.removeCallbacks(longPressRunnable[0]);
-                        longPressRunnable[0] = null;
-                    }
-                    beginSwipeGesture(list, swipeState, event,
-                            pos -> pos != currentPlayingQueueIndex || localQueueShownInRemoteMode);
-                    if (swipeState.startPosition >= 0) {
-                        if (swipeState.swipingView != null) {
-                            TextView qHintStart = swipeState.swipingView.findViewById(R.id.swipe_hint_start);
-                            if (qHintStart != null) {
-                                if (localQueueShownInRemoteMode) qHintStart.setText(R.string.swipe_hint_send);
-                                else qHintStart.setText(R.string.swipe_hint_anchor);
-                            }
-                            TextView qHintEnd = swipeState.swipingView.findViewById(R.id.swipe_hint_end);
-                            if (qHintEnd != null) qHintEnd.setText(R.string.swipe_hint_remove);
-                            int[] itemScreenPos = new int[2];
-                            swipeState.swipingView.getLocationOnScreen(itemScreenPos);
-                            dragState.touchOffsetX = event.getRawX() - itemScreenPos[0];
-                            dragState.touchOffsetY = event.getRawY() - itemScreenPos[1];
-                        }
-                        if (swipeState.startPosition != currentPlayingQueueIndex) {
-                            int pos = swipeState.startPosition;
-                            longPressRunnable[0] = () -> {
-                                if (!swipeState.handled && !dragState.active
-                                        && swipeState.swipingView != null) {
-                                    // The list scrolled under the finger (slow drag, or a fling
-                                    // still settling): the row is no longer where it was touched.
-                                    if (list.getFirstVisiblePosition() != downScroll[0]
-                                            || (list.getChildCount() > 0
-                                                    && list.getChildAt(0).getTop() != downScroll[1])) {
-                                        longPressRunnable[0] = null;
-                                        return;
-                                    }
-                                    View src = swipeState.swipingView;
-                                    Bitmap bmp = Bitmap.createBitmap(
-                                            src.getWidth(), src.getHeight(), Bitmap.Config.ARGB_8888);
-                                    src.draw(new Canvas(bmp));
-                                    ImageView ghost = new ImageView(FileBrowserQueueActivity.this);
-                                    ghost.setImageBitmap(bmp);
-                                    ghost.setAlpha(0.85f);
-                                    ghost.setElevation(dp(8f));
-                                    ViewGroup decor = (ViewGroup) getWindow().getDecorView();
-                                    int[] decorPos = new int[2];
-                                    decor.getLocationOnScreen(decorPos);
-                                    int[] itemPos = new int[2];
-                                    src.getLocationOnScreen(itemPos);
-                                    decor.addView(ghost, new FrameLayout.LayoutParams(
-                                            src.getWidth(), src.getHeight()));
-                                    ghost.setX(itemPos[0] - decorPos[0]);
-                                    ghost.setY(itemPos[1] - decorPos[1]);
-                                    src.setAlpha(0f);
-                                    dragState.ghostView = ghost;
-                                    dragState.currentPosition = pos;
-                                    dragState.active = true;
-                                    draggingQueueIndex = pos;
-                                    longPressRunnable[0] = null;
-                                    list.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
-                                    list.getParent().requestDisallowInterceptTouchEvent(true);
-                                    cancelListTouch(list);
-                                }
-                            };
-                            uiHandler.postDelayed(longPressRunnable[0], dragArmDelay);
-                        }
-                    }
-                    return false;
-                }
-
-                case MotionEvent.ACTION_MOVE: {
-                    if (dragState.active) {
-                        if (dragState.ghostView != null) {
-                            ViewGroup decor = (ViewGroup) getWindow().getDecorView();
-                            int[] decorPos = new int[2];
-                            decor.getLocationOnScreen(decorPos);
-                            dragState.ghostView.setX(event.getRawX() - dragState.touchOffsetX - decorPos[0]);
-                            dragState.ghostView.setY(event.getRawY() - dragState.touchOffsetY - decorPos[1]);
-                        }
-                        int targetPos = list.pointToPosition((int) event.getX(), (int) event.getY());
-                        if (targetPos >= 0 && targetPos < queueEntries.size()
-                                && targetPos != dragState.currentPosition
-                                && (targetPos != currentPlayingQueueIndex
-                                        || currentPlayingQueueIndex == queueEntries.size() - 1
-                                        || currentPlayingQueueIndex == 0)) {
-                            moveQueueItem(dragState.currentPosition, targetPos);
-                            dragState.currentPosition = targetPos;
-                            draggingQueueIndex = targetPos;
-                        }
-                        return true;
-                    }
-
-                    if (swipeState.handled || swipeState.startPosition < 0) return swipeState.handled;
-                    float dx = event.getX() - swipeState.downX;
-                    float dy = event.getY() - swipeState.downY;
-
-                    if (Math.hypot(dx, dy) > dragArmSlop && longPressRunnable[0] != null) {
-                        uiHandler.removeCallbacks(longPressRunnable[0]);
-                        longPressRunnable[0] = null;
-                    }
-                    if (cancelSwipeIfVerticalScroll(swipeState, dx, dy)) {
-                        return false;
-                    }
-                    // Left swipe removes; mirror the change to a connected client (no-op off-host).
-                    SwipeAction removeAction = pos -> {
-                        if (removeQueueAt(pos)) notifyRemoteQueueChanged();
-                    };
-                    if (applySwipeMove(list, swipeState, dx, swipeHorizontalSlop, true, removeAction)) {
-                        return true;
-                    }
-                    // Right swipe: send to remote in remote mode, otherwise set/clear the insert anchor.
-                    SwipeAction rightAction = localQueueShownInRemoteMode
-                            ? this::sendQueueEntryToRemote
-                            : pos -> { toggleAnchor(pos); notifyRemoteQueueChanged(); };
-                    if (applySwipeMove(list, swipeState, dx, swipeHorizontalSlop, false, rightAction)) {
-                        return true;
-                    }
-                    return false;
-                }
-
-                case MotionEvent.ACTION_UP:
-                case MotionEvent.ACTION_CANCEL: {
-                    if (longPressRunnable[0] != null) {
-                        uiHandler.removeCallbacks(longPressRunnable[0]);
-                        longPressRunnable[0] = null;
-                    }
-                    if (dragState.active) {
-                        if (dragState.ghostView != null) {
-                            ((ViewGroup) getWindow().getDecorView()).removeView(dragState.ghostView);
-                        }
-                        dragState.reset();
-                        draggingQueueIndex = -1;
-                        queueAdapter.notifyDataSetChanged();
-                        persistQueue();
-                        if (Service.sIsPlaying && !isStopFadeInProgress()) {
-                            syncServicePendingQueue();
-                        }
-                        notifyRemoteQueueChanged();
-                        return true;
-                    }
-                    return finishSwipe(swipeState, v);
-                }
-
-                default:
-                    return false;
-            }
-        });
-    }
-
-    private void installSwipeListener(ListView list, SwipeState state, SwipePredicate canSwipe,
-                                      String rightHint, String leftHint,
-                                      SwipeAction onRightSwipe, SwipeAction onLeftSwipe) {
-        list.setOnTouchListener((v, event) -> {
-            switch (event.getAction()) {
-                case MotionEvent.ACTION_DOWN:
-                    beginSwipeGesture(list, state, event, canSwipe);
-                    if (state.swipingView != null) {
-                        if (rightHint != null) {
-                            TextView tv = state.swipingView.findViewById(R.id.swipe_hint_start);
-                            if (tv != null) tv.setText(rightHint);
-                        }
-                        if (leftHint != null) {
-                            TextView tv = state.swipingView.findViewById(R.id.swipe_hint_end);
-                            if (tv != null) tv.setText(leftHint);
-                        }
-                    }
-                    return false;
-
-                case MotionEvent.ACTION_MOVE:
-                    if (state.handled || state.startPosition < 0) return state.handled;
-                    float dx = event.getX() - state.downX;
-                    float dy = event.getY() - state.downY;
-                    if (cancelSwipeIfVerticalScroll(state, dx, dy)) {
-                        return false;
-                    }
-                    if (applySwipeMove(list, state, dx, swipeHorizontalSlop, false, onRightSwipe)) {
-                        return true;
-                    }
-                    if (applySwipeMove(list, state, dx, swipeHorizontalSlop, true, onLeftSwipe)) {
-                        return true;
-                    }
-                    return false;
-
-                case MotionEvent.ACTION_UP:
-                case MotionEvent.ACTION_CANCEL:
-                    return finishSwipe(state, v);
-
-                default:
-                    return false;
-            }
-        });
-    }
-
-    private void installFileBrowserSwipeAdd(ListView fileBrowserList) {
-        installSwipeListener(fileBrowserList, fileSwipeState,
-            pos -> pos < filteredFileEntries.size(),
-            null, null,
-            this::handleFileBrowserSwipe,
-            null
-        );
+    private void onQueueDragDropped() {
+        queueAdapter.notifyDataSetChanged();
+        persistQueue();
+        if (Service.sIsPlaying && !isStopFadeInProgress()) {
+            syncServicePendingQueue();
+        }
+        notifyRemoteQueueChanged();
     }
 
     /** Swipe-to-add for a file-browser row: folders enqueue their tracks, playlists expand, files add. */
@@ -4385,7 +4064,7 @@ public class FileBrowserQueueActivity extends Activity {
 
             QueueEntry entry = queueEntries.get(position);
             vh.content.setTranslationX(0);
-            convertView.setAlpha(draggingQueueIndex >= 0 && position == draggingQueueIndex ? 0f : 1.0f);
+            convertView.setAlpha(position == queueGestures.dragPosition() ? 0f : 1.0f);
 
             boolean isAnchor = anchorEntryId > 0 && entry.id == anchorEntryId;
             if (vh.anchorMarker != null) {

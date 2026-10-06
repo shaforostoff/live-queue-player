@@ -3150,9 +3150,11 @@ public class FileBrowserQueueActivity extends Activity {
 
     private List<Uri> findRequestedAudioUris(List<BluetoothQueueBridge.TrackRequest> requests) {
         int n = requests.size();
-        boolean isDocTree = storageBrowser.isBrowsingDocumentTree() && storageBrowser.hasDocumentLocation();
-        Uri rootDocUri = isDocTree ? storageBrowser.getDocumentRootUri() : null;
-        File fileRoot = storageBrowser.getCurrentFileRootDirectory();
+        // One consistent copy: this runs on a worker thread while the user may be navigating.
+        StorageBrowser.Root root = storageBrowser.getRoot();
+        boolean isDocTree = root.document != null;
+        Uri rootDocUri = root.document;
+        File fileRoot = root.folder;
 
         // Stage 1 — direct path: when the music folders are identical on both devices the full path
         // sent by the peer resolves directly, so we skip any scan entirely.
@@ -3194,7 +3196,8 @@ public class FileBrowserQueueActivity extends Activity {
             TrackMatcher.Accumulator matcher = new TrackMatcher.Accumulator(requests);
             StorageBrowser.FileVisitor match = (name, mime, parentName, uri) -> matcher.match(name, parentName, uri);
             if (isDocTree) {
-                storageBrowser.walkDocumentTree(storageBrowser.getCurrentTreeUri(), rootDocUri, match);
+                // The root document carries its own tree, unlike the browser's current tree field.
+                storageBrowser.walkDocumentTree(rootDocUri, rootDocUri, match);
             } else if (fileRoot != null && fileRoot.exists()) {
                 StorageBrowser.walkFileTree(fileRoot, match);
             }

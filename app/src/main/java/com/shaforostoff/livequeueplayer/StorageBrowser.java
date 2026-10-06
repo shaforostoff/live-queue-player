@@ -463,9 +463,12 @@ final class StorageBrowser {
         return null;
     }
 
-    /** Resolves a root-relative path directly against a SAF document-tree root, or null if absent. */
+    /**
+     * Resolves a root-relative path directly against a SAF document-tree root, or null if absent.
+     * Called from worker threads, so the tree comes from {@code rootDocUri} itself, not currentTreeUri.
+     */
     Uri resolveDirectDocumentPath(Uri rootDocUri, String relPath) {
-        if (rootDocUri == null || currentTreeUri == null) return null;
+        if (rootDocUri == null) return null;
         try {
             String rootDocId = DocumentsContract.getDocumentId(rootDocUri);
             if (rootDocId == null) return null;
@@ -473,7 +476,7 @@ final class StorageBrowser {
             // Both Unicode forms of the path, for the same reason as resolveDirectFilePath.
             for (String variant : TextNormalizer.variants(relPath)) {
                 String targetDocId = rootDocId + sep + variant;
-                Uri target = DocumentsContract.buildDocumentUriUsingTree(currentTreeUri, targetDocId);
+                Uri target = DocumentsContract.buildDocumentUriUsingTree(rootDocUri, targetDocId);
                 try (Cursor cursor = resolver().query(
                         target,
                         new String[]{DocumentsContract.Document.COLUMN_DOCUMENT_ID,

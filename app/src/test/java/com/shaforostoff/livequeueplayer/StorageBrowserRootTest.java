@@ -76,4 +76,30 @@ public class StorageBrowserRootTest {
         assertEquals("root", DocumentsContract.getTreeDocumentId(child));
         assertEquals("root/t5.mp3", DocumentsContract.getDocumentId(child));
     }
+
+    /** Remote matching resolves the sender's paths on a worker thread; same independence. */
+    @Test
+    public void directPathLookup_usesTheRootsTree_notTheOneOpenNow() {
+        assertTrue(browser.openDocumentTree(DocumentsContract.buildTreeDocumentUri(AUTHORITY, "root")));
+        Uri rootDocument = browser.getRoot().document;
+        assertTrue(browser.openDocumentTree(DocumentsContract.buildTreeDocumentUri("other.provider", "x")));
+
+        Uri hit = browser.resolveDirectDocumentPath(rootDocument, "t5.mp3");
+        assertNotNull(hit);
+        assertEquals(AUTHORITY, hit.getAuthority());
+        assertEquals("root/t5.mp3", DocumentsContract.getDocumentId(hit));
+    }
+
+    /** The match path's tree walk is now handed the root document as its tree. */
+    @Test
+    public void treeWalk_acceptsTheRootDocumentAsItsTree() {
+        assertTrue(browser.openDocumentTree(DocumentsContract.buildTreeDocumentUri(AUTHORITY, "root")));
+        Uri rootDocument = browser.getRoot().document;
+        int[] visited = {0};
+        browser.walkDocumentTree(rootDocument, rootDocument, (name, mime, parent, uri) -> {
+            assertEquals(AUTHORITY, uri.getAuthority());
+            visited[0]++;
+        });
+        assertEquals(300, visited[0]);
+    }
 }

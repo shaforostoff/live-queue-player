@@ -873,6 +873,7 @@ public class Service extends android.service.media.MediaBrowserService {
         sHasPendingTracks = playlistPosition < playlist.size();
         updateIdleRetireTimer();
         updateParkTimer();
+        SilenceStreamer.onPlaybackOrVisibilityChanged();
         publishState();
     }
 
@@ -990,6 +991,7 @@ public class Service extends android.service.media.MediaBrowserService {
         stopProgressTicks();
         updateIdleRetireTimer();
         updateParkTimer();
+        SilenceStreamer.onPlaybackOrVisibilityChanged();
         publishState();
     }
 
@@ -1004,6 +1006,7 @@ public class Service extends android.service.media.MediaBrowserService {
         startProgressTicks();
         updateIdleRetireTimer();
         updateParkTimer();
+        SilenceStreamer.onPlaybackOrVisibilityChanged();
         publishState();
     }
 

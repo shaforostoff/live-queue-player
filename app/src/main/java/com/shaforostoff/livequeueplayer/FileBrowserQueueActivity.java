@@ -3488,6 +3488,7 @@ public class FileBrowserQueueActivity extends Activity {
         uiHandler.removeCallbacks(playbackStateSyncRunnable);
         uiHandler.postDelayed(playbackStateSyncRunnable, PLAYBACK_SYNC_INTERVAL_MS);
         ensureSilenceStreamer();
+        SilenceStreamer.onPlaybackOrVisibilityChanged();
     }
 
     @Override
@@ -3617,6 +3618,8 @@ public class FileBrowserQueueActivity extends Activity {
         if (Service.sCurrentUri == null) {
             SilenceStreamer.fadeOutAndRelease();
         }
+        // A paused track keeps it running; that is capped (see SilenceStreamer.PAUSED_HIDDEN_STOP_MS).
+        SilenceStreamer.onPlaybackOrVisibilityChanged();
         super.onStop();
     }
 

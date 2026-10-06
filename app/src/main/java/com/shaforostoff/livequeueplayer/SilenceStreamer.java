@@ -9,6 +9,8 @@ import android.media.AudioManager;
 import android.media.AudioTrack;
 import android.net.Uri;
 import android.os.Build;
+import android.os.Handler;
+import android.os.Looper;
 
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -34,6 +36,20 @@ final class SilenceStreamer {
     static volatile long previewDurationMs;
 
     static volatile SilenceStreamer current;
+
+    /**
+     * Wake time a paused track may keep the streamer running while no activity is on screen. The
+     * activity's onStop() leaves it running whenever a track is loaded, so a paused session left in
+     * the background kept an AudioTrack thread writing silence — holding the audio path awake — for
+     * as long as the pause lasted. Wake time (postDelayed) is the right clock: the streamer only
+     * costs anything while the device is awake.
+     */
+    private static final long PAUSED_HIDDEN_STOP_MS = 60 * 60 * 1_000L;
+    private static final Handler sMainHandler = new Handler(Looper.getMainLooper());
+    private static final Runnable sPausedHiddenStop = SilenceStreamer::stopIfStillPausedAndHidden;
+    private static boolean sPausedHiddenArmed;
+    /** Set when stopped for sitting paused and hidden, so the next play brings the streamer back. */
+    private static boolean sStoppedWhilePausedHidden;
 
     private volatile AudioTrack audioTrack;
     private Thread thread;
@@ -228,6 +244,7 @@ final class SilenceStreamer {
      */
     static void ensure(Context context) {
         sAppContext = context.getApplicationContext();
+        sStoppedWhilePausedHidden = false;
         if (isActive) return;
         AudioOutputRouter.resolve(context);
         sPreferredOutputAtStart = AudioOutputRouter.getPreferredOutput(context);
@@ -297,6 +314,39 @@ final class SilenceStreamer {
             release();
             ensure(ctx);
         }
+    }
+
+    /**
+     * Main thread. Called whenever playback state or activity visibility changes: counts down while
+     * a track sits paused with no activity on screen, and brings back a streamer that countdown
+     * stopped once playback resumes.
+     */
+    static void onPlaybackOrVisibilityChanged() {
+        if (Service.sCurrentUri == null) {
+            sStoppedWhilePausedHidden = false; // playback is over; the next track ensure()s anyway
+        } else if (Service.sIsPlaying && sStoppedWhilePausedHidden && sAppContext != null) {
+            ensure(sAppContext);
+        }
+        if (!isPausedAndHidden()) {
+            sMainHandler.removeCallbacks(sPausedHiddenStop);
+            sPausedHiddenArmed = false;
+        } else if (!sPausedHiddenArmed) {
+            // Not re-armed while already counting, so the hour runs from when the state began.
+            sPausedHiddenArmed = true;
+            sMainHandler.postDelayed(sPausedHiddenStop, PAUSED_HIDDEN_STOP_MS);
+        }
+    }
+
+    private static boolean isPausedAndHidden() {
+        return !Service.sIsPlaying && Service.sCurrentUri != null
+                && !FileBrowserQueueActivity.sActivityStarted;
+    }
+
+    private static void stopIfStillPausedAndHidden() {
+        sPausedHiddenArmed = false;
+        if (!isPausedAndHidden() || current == null) return;
+        release();
+        sStoppedWhilePausedHidden = true;
     }
 
     /** Stop the current instance immediately, if any. Counterpart to ensure(). */

@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:a="http://schemas.android.com/apk/res/android"
           xmlns:tools="http://schemas.android.com/tools"
-          a:versionCode="31"
-          a:versionName="1.5.2">
+          a:versionCode="32"
+          a:versionName="1.5.3">
 
   <uses-permission a:name="android.permission.POST_NOTIFICATIONS"/>
   <uses-permission a:name="android.permission.FOREGROUND_SERVICE"/>

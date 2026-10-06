@@ -188,6 +188,10 @@ final class BluetoothFileReceiver implements BluetoothQueueBridge.FileSink {
     public void onLinkUp() {
     }
 
+    @Override
+    public void onLinkAbandoned() {
+    }
+
     /** The link dropped, or the host is shutting down: stop writing, keep the partial to resume. */
     @Override
     public synchronized void onLinkLost() {

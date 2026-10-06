@@ -82,6 +82,8 @@
   <string name="transfer_existing">Ya estaban: %d</string>
   <string name="transfer_failed">Fallidas: %d</string>
   <string name="transfer_host_full">El dispositivo remoto no tiene espacio</string>
+  <string name="transfer_channel">Transferencia de archivos</string>
+  <string name="transfer_notification_title">Enviando pistas por Bluetooth</string>
   <string name="received_file">Recibido %s</string>
   <string name="bt_not_connected">No conectado al servidor Bluetooth</string>
   <string name="bt_not_available">Bluetooth no está disponible en este dispositivo</string>

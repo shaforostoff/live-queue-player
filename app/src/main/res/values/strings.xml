@@ -86,6 +86,8 @@
   <string name="transfer_existing">Already there: %d</string>
   <string name="transfer_failed">Failed: %d</string>
   <string name="transfer_host_full">The remote device is out of space</string>
+  <string name="transfer_channel">File transfer</string>
+  <string name="transfer_notification_title">Sending tracks over Bluetooth</string>
   <string name="received_file">Received %s</string>
   <string name="bt_not_connected">Not connected to Bluetooth server</string>
   <string name="bt_not_available">Bluetooth is not available on this device</string>

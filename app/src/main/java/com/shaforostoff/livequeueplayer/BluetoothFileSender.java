@@ -34,7 +34,9 @@ import java.util.concurrent.TimeUnit;
  * letting it delete a leftover partial. A host that is out of space ends the run.
  *
  * <p>A partial wake lock is held while bytes are moving, so a transfer keeps going after the screen
- * times out; it is let go while waiting for the link.
+ * times out; it is let go while waiting for the link. {@link FileTransferService} keeps the
+ * process from being frozen when the user switches away: it runs while a run is in flight, and
+ * stops when the bridge gives up reconnecting (see {@link #onLinkAbandoned}) until the link is back.
  */
 final class BluetoothFileSender implements BluetoothQueueBridge.FileSink {
 
@@ -83,6 +85,8 @@ final class BluetoothFileSender implements BluetoothQueueBridge.FileSink {
     private long wakeRenewedAt;
     private Callback callback;  // UI thread
     private Report lastStatus;  // UI thread: the last progress/waiting line, replayed on attach
+    private FileTransferService service; // UI thread: the foreground service while it is up
+    private boolean wantForeground;      // UI thread
 
     private final LinkedBlockingDeque<Job> jobs = new LinkedBlockingDeque<>();
     private final LinkedBlockingQueue<JSONObject> replies = new LinkedBlockingQueue<>();
@@ -114,6 +118,28 @@ final class BluetoothFileSender implements BluetoothQueueBridge.FileSink {
         if (callback != null && lastStatus != null) lastStatus.to(callback);
     }
 
+    /**
+     * The foreground service attaching itself (it then shows the current status), or {@code null}
+     * as it goes. UI thread. Returns whether it is still wanted.
+     */
+    boolean attachService(FileTransferService service) {
+        this.service = service;
+        if (service != null && lastStatus != null) lastStatus.to(service);
+        return wantForeground;
+    }
+
+    /** Starts or stops {@link FileTransferService}. Any thread; applied in order on the UI thread. */
+    private void setForeground(boolean on) {
+        uiHandler.post(() -> {
+            wantForeground = on;
+            if (on) {
+                if (service == null) FileTransferService.start(context);
+            } else if (service != null) {
+                service.finish();
+            }
+        });
+    }
+
     /** True if a file at {@code path} is queued or being sent. */
     boolean isPending(String path) {
         synchronized (lock) {
@@ -143,6 +169,7 @@ final class BluetoothFileSender implements BluetoothQueueBridge.FileSink {
             if (worker != null) return;
             worker = new Thread(this::drain, "bt-file-send");
             worker.start();
+            setForeground(true);
         }
     }
 
@@ -182,6 +209,18 @@ final class BluetoothFileSender implements BluetoothQueueBridge.FileSink {
             Job job = current;
             if (job == null || job.generation != generation) link.send("file_abort");
             lock.notifyAll(); // a worker parked for the link
+            if (worker != null) setForeground(true); // let go of while the bridge had given up
+        }
+    }
+
+    /**
+     * The bridge has stopped trying to reconnect, and resumes only when the user is back. A parked
+     * run has nothing to do until then, so it lets the foreground service go.
+     */
+    @Override
+    public void onLinkAbandoned() {
+        synchronized (lock) {
+            if (worker != null && !link.isConnected()) setForeground(false);
         }
     }
 
@@ -234,6 +273,7 @@ final class BluetoothFileSender implements BluetoothQueueBridge.FileSink {
         int s = sent, e = existing, f = failed;
         boolean full = hostFull;
         report(cb -> cb.onFinished(s, e, f, full), false);
+        setForeground(false);
     }
 
     /** Waits until the link is up or the job is cancelled; false if interrupted. */
@@ -379,6 +419,7 @@ final class BluetoothFileSender implements BluetoothQueueBridge.FileSink {
             lastStatus = isStatus ? report : null;
             Callback cb = callback;
             if (cb != null) report.to(cb);
+            if (service != null) report.to(service);
         });
     }
 

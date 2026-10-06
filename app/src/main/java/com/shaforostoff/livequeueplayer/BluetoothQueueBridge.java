@@ -75,6 +75,11 @@ final class BluetoothQueueBridge implements BluetoothFileLink {
         void onLinkUp();
         /** The socket this sink was fed from is gone; whatever was in flight on it is lost. */
         void onLinkLost();
+        /**
+         * No link is coming back on its own: the client's reconnect loop gave up, or the user
+         * disconnected. A later {@link #onLinkUp} follows only once the user connects again.
+         */
+        void onLinkAbandoned();
     }
 
     /**
@@ -452,6 +457,8 @@ final class BluetoothQueueBridge implements BluetoothFileLink {
                             reconnectGaveUp = true;
                         }
                         listener.onConnectionStateChanged(false, "Stopped reconnecting to " + safeName(device));
+                        FileSink sink = fileSink;
+                        if (sink != null) sink.onLinkAbandoned();
                         return;
                     }
                     if (attempt == 1) {
@@ -577,6 +584,8 @@ final class BluetoothQueueBridge implements BluetoothFileLink {
         if (toClose != null) toClose.close();
         if (connectToInterrupt != null) connectToInterrupt.interrupt();
         listener.onConnectionStateChanged(false, "Bluetooth disconnected");
+        FileSink sink = fileSink;
+        if (sink != null) sink.onLinkAbandoned();
     }
 
     /**

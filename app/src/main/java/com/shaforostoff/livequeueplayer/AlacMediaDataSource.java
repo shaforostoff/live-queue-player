@@ -12,7 +12,6 @@ import com.beatofthedrum.alacdecoder.AlacContext;
 import com.beatofthedrum.alacdecoder.AlacUtils;
 
 import java.io.BufferedInputStream;
-import java.io.ByteArrayOutputStream;
 import java.io.DataInputStream;
 import java.io.EOFException;
 import java.io.File;
@@ -21,6 +20,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 import java.util.Locale;
 
 /**
@@ -28,27 +28,46 @@ import java.util.Locale;
  * (some Android builds ship one and {@link android.media.MediaPlayer} plays ALAC natively; others,
  * e.g. the Xperia 10 V, ship none). The bundled pure-Java decoder in
  * {@code com.beatofthedrum.alacdecoder} (BSD-licensed) decodes the file to PCM, which we present as
- * an in-memory WAV byte array through {@link MediaDataSource} — like {@link AiffMediaDataSource}
- * presents AIFF as WAV — so the rest of the pipeline (ReplayGain, fade, equalizer, seek,
- * completion) is unaffected.
+ * a WAV stream through {@link MediaDataSource} — like {@link AiffMediaDataSource} presents AIFF as
+ * WAV — so the rest of the pipeline (ReplayGain, fade, equalizer, seek, completion) is unaffected.
+ *
+ * <p>The WAV is never built: each {@link #readAt} decodes just the ALAC packets (4096 samples each,
+ * typically) that cover the requested bytes, and keeps only the last one. It used to decode the
+ * whole track into one array up front — ~10 MB per minute of CD audio, ~35 MB per minute of
+ * 24-bit/96 kHz, held for as long as the track was loaded — under a 100 MB cap that cut hi-res
+ * tracks off after about three minutes, and prepare() waited for the whole decode.
  *
  * <p>ALAC and AAC share the {@code .m4a} extension, so detection is by codec MIME, not extension.
- * Decoding is lazy — it runs on the first {@link #getSize()}/{@link #readAt} call, which MediaPlayer
+ * The file is opened lazily, on the first {@link #getSize()}/{@link #readAt} call, which MediaPlayer
  * issues during {@code prepare()} on AudioPlayer's background thread, keeping it off the main thread.
  */
 final class AlacMediaDataSource extends MediaDataSource {
 
   private static final String MIME_ALAC = "audio/alac";
-  /** Cap on the in-memory WAV, so a huge file can't take the whole heap. */
-  private static final long MAX_BYTES = 100L * 1024 * 1024;
+  private static final int WAV_HEADER_BYTES = 44;
+  /** Name prefix of the staged copies in the cache dir; see {@link #deleteStaleStagedFiles}. */
+  private static final String STAGED_PREFIX = "alac";
 
   /** Device-wide and immutable; cached so we don't rescan the codec list per track. */
   private static volatile Boolean sPlatformHasAlac;
 
   private final Context context;
   private final Uri uri;
-  private byte[] wavData;       // built lazily on first access
-  private boolean decoded;
+  // All state below is guarded by this; MediaPlayer and MediaExtractor read from their own threads.
+  private boolean opened;
+  /** The compressed file, staged in the cache dir: the decoder needs a seekable file. */
+  private File staged;
+  private AlacContext ac;
+  private int bytesPerSample;
+  /** PCM byte offset (after the header) at which each packet starts, plus the total at the end;
+   *  null when the file could not be opened, which reads as an empty stream. */
+  private long[] packetPcmStart;
+  private final byte[] header = new byte[WAV_HEADER_BYTES];
+  private int[] decodeBuffer;
+  private byte[] packetPcm;      // the decoded PCM of packetInBuffer
+  private int packetInBuffer = -1;
+  /** The packet the decoder reads next without a seek: sequential playback never seeks. */
+  private int nextPacket;
 
   AlacMediaDataSource(Context context, Uri uri) {
     this.context = context;
@@ -193,71 +212,113 @@ final class AlacMediaDataSource extends MediaDataSource {
     }
   }
 
-  private synchronized void ensureDecoded() {
-    if (decoded) return;
-    decoded = true;
+  private synchronized void ensureOpen() {
+    if (opened) return;
+    opened = true;
     try {
-      wavData = decodeToWav(context, uri);
+      open();
     } catch (Exception | OutOfMemoryError e) {
-      // Decode failed — leave an empty stream so MediaPlayer's prepare() fails and the existing
-      // retry/skip path in Service handles it.
-      wavData = new byte[0];
+      // Leave an empty stream so MediaPlayer's prepare() fails and the existing retry/skip path in
+      // Service handles it.
+      releaseDecoder();
+      packetPcmStart = null;
     }
   }
 
-  private static byte[] decodeToWav(Context context, Uri uri) throws IOException {
-    // The decoder needs a seekable FileInputStream, so stage the (compressed) file in the cache.
-    File temp = File.createTempFile("alac", ".m4a", context.getCacheDir());
+  private void open() throws IOException {
+    staged = File.createTempFile(STAGED_PREFIX, ".m4a", context.getCacheDir());
+    copyToFile(context, uri, staged);
+    ac = AlacUtils.AlacOpenFileInput(staged.getAbsolutePath());
+    if (ac.error) throw new IOException(ac.error_message);
+    int channels      = AlacUtils.AlacGetNumChannels(ac);
+    int sampleRate    = AlacUtils.AlacGetSampleRate(ac);
+    int bitsPerSample = AlacUtils.AlacGetBitsPerSample(ac);
+    bytesPerSample    = AlacUtils.AlacGetBytesPerSample(ac);
+
+    // The packet table gives every packet's length up front, so each one's place in the WAV is
+    // known without decoding anything.
+    int packets = AlacUtils.AlacGetNumPackets(ac);
+    if (packets == 0) throw new IOException("no ALAC packets");
+    long bytesPerFrame = (long) channels * bytesPerSample;
+    long[] starts = new long[packets + 1];
+    long largest = 0;
+    for (int i = 0; i < packets; i++) {
+      long bytes = AlacUtils.AlacGetPacketSamples(ac, i) * bytesPerFrame;
+      if (bytes < 0) throw new IOException("bad packet length");
+      starts[i + 1] = starts[i] + bytes;
+      largest = Math.max(largest, bytes);
+    }
+    long pcmLen = starts[packets];
+    // The header's sizes are 32-bit; that is still over three hours of 24-bit/96 kHz stereo.
+    if (pcmLen > Integer.MAX_VALUE - 36) throw new IOException("too long for a WAV header");
+    writeWavHeader(header, sampleRate, channels, bitsPerSample, (int) pcmLen);
+    decodeBuffer = new int[1024 * 24 * 3]; // one ALAC frame, max 24bps (matches upstream demo)
+    packetPcm = new byte[(int) largest];
+    packetPcmStart = starts;
+  }
+
+  /** Index of the packet holding PCM byte {@code pcmPos}; skips packets that decode to nothing. */
+  private int packetAt(long pcmPos) {
+    long[] starts = packetPcmStart;
+    int lo = 0, hi = starts.length - 2; // last packet index
+    while (lo < hi) {
+      int mid = (lo + hi + 1) >>> 1;
+      if (starts[mid] <= pcmPos) lo = mid; else hi = mid - 1;
+    }
+    return lo;
+  }
+
+  /** Decode {@code packet} into {@link #packetPcm}, at exactly the length the table promises. */
+  private boolean loadPacket(int packet) {
+    if (packet == packetInBuffer) return true;
+    packetInBuffer = -1;
     try {
-      copyToFile(context, uri, temp);
+      if (packet != nextPacket && !AlacUtils.AlacSeekToPacket(ac, packet)) return false;
+      int bytes = AlacUtils.AlacUnpackSamples(ac, decodeBuffer);
+      nextPacket = packet + 1;
+      if (bytes <= 0) return false;
+      int expected = (int) (packetPcmStart[packet + 1] - packetPcmStart[packet]);
+      // A packet that decodes to more or less than its table entry is clipped or padded, so every
+      // later byte stays where the header and the table put it.
+      int got = Math.min(bytes, expected);
+      writePcm(packetPcm, 0, bytesPerSample, decodeBuffer, got);
+      if (got < expected) Arrays.fill(packetPcm, got, expected, (byte) 0);
+    } catch (RuntimeException e) {
+      // A corrupt packet can throw from deep in the decoder; on MediaPlayer's thread that would
+      // kill the process.
+      nextPacket = -1; // force a seek next time
+      return false;
+    }
+    packetInBuffer = packet;
+    return true;
+  }
 
-      AlacContext ac = AlacUtils.AlacOpenFileInput(temp.getAbsolutePath());
-      try {
-        if (ac.error) throw new IOException(ac.error_message);
-        int channels      = AlacUtils.AlacGetNumChannels(ac);
-        int sampleRate     = AlacUtils.AlacGetSampleRate(ac);
-        int bytesPerSample = AlacUtils.AlacGetBytesPerSample(ac);
-        int bitsPerSample  = AlacUtils.AlacGetBitsPerSample(ac);
-
-        int[] dest = new int[1024 * 24 * 3]; // one ALAC frame, max 24bps (matches upstream demo)
-        long pcmCap = MAX_BYTES - 44; // leave room for the WAV header
-
-        // The decoded size is known up front from the stream's frame count, so allocate the final
-        // WAV buffer once and decode straight into it — no growing buffer and no extra copies, which
-        // is what kept peak heap at ~3x the PCM size and OOM-ed low-RAM devices mid-track.
-        int totalFrames = AlacUtils.AlacGetNumSamples(ac);
-        if (totalFrames > 0) {
-          int capacity = (int) Math.min((long) totalFrames * channels * bytesPerSample, pcmCap);
-          byte[] wav = new byte[44 + capacity];
-          int pos = 44;
-          while (pos - 44 < capacity) {
-            int bytes = AlacUtils.AlacUnpackSamples(ac, dest);
-            if (bytes <= 0) break; // end of stream
-            int room = capacity - (pos - 44);
-            pos = writePcm(wav, pos, bytesPerSample, dest, Math.min(bytes, room));
-          }
-          int pcmLen = pos - 44;
-          // The frame count is authoritative, so pcmLen normally equals capacity; trim only if the
-          // stream ended short of it.
-          if (pcmLen != capacity) wav = java.util.Arrays.copyOf(wav, pos);
-          writeWavHeader(wav, sampleRate, channels, bitsPerSample, pcmLen);
-          return wav;
-        }
-
-        // Frame count unavailable (corrupt sample index): fall back to a growing buffer.
-        ByteArrayOutputStream pcm = new ByteArrayOutputStream();
-        while (pcm.size() < pcmCap) {
-          int bytes = AlacUtils.AlacUnpackSamples(ac, dest);
-          if (bytes <= 0) break; // end of stream
-          appendLittleEndian(pcm, bytesPerSample, dest, bytes);
-        }
-        return wrapPcmAsWav(pcm.toByteArray(), sampleRate, channels, bitsPerSample);
-      } finally {
-        AlacUtils.AlacCloseFile(ac);
-      }
-    } finally {
+  private void releaseDecoder() {
+    if (ac != null) {
+      AlacUtils.AlacCloseFile(ac);
+      ac = null;
+    }
+    if (staged != null) {
       //noinspection ResultOfMethodCallIgnored
-      temp.delete();
+      staged.delete();
+      staged = null;
+    }
+    packetPcm = null;
+    decodeBuffer = null;
+    packetInBuffer = -1;
+  }
+
+  /**
+   * Delete staged copies left by a process that died with a track loaded (close() never ran).
+   * Call only at process start, when no data source can be open.
+   */
+  static void deleteStaleStagedFiles(Context context) {
+    File[] stale = context.getCacheDir().listFiles(
+        (dir, name) -> name.startsWith(STAGED_PREFIX) && name.endsWith(".m4a"));
+    if (stale == null) return;
+    for (File f : stale) {
+      //noinspection ResultOfMethodCallIgnored
+      f.delete();
     }
   }
 
@@ -273,33 +334,9 @@ final class AlacMediaDataSource extends MediaDataSource {
 
   /**
    * Converts the decoder's per-sample ints into little-endian PCM bytes, mirroring the upstream
-   * demo's {@code format_samples}: {@code count} is a byte count; 16-bit packs two bytes per int,
-   * 8-/24-bit one byte per int.
-   */
-  private static void appendLittleEndian(ByteArrayOutputStream out, int bytesPerSample, int[] src, int count) {
-    switch (bytesPerSample) {
-      case 2: { // 16-bit
-        int s = 0;
-        for (int i = 0; i < count; i += 2, s++) {
-          int v = src[s];
-          out.write(v & 0xFF);
-          out.write((v >>> 8) & 0xFF);
-        }
-        break;
-      }
-      case 1: // 8-bit (decoder emits signed; WAV 8-bit is unsigned)
-        for (int i = 0; i < count; i++) out.write((src[i] + 128) & 0xFF);
-        break;
-      default: // 24-bit (and any other): one byte per int
-        for (int i = 0; i < count; i++) out.write(src[i] & 0xFF);
-        break;
-    }
-  }
-
-  /**
-   * Same encoding as {@link #appendLittleEndian}, but writes straight into {@code out} starting at
-   * {@code pos} and returns the new position — used by the pre-sized decode path that knows the
-   * final buffer size up front and so needs no intermediate stream.
+   * demo's {@code format_samples}, writing into {@code out} from {@code pos} and returning the new
+   * position. {@code count} is a byte count; 16-bit packs two bytes per int, 8-/24-bit one byte per
+   * int.
    */
   private static int writePcm(byte[] out, int pos, int bytesPerSample, int[] src, int count) {
     switch (bytesPerSample) {
@@ -321,14 +358,6 @@ final class AlacMediaDataSource extends MediaDataSource {
     return pos;
   }
 
-  /** Prepends a 44-byte little-endian PCM WAV header to {@code pcm}. */
-  private static byte[] wrapPcmAsWav(byte[] pcm, int sampleRate, int channels, int bitsPerSample) {
-    byte[] wav = new byte[44 + pcm.length];
-    writeWavHeader(wav, sampleRate, channels, bitsPerSample, pcm.length);
-    System.arraycopy(pcm, 0, wav, 44, pcm.length);
-    return wav;
-  }
-
   /** Writes the 44-byte little-endian PCM WAV header into the first 44 bytes of {@code wav}. */
   private static void writeWavHeader(byte[] wav, int sampleRate, int channels, int bitsPerSample, int pcmLen) {
     int bytesPerSample = bitsPerSample / 8;
@@ -348,23 +377,45 @@ final class AlacMediaDataSource extends MediaDataSource {
   }
 
   @Override
-  public int readAt(long position, byte[] buffer, int offset, int size) {
-    ensureDecoded();
-    if (position >= wavData.length) return -1;
-    int available = (int) Math.min(size, wavData.length - position);
-    System.arraycopy(wavData, (int) position, buffer, offset, available);
-    return available;
+  public synchronized int readAt(long position, byte[] buffer, int offset, int size) {
+    ensureOpen();
+    long[] starts = packetPcmStart;
+    if (starts == null || ac == null) return -1;
+    long total = WAV_HEADER_BYTES + starts[starts.length - 1];
+    if (position >= total) return -1;
+    int done = 0;
+    while (done < size && position < total) {
+      int n;
+      if (position < WAV_HEADER_BYTES) {
+        n = (int) Math.min(size - done, WAV_HEADER_BYTES - position);
+        System.arraycopy(header, (int) position, buffer, offset + done, n);
+      } else {
+        long pcmPos = position - WAV_HEADER_BYTES;
+        int packet = packetAt(pcmPos);
+        if (!loadPacket(packet)) break;
+        int within = (int) (pcmPos - starts[packet]);
+        n = (int) Math.min(size - done, starts[packet + 1] - starts[packet] - within);
+        System.arraycopy(packetPcm, within, buffer, offset + done, n);
+      }
+      done += n;
+      position += n;
+    }
+    // A packet that will not decode ends the stream there, as an undecodable tail did before.
+    return done > 0 ? done : -1;
   }
 
   @Override
-  public long getSize() {
-    ensureDecoded();
-    return wavData.length;
+  public synchronized long getSize() {
+    ensureOpen();
+    long[] starts = packetPcmStart;
+    return starts == null ? 0 : WAV_HEADER_BYTES + starts[starts.length - 1];
   }
 
   @Override
-  public void close() {
-    // byte array; no native resources to release
+  public synchronized void close() {
+    opened = true; // a read after close() finds nothing rather than reopening
+    packetPcmStart = null;
+    releaseDecoder();
   }
 
   // ---- WAV header helpers ----

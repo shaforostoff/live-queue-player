@@ -28,6 +28,7 @@ public class AlacUtils
 			java.io.FileInputStream fistream;
 			fistream = new java.io.FileInputStream(inputfilename);
 			input_stream = new AlacInputStream(fistream);
+			ac.file_stream = fistream;
 		}
 		catch (java.io.FileNotFoundException fe)
 		{
@@ -82,6 +83,7 @@ public class AlacUtils
 				fistream = new java.io.FileInputStream(inputfilename);
 				input_stream = new AlacInputStream(fistream);
 				ac.input_stream = input_stream;
+				ac.file_stream = fistream;
 				
 				qtmovie.qtstream.stream = input_stream;
 				qtmovie.qtstream.currentPos = 0;
@@ -103,6 +105,14 @@ public class AlacUtils
 
 		ac.demux_res = demux_res;
 		ac.alac = alac;
+		try
+		{
+			ac.data_start = ac.file_stream.getChannel().position();
+		}
+		catch (java.io.IOException ioe)
+		{
+			ac.data_start = -1;
+		}
 		
 		return (ac);
 			
@@ -165,6 +175,60 @@ public class AlacUtils
 	
 	}
 	
+
+	// ---- Random access (not upstream) ----
+
+	// Number of ALAC packets (frames) in the file
+	public static int AlacGetNumPackets(AlacContext ac)
+	{
+		return ac.demux_res.sample_byte_size.length;
+	}
+
+	// Samples per channel that a packet decodes to, from the time-to-sample table. A file whose table
+	// is missing or short gets the codec's frame length instead, as an estimate.
+	public static int AlacGetPacketSamples(AlacContext ac, int packet)
+	{
+		SampleDuration sampleinfo = new SampleDuration();
+		if (get_sample_info(ac.demux_res, packet, sampleinfo) != 0)
+		{
+			return sampleinfo.sample_duration;
+		}
+		return ac.alac.setinfo_max_samples_per_frame;
+	}
+
+	// Position the decoder so that the next AlacUnpackSamples decodes the given packet. Packets are
+	// read back to back from the start of the music data — the same layout sequential decoding
+	// relies on — so a packet's offset is the sum of the sizes before it. ALAC packets decode
+	// independently, so nothing else needs resetting. Returns false if the file cannot be seeked.
+	public static boolean AlacSeekToPacket(AlacContext ac, int packet)
+	{
+		if (ac.data_start < 0 || packet < 0 || packet >= ac.demux_res.sample_byte_size.length)
+		{
+			return false;
+		}
+		if (ac.packet_offsets == null)
+		{
+			int[] sizes = ac.demux_res.sample_byte_size;
+			long[] offsets = new long[sizes.length];
+			long pos = ac.data_start;
+			for (int i = 0; i < sizes.length; i++)
+			{
+				offsets[i] = pos;
+				pos += sizes[i];
+			}
+			ac.packet_offsets = offsets;
+		}
+		try
+		{
+			ac.file_stream.getChannel().position(ac.packet_offsets[packet]);
+		}
+		catch (java.io.IOException ioe)
+		{
+			return false;
+		}
+		ac.current_sample_block = packet;
+		return true;
+	}
 
 	// Returns the sample rate of the specified ALAC file
 

@@ -16,6 +16,11 @@ public class AlacContext
 	DemuxResT demux_res = new DemuxResT();
 	AlacFile alac = new AlacFile();
 	AlacInputStream input_stream;
+	// Random access (not upstream): input_stream reads this file stream unbuffered, so moving its
+	// channel moves the decoder. data_start is where the first packet begins; -1 if unknown.
+	java.io.FileInputStream file_stream;
+	long data_start = -1;
+	long[] packet_offsets; // built on the first seek
 	int current_sample_block = 0;
     int offset;
 	public boolean error;

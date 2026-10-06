@@ -31,6 +31,8 @@ public class App extends Application {
         metadataExtractor = new MetadataExtractor(getContentResolver());
         tagReadExecutor = Executors.newFixedThreadPool(4);
         storageBrowser = new StorageBrowser(this);
+        // Nothing can be playing yet in a fresh process, so any staged ALAC copy is a leftover.
+        AlacMediaDataSource.deleteStaleStagedFiles(this);
     }
 
     /**

@@ -1,6 +1,7 @@
 package com.shaforostoff.livequeueplayer;
 
 import android.annotation.SuppressLint;
+import android.app.AlarmManager;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.ServiceInfo;
@@ -40,6 +41,13 @@ public class Service extends android.service.media.MediaBrowserService {
      * sitting foreground for 8h09m overnight.
      */
     private static final long IDLE_RETIRE_TIMEOUT_MS = 60 * 60 * 1_000L;
+    /**
+     * How long a track may sit paused before its player is released (see {@link #parkIfStillPaused}).
+     * A paused MediaPlayer keeps its codec, buffers and — for software-decoded ALAC — the whole
+     * track as PCM in memory (~50 MB for five minutes of CD audio), and this foreground service
+     * stops Android from reclaiming any of it.
+     */
+    private static final long PARK_AFTER_PAUSE_MS = 30 * 60 * 1_000L;
 
     // The playback state, read by the activities. Every committed change is announced to the
     // state listeners below; they and the activity's own 1s poll read these fields.
@@ -102,6 +110,11 @@ public class Service extends android.service.media.MediaBrowserService {
     private final Runnable idleRetireRunnable = this::retireIfStillIdle;
     /** elapsedRealtime() at which the current idle stretch began; 0 while a track is playing. */
     private long idleSinceElapsedMs = 0L;
+    // Real time, unlike the idle timer: memory held while the device sleeps is still held. A
+    // non-wakeup alarm never wakes the device for this; it fires at the first wake after it is due.
+    private final AlarmManager.OnAlarmListener parkAlarm =
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.N ? this::parkIfStillPaused : null;
+    private final Runnable parkFallback = this::parkIfStillPaused; // API 23: no OnAlarmListener
 
     public Service() {
     }
@@ -197,6 +210,11 @@ public class Service extends android.service.media.MediaBrowserService {
             }
             if (action == Launcher.PLAY_FROM_QUEUE_INDEX) {
                 playQueueRequest(intent);
+                return;
+            }
+            if (audioPlayer instanceof ParkedEngine parked
+                    && (action == Launcher.PLAY || action == Launcher.PLAY_PAUSE)) {
+                resumeParkedTrack(parked.positionMs);
                 return;
             }
             if (audioPlayer == null) {
@@ -806,6 +824,7 @@ public class Service extends android.service.media.MediaBrowserService {
         sForegroundActive = false;
         stopProgressTicks();
         idleHandler.removeCallbacks(idleRetireRunnable);
+        cancelParkTimer();
         if (queueChangeListener != null) {
             QueueStore.prefs(this).unregisterOnSharedPreferenceChangeListener(queueChangeListener);
             queueChangeListener = null;
@@ -853,6 +872,7 @@ public class Service extends android.service.media.MediaBrowserService {
         // Update pending tracks state based on current playlist position
         sHasPendingTracks = playlistPosition < playlist.size();
         updateIdleRetireTimer();
+        updateParkTimer();
         publishState();
     }
 
@@ -969,6 +989,7 @@ public class Service extends android.service.media.MediaBrowserService {
         sIsPlaying = false;
         stopProgressTicks();
         updateIdleRetireTimer();
+        updateParkTimer();
         publishState();
     }
 
@@ -982,7 +1003,100 @@ public class Service extends android.service.media.MediaBrowserService {
         sIsPlaying = true;
         startProgressTicks();
         updateIdleRetireTimer();
+        updateParkTimer();
         publishState();
+    }
+
+    /**
+     * Arm the park countdown while a live player sits paused on a track, cancel it otherwise.
+     * Called from the same state-commit points as {@link #updateIdleRetireTimer()}.
+     */
+    private void updateParkTimer() {
+        cancelParkTimer();
+        if (destroyed || sIsPlaying || sCurrentIndex < 0
+                || audioPlayer == null || audioPlayer instanceof ParkedEngine) return;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            AlarmManager am = (AlarmManager) getSystemService(ALARM_SERVICE);
+            if (am != null) {
+                am.set(AlarmManager.ELAPSED_REALTIME,
+                        SystemClock.elapsedRealtime() + PARK_AFTER_PAUSE_MS,
+                        "LiveQueuePlayer:park", parkAlarm, progressHandler);
+                return;
+            }
+        }
+        progressHandler.postDelayed(parkFallback, PARK_AFTER_PAUSE_MS);
+    }
+
+    private void cancelParkTimer() {
+        progressHandler.removeCallbacks(parkFallback);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            AlarmManager am = (AlarmManager) getSystemService(ALARM_SERVICE);
+            if (am != null) am.cancel(parkAlarm);
+        }
+    }
+
+    /**
+     * Release the paused player but keep everything else: the service and its foreground status,
+     * the MediaSession and its paused notification, the playlist, and the current track and
+     * position the activity and remote clients see. A {@link ParkedEngine} takes the player's place,
+     * so a PLAY rebuilds the player and seeks back ({@link #resumeParkedTrack}).
+     */
+    void parkIfStillPaused() {
+        PlaybackEngine engine = audioPlayer;
+        if (destroyed || sIsPlaying || sCurrentIndex < 0 || engine == null
+                || engine instanceof ParkedEngine || engine.isPlaying() || engine.isFadeOutInProgress()) {
+            return;
+        }
+        // The player's own position, not the progress estimate: that one is anchored before
+        // prepare() and runs ahead by however long it took (seconds, for ALAC).
+        int positionMs = engine.getCurrentPositionMs();
+        if (positionMs < 0) positionMs = sPlaybackPositionMs;
+        engine.release();
+        audioPlayer = new ParkedEngine(this, positionMs);
+        sPlaybackPositionMs = positionMs;
+        progressAnchorPositionMs = positionMs;
+        progressAnchorElapsedMs = 0L;
+        hwListener.updatePlaybackPosition(positionMs);
+        publishState();
+    }
+
+    /** Rebuild the parked track's player and continue from where it was parked. */
+    private void resumeParkedTrack(int positionMs) {
+        audioPlayer = null;
+        int index = playlistPosition - 1;
+        playlistPosition = index;
+        playEntryFromPlaylist();
+        // A failed rebuild retries and may move on to the next track, which starts from the top.
+        if (audioPlayer != null && playlistPosition == index + 1 && positionMs > 0) {
+            seekTo(positionMs);
+        }
+    }
+
+    /**
+     * Stands in for a player released by {@link #parkIfStillPaused}. It holds no native resources,
+     * only the position to resume at, so every path that expects a live engine keeps working: a
+     * SEEK moves the resume point, a STOP completes at once (nothing to fade), a SKIP or a queue
+     * tap replaces it like any paused player. PLAY never reaches it — onStart rebuilds a real one.
+     */
+    private static final class ParkedEngine implements PlaybackEngine {
+        private final Service service;
+        int positionMs;
+
+        ParkedEngine(Service service, int positionMs) {
+            this.service = service;
+            this.positionMs = positionMs;
+        }
+
+        @Override public void start() { }
+        @Override public boolean isPlaying() { return false; }
+        @Override public boolean isFadeOutInProgress() { return false; }
+        @Override public void cancelFadeOutAndResume() { }
+        @Override public void setState(boolean playing) { }
+        @Override public void release() { }
+        @Override public void seekTo(int positionMs) { this.positionMs = positionMs; }
+        @Override public int getCurrentPositionMs() { return positionMs; }
+        @Override public void applyEqualizerSettings() { }
+        @Override public void fadeOutAndStop(long durationMs) { service.onFadeOutComplete(); }
     }
 
     private void startProgressTicks() {

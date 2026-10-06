@@ -31,6 +31,7 @@ class AudioPlayer extends Thread implements MediaPlayer.OnCompletionListener, Pl
   // Main thread only: set once onPrepared() runs; transport commands before that are deferred.
   private boolean prepared;
   private Boolean pendingPlayIntent; // transport command that arrived before prepared
+  private int pendingSeekMs = -1;    // seek that arrived before prepared
   private volatile boolean fadeOutInProgress;
   private volatile boolean pausedForFocusLoss;
   private final AtomicInteger fadeToken = new AtomicInteger();
@@ -163,6 +164,7 @@ class AudioPlayer extends Thread implements MediaPlayer.OnCompletionListener, Pl
       // Request audio focus with GAIN priority for main playback
       // This ensures preview (with TRANSIENT_MAY_DUCK) won't interrupt us
       requestAudioFocus();
+      if (pendingSeekMs >= 0) mediaPlayer.seekTo(pendingSeekMs);
       // Honor any PLAY/PAUSE that landed during the (long, for ALAC) prepare; default to play.
       Boolean pending = pendingPlayIntent;
       service.setState(pending == null || pending);
@@ -242,9 +244,24 @@ class AudioPlayer extends Thread implements MediaPlayer.OnCompletionListener, Pl
   }
 
   public void seekTo(int positionMs) {
-    if (!released) {
-      try { mediaPlayer.seekTo(positionMs); }
-      catch (IllegalStateException ignored) {}
+    if (released) return;
+    if (!prepared) {
+      // Same window as setState: a seek into a player still in prepare() is rejected. Resuming a
+      // parked track seeks right after building its player, so this is not just a corner case.
+      pendingSeekMs = positionMs;
+      return;
+    }
+    try { mediaPlayer.seekTo(positionMs); }
+    catch (IllegalStateException ignored) {}
+  }
+
+  @Override
+  public int getCurrentPositionMs() {
+    if (released || !prepared) return -1;
+    try {
+      return mediaPlayer.getCurrentPosition();
+    } catch (IllegalStateException e) {
+      return -1;
     }
   }
 

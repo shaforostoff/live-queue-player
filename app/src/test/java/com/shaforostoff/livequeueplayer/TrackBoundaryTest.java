@@ -270,6 +270,111 @@ public class TrackBoundaryTest {
         // Reaching here without the debug tripwire throwing is the assertion.
     }
 
+    // --- parked player (released after a long pause) ----------------------------------------------
+
+    @Test
+    public void park_releasesThePausedPlayerButKeepsTheTrack() {
+        startQueue(3);
+        prepareCurrent();
+        sendSelf(Launcher.PAUSE);
+        FakeEngine paused = service.lastEngine;
+        paused.positionMs = 42_000;
+
+        service.parkIfStillPaused();
+        invariants();
+        assertTrue("the player must be released", paused.released);
+        assertEquals("the current track stays", 0, Service.sCurrentIndex);
+        assertFalse(Service.sIsPlaying);
+        assertEquals("the player's own position, not the estimate", 42_000, Service.sPlaybackPositionMs);
+        assertTrue(Service.sHasPendingTracks);
+    }
+
+    @Test
+    public void park_leavesAPlayingTrackAlone() {
+        startQueue(2);
+        prepareCurrent();
+        service.parkIfStillPaused();
+        invariants();
+        assertFalse(service.lastEngine.released);
+        assertTrue(Service.sIsPlaying);
+    }
+
+    @Test
+    public void playAfterPark_rebuildsThePlayerAtTheParkedPosition() {
+        startQueue(3);
+        prepareCurrent();
+        sendSelf(Launcher.PAUSE);
+        FakeEngine paused = service.lastEngine;
+        paused.positionMs = 42_000;
+        service.parkIfStillPaused();
+
+        sendSelf(Launcher.PLAY);
+        invariants();
+        FakeEngine resumed = service.lastEngine;
+        assertTrue("a fresh player", resumed != paused);
+        assertEquals("same track", 0, Service.sCurrentIndex);
+        assertEquals(42_000, resumed.lastSeekMs);
+        assertEquals(42_000, Service.sPlaybackPositionMs);
+        assertTrue(Service.sIsPlaying);
+        assertEquals("the pending tracks survive", 3, reflectPlaylistSize());
+        prepareCurrent();
+        assertTrue(resumed.started);
+    }
+
+    @Test
+    public void playPauseAfterPark_resumes() {
+        startQueue(2);
+        prepareCurrent();
+        sendSelf(Launcher.PAUSE);
+        service.parkIfStillPaused();
+        sendSelf(Launcher.PLAY_PAUSE);
+        invariants();
+        assertTrue(Service.sIsPlaying);
+        assertEquals(0, Service.sCurrentIndex);
+    }
+
+    @Test
+    public void seekWhileParked_movesTheResumePoint() {
+        startQueue(2);
+        prepareCurrent();
+        sendSelf(Launcher.PAUSE);
+        service.lastEngine.positionMs = 10_000;
+        service.parkIfStillPaused();
+        Intent seek = selfIntent(Launcher.SEEK);
+        seek.putExtra(Service.EXTRA_SEEK_TO_MS, 500);
+        service.onStartCommand(seek, 0, nextId());
+        sendSelf(Launcher.PLAY);
+        invariants();
+        assertEquals(500, service.lastEngine.lastSeekMs);
+    }
+
+    @Test
+    public void stopWhileParked_stopsCleanly() {
+        startQueue(2);
+        prepareCurrent();
+        sendSelf(Launcher.PAUSE);
+        service.parkIfStillPaused();
+        sendSelf(Launcher.STOP);
+        invariants();
+        assertEquals(-1, Service.sCurrentIndex);
+        assertFalse(Service.sFadeOutInProgress);
+        assertTrue("nothing left loaded", reflectField("audioPlayer") == null);
+    }
+
+    @Test
+    public void skipWhileParked_playsTheNextTrackFromTheTop() {
+        startQueue(3);
+        prepareCurrent();
+        sendSelf(Launcher.PAUSE);
+        service.lastEngine.positionMs = 42_000;
+        service.parkIfStillPaused();
+        sendSelf(Launcher.SKIP);
+        invariants();
+        assertEquals(1, Service.sCurrentIndex);
+        assertEquals(-1, service.lastEngine.lastSeekMs);
+        assertTrue(Service.sIsPlaying);
+    }
+
     // --- harness ---------------------------------------------------------------------------------
 
     /** Seed and start a queue of {@code n} file:// tracks through the real external-start path. */
@@ -393,6 +498,8 @@ public class TrackBoundaryTest {
         private final Service service;
         boolean prepared, started, released, fadeOut;
         Boolean pendingIntent; // transport command deferred until prepared
+        int lastSeekMs = -1;
+        int positionMs = -1;   // what getCurrentPositionMs() reports
 
         FakeEngine(Service service) { this.service = service; }
 
@@ -412,7 +519,9 @@ public class TrackBoundaryTest {
 
         @Override public void release() { released = true; started = false; }
 
-        @Override public void seekTo(int positionMs) { }
+        @Override public void seekTo(int positionMs) { lastSeekMs = positionMs; }
+
+        @Override public int getCurrentPositionMs() { return released ? -1 : positionMs; }
 
         @Override public void applyEqualizerSettings() { }
 

@@ -27,7 +27,11 @@ interface PlaybackEngine {
     /** Fully release this engine; a track change or teardown never reuses one. Idempotent. */
     void release();
 
+    /** Deferred internally until prepared, like {@link #setState}. */
     void seekTo(int positionMs);
+
+    /** The player's own position, or -1 while it cannot tell (still preparing, released). */
+    int getCurrentPositionMs();
 
     void applyEqualizerSettings();
 

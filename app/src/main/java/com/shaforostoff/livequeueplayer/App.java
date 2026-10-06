@@ -85,6 +85,13 @@ public class App extends Application {
         return fileReceiver;
     }
 
+    private final ArrivalOrder arrivalOrder = new ArrivalOrder();
+
+    /** UI thread; see {@link ArrivalOrder}. */
+    ArrivalOrder getArrivalOrder() {
+        return arrivalOrder;
+    }
+
     public synchronized BluetoothQueueBridge getBluetoothBridge() {
         if (bluetoothBridge == null) {
             bluetoothBridge = new BluetoothQueueBridge(this);

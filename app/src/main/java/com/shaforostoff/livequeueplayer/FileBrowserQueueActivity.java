@@ -21,6 +21,7 @@ import android.os.SystemClock;
 import android.view.KeyEvent;
 import android.text.Editable;
 import android.text.TextWatcher;
+import android.text.format.Formatter;
 import android.provider.DocumentsContract;
 import android.provider.MediaStore;
 import android.util.TypedValue;
@@ -445,10 +446,11 @@ public class FileBrowserQueueActivity extends Activity {
             int serverMode = getIntent().getIntExtra(EXTRA_REMOTE_QUEUE_SERVER_MODE, -1);
             if (serverMode == 1) {
                 mode = Mode.REMOTE_RECEIVE;
-                btController.startRemoteSetupAsServer();
+                // The sink first, so a client connecting at once is fed to it from the start.
                 fileReceiver = ((App) getApplication()).getFileReceiver();
                 fileReceiver.setCallback(this::onRemoteFileReceived);
                 btController.setFileSink(fileReceiver);
+                btController.startRemoteSetupAsServer();
                 // Pin the playback service to the foreground for the whole hosting session, while
                 // this activity is still visible and the promotion is permitted. Without this, the
                 // first remote play command arriving with the screen off has no legal way to
@@ -1779,18 +1781,16 @@ public class FileBrowserQueueActivity extends Activity {
             return;
         }
         int anchorIdx = anchorIndex();
-        int insertAt;
-        if (anchorIdx >= 0) {
-            queueEntries.addAll(anchorIdx, entries);
-            insertAt = anchorIdx;
-            // Inserting at/before the playing row pushes it (and the service window) down.
-            if (currentPlayingQueueIndex >= 0 && insertAt <= currentPlayingQueueIndex) {
-                currentPlayingQueueIndex += entries.size();
-                setPlaybackOffset(servicePlaybackOffset + entries.size());
-            }
-        } else {
-            insertAt = queueEntries.size();
-            queueEntries.addAll(entries);
+        insertIntoQueue(anchorIdx >= 0 ? anchorIdx : queueEntries.size(), entries);
+    }
+
+    /** Inserts {@code entries} at row {@code insertAt}, keeping playback state aligned. */
+    private void insertIntoQueue(int insertAt, List<QueueEntry> entries) {
+        queueEntries.addAll(insertAt, entries);
+        // Inserting at/before the playing row pushes it (and the service window) down.
+        if (currentPlayingQueueIndex >= 0 && insertAt <= currentPlayingQueueIndex) {
+            currentPlayingQueueIndex += entries.size();
+            setPlaybackOffset(servicePlaybackOffset + entries.size());
         }
         queueAdapter.notifyDataSetChanged();
         // Scroll so the last newly-added track (and the anchor line just below it) is visible.
@@ -2977,10 +2977,15 @@ public class FileBrowserQueueActivity extends Activity {
 
             List<QueueEntry> toAdd = new ArrayList<>(tracks.size());
             List<String> notFound = new ArrayList<>();
+            List<String> requestPaths = new ArrayList<>(tracks.size());
+            int[] requestIds = new int[tracks.size()]; // per request: its entry, or 0 if it may arrive
             for (int i = 0; i < tracks.size(); i++) {
                 Uri uri = foundUris.get(i);
+                requestPaths.add(tracks.get(i).path);
                 if (uri != null) {
-                    toAdd.add(new QueueEntry(tracks.get(i).file, uri));
+                    QueueEntry entry = new QueueEntry(tracks.get(i).file, uri);
+                    toAdd.add(entry);
+                    requestIds[i] = entry.id;
                 } else {
                     notFound.add(tracks.get(i).file);
                 }
@@ -3005,6 +3010,8 @@ public class FileBrowserQueueActivity extends Activity {
                 // The matching walk ran on a background thread; the activity may have been destroyed
                 // meanwhile. Bail before touching queue state / views (as addPlaylistToQueue does).
                 if (isDestroyed()) return;
+                // So a missing track pushed later lands beside its neighbours in this request.
+                ((App) getApplication()).getArrivalOrder().record(requestPaths, requestIds);
                 if (!toAdd.isEmpty()) {
                     addToQueue(toAdd);
                     Toast.makeText(this, getString(R.string.added_tracks_from_remote, toAdd.size()), Toast.LENGTH_SHORT).show();
@@ -3027,56 +3034,94 @@ public class FileBrowserQueueActivity extends Activity {
                 "missing", missing.length() > 0 ? missing : null);
     }
 
-    /** A track pushed by the client has landed (or was already there): queue it as requested. */
-    private void onRemoteFileReceived(String name, Uri uri) {
+    /**
+     * A track pushed by the client has landed (or was already there): queue it where it was
+     * requested — beside its neighbours in that request, if one of them is still ahead — or else
+     * where new tracks go.
+     */
+    private void onRemoteFileReceived(String name, String path, Uri uri) {
         if (isDestroyed()) return;
-        addToQueue(name, uri);
+        QueueEntry entry = new QueueEntry(name, uri);
+        int[][] around = ((App) getApplication()).getArrivalOrder().arrive(path, entry.id);
+        int insertAt = -1;
+        // After the nearest earlier request still in the queue, unless that one has already played.
+        for (int id : around[0]) {
+            int i = indexOfQueueEntry(id);
+            if (i < 0) continue;
+            if (i >= currentPlayingQueueIndex) insertAt = i + 1;
+            break;
+        }
+        // Else before the nearest later one, unless that one is playing or has played.
+        if (insertAt < 0) {
+            for (int id : around[1]) {
+                int i = indexOfQueueEntry(id);
+                if (i < 0) continue;
+                if (i > currentPlayingQueueIndex) insertAt = i;
+                break;
+            }
+        }
+        List<QueueEntry> one = new ArrayList<>(1);
+        one.add(entry);
+        if (insertAt >= 0) insertIntoQueue(insertAt, one);
+        else addToQueue(one);
         notifyRemoteQueueChanged();
         Toast.makeText(this, getString(R.string.received_file, name), Toast.LENGTH_SHORT).show();
     }
 
-    /** Offers to push the tracks the host reported missing, to the same root-relative paths there. */
-    private void offerMissingTransfer(JSONArray missing) {
-        int n = missing.length();
-        if (n == 0) return;
-        String message = n == 1
-                ? getString(R.string.transfer_missing_one, missing.optJSONObject(0).optString("file"))
-                : getString(R.string.transfer_missing_many, n);
-        new AlertDialog.Builder(this)
-                .setTitle(R.string.transfer_missing_title)
-                .setMessage(message)
-                .setPositiveButton(R.string.transfer_send, (d, w) -> startMissingTransfer(missing))
-                .setNegativeButton(android.R.string.cancel, null)
-                .show();
+    private int indexOfQueueEntry(int id) {
+        for (int i = 0; i < queueEntries.size(); i++) {
+            if (queueEntries.get(i).id == id) return i;
+        }
+        return -1;
     }
 
-    private void startMissingTransfer(JSONArray missing) {
-        final boolean isDocTree = storageBrowser.isBrowsingDocumentTree() && storageBrowser.hasDocumentLocation();
-        final Uri rootDocUri = isDocTree ? storageBrowser.getDocumentRootUri() : null;
-        final File fileRoot = storageBrowser.getCurrentFileRootDirectory();
+    /**
+     * Offers to push the tracks the host reported missing, to the same root-relative paths there.
+     * They are looked up here first (off the UI thread), so the offer can say how much it is.
+     */
+    private void offerMissingTransfer(JSONArray missing) {
+        if (missing.length() == 0 || fileSender == null) return;
+        final StorageBrowser.Root root = storageBrowser.getRoot();
+        final BluetoothFileSender sender = fileSender;
         new Thread(() -> {
             // The host was sent paths relative to this device's root, so they resolve straight back.
             List<BluetoothFileSender.Job> jobs = new ArrayList<>(missing.length());
+            long totalBytes = 0;
             int unavailable = 0;
             for (int i = 0; i < missing.length(); i++) {
                 JSONObject item = missing.optJSONObject(i);
                 String path = item != null ? item.optString("path", "") : "";
+                if (!path.isEmpty() && sender.isPending(path)) continue; // already on its way
                 Uri uri = path.isEmpty() ? null
-                        : isDocTree ? storageBrowser.resolveDirectDocumentPath(rootDocUri, path)
-                                    : storageBrowser.resolveDirectFilePath(fileRoot, path);
+                        : root.document != null ? storageBrowser.resolveDirectDocumentPath(root.document, path)
+                        : root.folder != null ? storageBrowser.resolveDirectFilePath(root.folder, path)
+                        : null;
                 if (uri == null) {
                     unavailable++;
                     continue;
                 }
                 jobs.add(new BluetoothFileSender.Job(uri, path, item.optString("file", path)));
+                long size = BluetoothFileSender.sizeOf(this, uri);
+                if (size > 0) totalBytes += size;
             }
             final int fUnavailable = unavailable;
+            final long fTotal = totalBytes;
             runOnUiThread(() -> {
-                if (isDestroyed() || fileSender == null) return;
+                if (isDestroyed()) return;
                 if (fUnavailable > 0) {
                     Toast.makeText(this, getString(R.string.transfer_unavailable, fUnavailable), Toast.LENGTH_LONG).show();
                 }
-                fileSender.enqueue(jobs);
+                if (jobs.isEmpty()) return;
+                String size = Formatter.formatShortFileSize(this, fTotal);
+                String message = jobs.size() == 1
+                        ? getString(R.string.transfer_missing_one, jobs.get(0).name, size)
+                        : getString(R.string.transfer_missing_many, jobs.size(), size);
+                new AlertDialog.Builder(this)
+                        .setTitle(R.string.transfer_missing_title)
+                        .setMessage(message)
+                        .setPositiveButton(R.string.transfer_send, (d, w) -> sender.enqueue(jobs))
+                        .setNegativeButton(android.R.string.cancel, null)
+                        .show();
             });
         }).start();
     }
@@ -3093,12 +3138,13 @@ public class FileBrowserQueueActivity extends Activity {
         remoteTransferStatus.setVisibility(View.VISIBLE);
     }
 
-    private void onFileTransferFinished(int sent, int existing, int failed) {
+    private void onFileTransferFinished(int sent, int existing, int failed, boolean hostFull) {
         if (remoteTransferStatus != null) remoteTransferStatus.setVisibility(View.GONE);
         StringBuilder sb = new StringBuilder();
         if (sent > 0)     appendMatchCategory(sb, getString(R.string.transfer_sent, sent));
         if (existing > 0) appendMatchCategory(sb, getString(R.string.transfer_existing, existing));
         if (failed > 0)   appendMatchCategory(sb, getString(R.string.transfer_failed, failed));
+        if (hostFull)     appendMatchCategory(sb, getString(R.string.transfer_host_full));
         if (sb.length() > 0) Toast.makeText(this, sb.toString(), Toast.LENGTH_LONG).show();
     }
 
@@ -3329,8 +3375,8 @@ public class FileBrowserQueueActivity extends Activity {
                 @Override public void onWaitingForLink(int index, int total, String name) {
                     onFileTransferWaiting(index, total, name);
                 }
-                @Override public void onFinished(int sent, int existing, int failed) {
-                    onFileTransferFinished(sent, existing, failed);
+                @Override public void onFinished(int sent, int existing, int failed, boolean hostFull) {
+                    onFileTransferFinished(sent, existing, failed, hostFull);
                 }
             });
             btController.setFileSink(fileSender);
@@ -3750,11 +3796,9 @@ public class FileBrowserQueueActivity extends Activity {
             // Leaving remote mode for good: nothing will resume these, so tell the host to drop them.
             if (!isChangingConfigurations()) fileSender.cancel();
         }
-        if (fileReceiver != null) {
-            fileReceiver.setCallback(null);
-            // The partial stays on disk: a later session may still resume it.
-            if (!isChangingConfigurations()) fileReceiver.suspend();
-        }
+        // On a finish the bridge shuts down below, and its read thread then tells the receiver the
+        // link is gone: it closes the partial, which stays on disk for a later session to resume.
+        if (fileReceiver != null) fileReceiver.setCallback(null);
         // Preserve the app-scoped Bluetooth bridge across configuration changes (e.g. rotation);
         // only tear the connection down when the activity is genuinely finishing.
         btController.onActivityDestroyed(isChangingConfigurations());

@@ -6,6 +6,7 @@ import android.database.Cursor;
 import android.net.Uri;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.PowerManager;
 import android.os.SystemClock;
 import android.provider.OpenableColumns;
 
@@ -13,6 +14,7 @@ import org.json.JSONObject;
 
 import java.io.File;
 import java.io.InputStream;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.LinkedBlockingDeque;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -25,10 +27,14 @@ import java.util.concurrent.TimeUnit;
  *
  * <p>A single worker thread drains the job queue; the host's replies arrive on the bridge's read
  * thread and are handed over through {@link #replies}. When the link drops mid-file the job stays
- * current and the worker waits for the bridge to reconnect, then begins the same file again — the
- * host answers with how much it already holds, and only the rest is sent. Only {@link #cancel}
- * gives a file up; a connect with nothing to resume tells the host so ({@code file_abort} without
- * an id), letting it delete a leftover partial.
+ * current and the worker parks until the bridge reconnects (it is woken by {@link #onLinkUp}, so a
+ * bridge that has stopped retrying costs nothing), then begins the same file again — the host
+ * answers with how much it already holds, and only the rest is sent. Only {@link #cancel} gives a
+ * file up; a connect with nothing to resume tells the host so ({@code file_abort} without an id),
+ * letting it delete a leftover partial. A host that is out of space ends the run.
+ *
+ * <p>A partial wake lock is held while bytes are moving, so a transfer keeps going after the screen
+ * times out; it is let go while waiting for the link.
  */
 final class BluetoothFileSender implements BluetoothQueueBridge.FileSink {
 
@@ -48,13 +54,16 @@ final class BluetoothFileSender implements BluetoothQueueBridge.FileSink {
     interface Callback {
         /** UI thread. {@code index} is 1-based within the current run of {@code total} files. */
         void onProgress(int index, int total, String name, int percent);
-        /** UI thread, repeatedly while the link is down with {@code name} still to finish. */
+        /** UI thread, when the link goes down with {@code name} still to finish. */
         void onWaitingForLink(int index, int total, String name);
-        /** UI thread, once the queue has drained. Cancelled files are not counted. */
-        void onFinished(int sent, int existing, int failed);
+        /**
+         * UI thread, once the queue has drained. Cancelled files are not counted; {@code hostFull}
+         * means the host ran out of space and the files after it were not tried.
+         */
+        void onFinished(int sent, int existing, int failed, boolean hostFull);
     }
 
-    private enum Result { SENT, EXISTING, FAILED, CANCELLED, INTERRUPTED }
+    private enum Result { SENT, EXISTING, FAILED, HOST_FULL, CANCELLED, INTERRUPTED }
 
     private static final int CHUNK_BYTES = 8 * 1024;
     private static final long READY_TIMEOUT_MS = 30_000;
@@ -62,11 +71,18 @@ final class BluetoothFileSender implements BluetoothQueueBridge.FileSink {
     private static final long DONE_TIMEOUT_MS = 60_000;
     private static final long PROGRESS_INTERVAL_MS = 250;
     private static final long LINK_POLL_MS = 500;
+    // The wake lock is taken with a timeout, renewed while bytes move, so a stuck worker can't hold
+    // the CPU up for good.
+    private static final long WAKE_TIMEOUT_MS = 2 * 60_000;
+    private static final long WAKE_RENEW_MS = 30_000;
 
     private final Context context;
     private final BluetoothFileLink link;
     private final Handler uiHandler = new Handler(Looper.getMainLooper());
-    private volatile Callback callback;
+    private final PowerManager.WakeLock wakeLock;
+    private long wakeRenewedAt;
+    private Callback callback;  // UI thread
+    private Report lastStatus;  // UI thread: the last progress/waiting line, replayed on attach
 
     private final LinkedBlockingDeque<Job> jobs = new LinkedBlockingDeque<>();
     private final LinkedBlockingQueue<JSONObject> replies = new LinkedBlockingQueue<>();
@@ -84,20 +100,46 @@ final class BluetoothFileSender implements BluetoothQueueBridge.FileSink {
     BluetoothFileSender(Context context, BluetoothFileLink link) {
         this.context = context.getApplicationContext();
         this.link = link;
+        PowerManager pm = (PowerManager) this.context.getSystemService(Context.POWER_SERVICE);
+        wakeLock = pm != null ? pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "LiveQueuePlayer:FileSend") : null;
+        if (wakeLock != null) wakeLock.setReferenceCounted(false);
     }
 
-    /** Attaches the current activity, or {@code null} to detach (progress is then dropped). */
+    /**
+     * Attaches the current activity, or {@code null} to detach. UI thread. A newly attached one is
+     * shown the transfer's current status straight away, so a rotation doesn't blank it.
+     */
     void setCallback(Callback callback) {
         this.callback = callback;
+        if (callback != null && lastStatus != null) lastStatus.to(callback);
     }
 
-    /** Queues {@code more} behind whatever is already being sent. */
-    void enqueue(List<Job> more) {
-        if (more.isEmpty()) return;
+    /** True if a file at {@code path} is queued or being sent. */
+    boolean isPending(String path) {
         synchronized (lock) {
-            for (Job job : more) job.generation = generation;
-            jobs.addAll(more);
-            runTotal += more.size();
+            if (current != null && current.generation == generation && current.path.equals(path)) return true;
+            for (Job job : jobs) {
+                if (job.generation == generation && job.path.equals(path)) return true;
+            }
+            return false;
+        }
+    }
+
+    /** Queues {@code more} behind whatever is already being sent, skipping paths already pending. */
+    void enqueue(List<Job> more) {
+        synchronized (lock) {
+            List<Job> fresh = new ArrayList<>(more.size());
+            for (Job job : more) {
+                if (isPending(job.path)) continue;
+                boolean twice = false;
+                for (Job f : fresh) twice |= f.path.equals(job.path);
+                if (twice) continue;
+                job.generation = generation;
+                fresh.add(job);
+            }
+            if (fresh.isEmpty()) return;
+            jobs.addAll(fresh);
+            runTotal += fresh.size();
             if (worker != null) return;
             worker = new Thread(this::drain, "bt-file-send");
             worker.start();
@@ -114,6 +156,7 @@ final class BluetoothFileSender implements BluetoothQueueBridge.FileSink {
             jobs.clear();
             int id = currentId;
             if (id > 0) link.send("file_abort", "id", id);
+            lock.notifyAll(); // a worker parked for the link
         }
     }
 
@@ -138,6 +181,7 @@ final class BluetoothFileSender implements BluetoothQueueBridge.FileSink {
         synchronized (lock) {
             Job job = current;
             if (job == null || job.generation != generation) link.send("file_abort");
+            lock.notifyAll(); // a worker parked for the link
         }
     }
 
@@ -148,6 +192,7 @@ final class BluetoothFileSender implements BluetoothQueueBridge.FileSink {
 
     private void drain() {
         int index = 0, sent = 0, existing = 0, failed = 0;
+        boolean hostFull = false;
         while (true) {
             Job job;
             int total;
@@ -163,12 +208,12 @@ final class BluetoothFileSender implements BluetoothQueueBridge.FileSink {
             if (job.generation != generation) continue;
             final int at = ++index;
             Result result;
-            while ((result = sendOne(job, at, total)) == Result.INTERRUPTED) {
-                // Hold the job until the bridge reconnects (it retries on its own), then resume it.
-                do {
-                    report(cb -> cb.onWaitingForLink(at, total, job.name));
-                    if (!sleep(LINK_POLL_MS)) break;
-                } while (job.generation == generation && !link.isConnected());
+            while ((result = sendAwake(job, at, total)) == Result.INTERRUPTED) {
+                // Hold the job until the bridge reconnects, then resume it. The bridge may have
+                // stopped retrying (it resumes when the user is back), so this parks rather than
+                // polls: onLinkUp or cancel wakes it.
+                report(cb -> cb.onWaitingForLink(at, total, job.name));
+                if (!awaitLink(job)) break;
             }
             synchronized (lock) {
                 current = null;
@@ -177,9 +222,51 @@ final class BluetoothFileSender implements BluetoothQueueBridge.FileSink {
             if (result == Result.SENT) sent++;
             else if (result == Result.EXISTING) existing++;
             else if (result == Result.FAILED) failed++;
+            else if (result == Result.HOST_FULL) {
+                // Every file after this one would fail the same way.
+                hostFull = true;
+                failed++;
+                synchronized (lock) {
+                    if (job.generation == generation) jobs.clear();
+                }
+            }
         }
         int s = sent, e = existing, f = failed;
-        report(cb -> cb.onFinished(s, e, f));
+        boolean full = hostFull;
+        report(cb -> cb.onFinished(s, e, f, full), false);
+    }
+
+    /** Waits until the link is up or the job is cancelled; false if interrupted. */
+    private boolean awaitLink(Job job) {
+        synchronized (lock) {
+            while (job.generation == generation && !link.isConnected()) {
+                try {
+                    lock.wait();
+                } catch (InterruptedException e) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    /** {@link #sendOne} with the CPU held awake for its duration. */
+    private Result sendAwake(Job job, int index, int total) {
+        keepAwake();
+        try {
+            return sendOne(job, index, total);
+        } finally {
+            if (wakeLock != null && wakeLock.isHeld()) wakeLock.release();
+        }
+    }
+
+    /** Takes or renews the wake lock; cheap to call per chunk. */
+    private void keepAwake() {
+        if (wakeLock == null) return;
+        long now = SystemClock.elapsedRealtime();
+        if (wakeLock.isHeld() && now - wakeRenewedAt < WAKE_RENEW_MS) return;
+        wakeLock.acquire(WAKE_TIMEOUT_MS);
+        wakeRenewedAt = now;
     }
 
     private Result sendOne(Job job, int index, int total) {
@@ -199,7 +286,12 @@ final class BluetoothFileSender implements BluetoothQueueBridge.FileSink {
             JSONObject ready = awaitReply("file_ready", id, job, epoch, READY_TIMEOUT_MS);
             if (ready == null) return outcomeOfNoReply(job, epoch);
             if (!ready.optBoolean("ok")) {
-                return "exists".equals(ready.optString("reason")) ? Result.EXISTING : Result.FAILED;
+                switch (ready.optString("reason")) {
+                    case "done":     return Result.SENT;      // it landed, but its file_done was lost
+                    case "exists":   return Result.EXISTING;
+                    case "no_space": return Result.HOST_FULL;
+                    default:         return Result.FAILED;
+                }
             }
 
             long done = ready.optLong("offset", 0);
@@ -219,6 +311,7 @@ final class BluetoothFileSender implements BluetoothQueueBridge.FileSink {
                 if (now - lastProgress >= PROGRESS_INTERVAL_MS) {
                     lastProgress = now;
                     progress(index, total, job.name, done, size);
+                    keepAwake();
                 }
             }
             if (!link.send("file_end", "id", id)) return interruption(epoch);
@@ -274,19 +367,16 @@ final class BluetoothFileSender implements BluetoothQueueBridge.FileSink {
         return true;
     }
 
-    private static boolean sleep(long ms) {
-        try {
-            Thread.sleep(ms);
-            return true;
-        } catch (InterruptedException e) {
-            return false;
-        }
-    }
-
     private interface Report { void to(Callback cb); }
 
     private void report(Report report) {
+        report(report, true);
+    }
+
+    /** Posts {@code report} to the attached callback; a status line is also kept for replay. */
+    private void report(Report report, boolean isStatus) {
         uiHandler.post(() -> {
+            lastStatus = isStatus ? report : null;
             Callback cb = callback;
             if (cb != null) report.to(cb);
         });
@@ -298,6 +388,11 @@ final class BluetoothFileSender implements BluetoothQueueBridge.FileSink {
     }
 
     private long sizeOf(Uri uri) {
+        return sizeOf(context, uri);
+    }
+
+    /** The byte size of {@code uri}, or -1 if unknown. Any thread; it may query a provider. */
+    static long sizeOf(Context context, Uri uri) {
         if ("file".equals(uri.getScheme()) && uri.getPath() != null) {
             return new File(uri.getPath()).length();
         }

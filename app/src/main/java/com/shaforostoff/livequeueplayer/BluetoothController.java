@@ -178,6 +178,7 @@ class BluetoothController {
         bridge.setListener(null);
         if (!changingConfigurations) {
             // The file sender/receiver are app-scoped, so a rotation keeps feeding them mid-file.
+            // A link still up reports its loss to the sink it fed even after this detaches it.
             bridge.setFileSink(null);
             bridge.shutdown();
         }

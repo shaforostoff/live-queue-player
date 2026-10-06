@@ -23,6 +23,7 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.ArrayDeque;
 import java.util.List;
 import java.util.UUID;
 import java.util.zip.GZIPInputStream;
@@ -76,6 +77,91 @@ final class BluetoothQueueBridge implements BluetoothFileLink {
         void onLinkLost();
     }
 
+    /**
+     * Frames waiting for a link's writer thread. Control messages jump ahead of file traffic, so a
+     * remote command from the UI thread never waits behind a transfer; file messages and chunks
+     * share one lane, which keeps a file's begin / chunks / end in order. Nothing here blocks
+     * except {@link #putChunk}, which is how the link paces the sender.
+     */
+    static final class Outbox {
+        private final ArrayDeque<byte[]> control = new ArrayDeque<>();
+        private final ArrayDeque<byte[]> bulk = new ArrayDeque<>();
+        private int queuedChunks;
+        private boolean closed;
+
+        synchronized boolean add(byte[] frame, boolean toBulk) {
+            if (closed) return false;
+            (toBulk ? bulk : control).add(frame);
+            notifyAll();
+            return true;
+        }
+
+        synchronized boolean putChunk(byte[] frame) throws InterruptedException {
+            while (!closed && queuedChunks >= MAX_QUEUED_CHUNKS) wait();
+            if (closed) return false;
+            bulk.add(frame);
+            queuedChunks++;
+            notifyAll();
+            return true;
+        }
+
+        /** The next frame to write, or null once closed. */
+        synchronized byte[] take() throws InterruptedException {
+            while (!closed && control.isEmpty() && bulk.isEmpty()) wait();
+            if (closed) return null;
+            byte[] frame = control.poll();
+            if (frame != null) return frame;
+            frame = bulk.poll();
+            // Only chunks carry the marker after the length prefix: JSON starts '{', gzip 0x1F.
+            if (frame.length > 4 && frame[4] == FILE_CHUNK_MARKER) {
+                queuedChunks--;
+                notifyAll();
+            }
+            return frame;
+        }
+
+        synchronized void close() {
+            closed = true;
+            control.clear();
+            bulk.clear();
+            notifyAll();
+        }
+    }
+
+    /** One attached socket, with its outbound queue, and its loss reported to the file sink once. */
+    private static final class Link {
+        final BluetoothSocket socket;
+        final Outbox outbox = new Outbox();
+        // The sink fed while this link was up (the last non-null one), told when it goes.
+        volatile FileSink sink;
+        private boolean lostReported;
+
+        Link(BluetoothSocket socket, FileSink sink) {
+            this.socket = socket;
+            this.sink = sink;
+        }
+
+        void close() {
+            outbox.close();
+            try {
+                socket.close();
+            } catch (Exception ignored) {
+            }
+        }
+
+        /**
+         * Tells the sink this link is gone, exactly once. A second caller waits until the first
+         * has finished, so whoever goes on to bring up the next link knows the sink has let go of
+         * this one.
+         */
+        synchronized void reportLost() {
+            if (lostReported) return;
+            lostReported = true;
+            FileSink s = sink;
+            if (s != null) s.onLinkLost();
+        }
+    }
+
     /** Swallows callbacks while no activity is attached (e.g. mid-rotation). */
     private static final Listener NO_OP = new Listener() {
         @Override public void onQueueRequestsReceived(List<TrackRequest> tracks) {}
@@ -94,6 +180,10 @@ final class BluetoothQueueBridge implements BluetoothFileLink {
     // 0x1F, so this can't collide; a peer without file transfer fails to parse it and drops it.
     private static final byte FILE_CHUNK_MARKER = 0x02;
     static final int FILE_CHUNK_HEADER = 5;
+    // Chunks queued ahead of the socket. Enough to keep the link busy, few enough that a control
+    // message never waits behind more than one chunk write (it jumps the queue) and the sender is
+    // paced by the link, not by memory.
+    private static final int MAX_QUEUED_CHUNKS = 4;
 
     // The bridge is application-scoped (see App), so it outlives any single activity. The current
     // activity attaches via setListener(); the volatile ref lets read/connect threads swap safely.
@@ -102,11 +192,10 @@ final class BluetoothQueueBridge implements BluetoothFileLink {
     private final Object socketLock = new Object();
 
     private BluetoothServerSocket serverSocket;
-    private BluetoothSocket connectedSocket;
-    private OutputStream connectedOutput;
+    private Link connected;  // the live link, or null; guarded by socketLock
+    private Link previous;   // the last link attached, live or not; guarded by socketLock
     private Thread acceptThread;
     private Thread connectThread;
-    private Thread readThread;
     private volatile boolean running;
 
     private BluetoothAdapter serverAdapter;
@@ -153,6 +242,12 @@ final class BluetoothQueueBridge implements BluetoothFileLink {
     /** Attaches the file-transfer handler, or {@code null} to drop file traffic. */
     void setFileSink(FileSink sink) {
         this.fileSink = sink;
+        if (sink == null) return;
+        // A link already up reports its loss to the sink that was fed from it, even if the
+        // activity detaches first (a finishing host still has to close the partial it writes).
+        synchronized (socketLock) {
+            if (connected != null) connected.sink = sink;
+        }
     }
 
     /** True while the RFCOMM server socket is accepting (host/receiver role). */
@@ -378,11 +473,7 @@ final class BluetoothQueueBridge implements BluetoothFileLink {
 
     boolean sendQueueRequests(List<TrackRequest> requests) {
         if (requests == null || requests.isEmpty()) return false;
-        BluetoothSocket socket;
-        synchronized (socketLock) {
-            socket = connectedSocket;
-        }
-        if (socket == null || !socket.isConnected()) return false;
+        if (!isConnected()) return false;
 
         try {
             JSONArray payload = new JSONArray();
@@ -395,19 +486,25 @@ final class BluetoothQueueBridge implements BluetoothFileLink {
                 if (!req.date.isEmpty())   obj.put("date",   req.date);
                 payload.put(obj);
             }
-            return sendBytes(preparePayload(payload.toString()));
+            return enqueue(preparePayload(payload.toString()), false);
         } catch (Exception e) {
-            handleSendFailure();
             return false;
         }
     }
 
     boolean sendRaw(String json) {
+        return sendRaw(json, false);
+    }
+
+    /**
+     * Queues a JSON message for the writer thread; never blocks on the socket, so it is safe from
+     * the UI thread. True means queued on a live link, not delivered.
+     */
+    private boolean sendRaw(String json, boolean fileLane) {
         try {
-            return sendBytes(preparePayload(json));
-        } catch (Exception e) {
-            handleSendFailure();
-            return false;
+            return enqueue(preparePayload(json), fileLane);
+        } catch (IOException e) {
+            return false; // gzip into memory: not expected
         }
     }
 
@@ -418,26 +515,36 @@ final class BluetoothQueueBridge implements BluetoothFileLink {
             for (int i = 0; i + 1 < keysAndValues.length; i += 2) {
                 msg.put((String) keysAndValues[i], keysAndValues[i + 1]);
             }
-            return sendRaw(msg.toString());
+            // File messages go in the lane with the chunks, so a file_end can't overtake its bytes.
+            return sendRaw(msg.toString(), type.startsWith("file_"));
         } catch (JSONException e) {
             return false; // only for a NaN/infinite number, which no message carries
         }
     }
 
-    /** Sends one binary chunk of transfer {@code id}: {@code len} bytes of {@code buf}, uncompressed. */
+    /**
+     * Queues one binary chunk of transfer {@code id}: {@code len} bytes of {@code buf}, uncompressed.
+     * Blocks while the link already has {@link #MAX_QUEUED_CHUNKS} waiting; false once it is gone.
+     */
     @Override
     public boolean sendFileChunk(int id, byte[] buf, int len) {
-        byte[] frame = new byte[FILE_CHUNK_HEADER + len];
-        frame[0] = FILE_CHUNK_MARKER;
-        frame[1] = (byte) (id >>> 24);
-        frame[2] = (byte) (id >>> 16);
-        frame[3] = (byte) (id >>> 8);
-        frame[4] = (byte) id;
-        System.arraycopy(buf, 0, frame, FILE_CHUNK_HEADER, len);
+        Link link;
+        synchronized (socketLock) {
+            link = connected;
+        }
+        if (link == null) return false;
+        byte[] frame = new byte[4 + FILE_CHUNK_HEADER + len];
+        putLength(frame, FILE_CHUNK_HEADER + len);
+        frame[4] = FILE_CHUNK_MARKER;
+        frame[5] = (byte) (id >>> 24);
+        frame[6] = (byte) (id >>> 16);
+        frame[7] = (byte) (id >>> 8);
+        frame[8] = (byte) id;
+        System.arraycopy(buf, 0, frame, 4 + FILE_CHUNK_HEADER, len);
         try {
-            return sendBytes(frame);
-        } catch (Exception e) {
-            handleSendFailure();
+            return link.outbox.putChunk(frame);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
             return false;
         }
     }
@@ -446,20 +553,10 @@ final class BluetoothQueueBridge implements BluetoothFileLink {
         return ((frame[1] & 0xFF) << 24) | ((frame[2] & 0xFF) << 16) | ((frame[3] & 0xFF) << 8) | (frame[4] & 0xFF);
     }
 
-    /** A write failure means the socket is dead; treat it like the read loop hitting EOF. */
-    private void handleSendFailure() {
-        BluetoothSocket failed;
-        synchronized (socketLock) {
-            failed = connectedSocket;
-        }
-        if (failed != null) handleSocketClosed(failed);
-        else listener.onConnectionStateChanged(false, "Bluetooth send failed");
-    }
-
     @Override
     public boolean isConnected() {
         synchronized (socketLock) {
-            return connectedSocket != null && connectedSocket.isConnected();
+            return connected != null && connected.socket.isConnected();
         }
     }
 
@@ -467,21 +564,18 @@ final class BluetoothQueueBridge implements BluetoothFileLink {
     void disconnect() {
         wantConnected = false;
         reconnectGaveUp = false;
-        BluetoothSocket toClose;
+        Link toClose;
         Thread connectToInterrupt;
-        Thread readToInterrupt;
         synchronized (socketLock) {
-            toClose = connectedSocket;
-            connectedSocket = null;
-            connectedOutput = null;
+            toClose = connected;
+            connected = null;
             connectToInterrupt = connectThread;
             connectThread = null;
-            readToInterrupt = readThread;
-            readThread = null;
         }
-        closeSocketSilently(toClose);
+        // Its read thread ends on the closed socket and reports the loss to the file sink from
+        // there, off this (often the UI) thread.
+        if (toClose != null) toClose.close();
         if (connectToInterrupt != null) connectToInterrupt.interrupt();
-        if (readToInterrupt != null) readToInterrupt.interrupt();
         listener.onConnectionStateChanged(false, "Bluetooth disconnected");
     }
 
@@ -490,14 +584,12 @@ final class BluetoothQueueBridge implements BluetoothFileLink {
      * In client mode this auto-reconnects to the remembered device with backoff; in server mode
      * there's nothing to reconnect to — the accept loop is already listening for the next client.
      */
-    private void handleSocketClosed(BluetoothSocket socket) {
+    private void handleSocketClosed(Link link) {
         synchronized (socketLock) {
-            if (connectedSocket != socket) return; // already replaced or handled
-            connectedSocket = null;
-            connectedOutput = null;
-            readThread = null;
+            if (connected != link) return; // already replaced or handled
+            connected = null;
         }
-        closeSocketSilently(socket);
+        link.close();
         if (wantConnected && lastDevice != null) {
             listener.onConnectionStateChanged(false, "Connection lost, reconnecting...");
             startConnectAttempt();
@@ -511,15 +603,39 @@ final class BluetoothQueueBridge implements BluetoothFileLink {
         disconnect();
     }
 
-    private boolean sendBytes(byte[] payload) throws IOException {
+    private boolean enqueue(byte[] payload, boolean fileLane) {
+        Link link;
         synchronized (socketLock) {
-            OutputStream out = connectedOutput;
-            if (out == null) return false;
-            int len = payload.length;
-            out.write(new byte[]{(byte)(len >>> 24), (byte)(len >>> 16), (byte)(len >>> 8), (byte)len});
-            out.write(payload);
-            out.flush();
-            return true;
+            link = connected;
+        }
+        if (link == null) return false;
+        // Length prefix and payload in one write, so they leave as one packet.
+        byte[] frame = new byte[4 + payload.length];
+        putLength(frame, payload.length);
+        System.arraycopy(payload, 0, frame, 4, payload.length);
+        return link.outbox.add(frame, fileLane);
+    }
+
+    private static void putLength(byte[] frame, int len) {
+        frame[0] = (byte) (len >>> 24);
+        frame[1] = (byte) (len >>> 16);
+        frame[2] = (byte) (len >>> 8);
+        frame[3] = (byte) len;
+    }
+
+    /** Writes the link's queued frames until it closes; a failed write retires the link. */
+    private void writeLoop(Link link) {
+        try {
+            OutputStream out = link.socket.getOutputStream();
+            byte[] frame;
+            while ((frame = link.outbox.take()) != null) {
+                out.write(frame);
+                out.flush();
+            }
+        } catch (InterruptedException e) {
+            // shut down
+        } catch (Exception e) {
+            handleSocketClosed(link); // the socket is dead; the read thread reports the loss
         }
     }
 
@@ -544,27 +660,29 @@ final class BluetoothQueueBridge implements BluetoothFileLink {
     }
 
     private void attachSocket(BluetoothSocket socket, String message) {
-        Thread oldReadThread;
-        Thread newReadThread = new Thread(() -> readLoop(socket), "bt-queue-read");
-        synchronized (socketLock) {
-            closeSocketSilently(connectedSocket);
-            connectedSocket = socket;
-            connectedOutput = null;
-            try {
-                connectedOutput = socket.getOutputStream();
-            } catch (Exception ignored) {
-            }
-            oldReadThread = readThread;
-            readThread = newReadThread;
-        }
-        listener.onConnectionStateChanged(true, message);
         FileSink sink = fileSink;
+        Link link = new Link(socket, sink);
+        Link old;
+        synchronized (socketLock) {
+            old = previous;
+            previous = link;
+            connected = link;
+        }
+        if (old != null) {
+            // The previous link's read thread may still be dispatching what it had buffered. Its
+            // loss must reach the sink before anything from this link does, or a late "lost" would
+            // cut off a file this link just resumed.
+            old.close();
+            old.reportLost();
+        }
+        new Thread(() -> writeLoop(link), "bt-queue-write").start();
+        listener.onConnectionStateChanged(true, message);
         if (sink != null) sink.onLinkUp();
-        if (oldReadThread != null) oldReadThread.interrupt();
-        newReadThread.start();
+        new Thread(() -> readLoop(link), "bt-queue-read").start();
     }
 
-    private void readLoop(BluetoothSocket socket) {
+    private void readLoop(Link link) {
+        BluetoothSocket socket = link.socket;
         try (DataInputStream in = new DataInputStream(socket.getInputStream())) {
             while (running || socket.isConnected()) {
                 int length = in.readInt();
@@ -623,9 +741,9 @@ final class BluetoothQueueBridge implements BluetoothFileLink {
             }
         } catch (Exception ignored) {
         } finally {
-            FileSink sink = fileSink;
-            if (sink != null) sink.onLinkLost();
-            handleSocketClosed(socket);
+            // Retire it first, so the sink never sees "lost" while the link still reads as up.
+            handleSocketClosed(link);
+            link.reportLost();
         }
     }
 

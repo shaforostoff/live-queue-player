@@ -53,9 +53,10 @@ public class BluetoothServerAdapterOffTest {
 
         // Bluetooth turns off: the stack closes the server socket and accept() throws.
         shadowOf(adapter).setEnabled(false);
-        first.close();
         Thread accept = acceptThread();
-        waitFor(() -> accept.getState() == Thread.State.WAITING);
+        closeUnderAccept(first, accept);
+        // Parked, not still blocked in accept() (also WAITING) on the socket before the close lands.
+        waitFor(() -> serverSocket() == null && accept.getState() == Thread.State.WAITING);
         assertNull("no socket reopened while off", serverSocket());
         Thread.sleep(1_500);              // past the old 1 s retry: still parked, no retries
         assertEquals(Thread.State.WAITING, accept.getState());
@@ -71,12 +72,23 @@ public class BluetoothServerAdapterOffTest {
     @Test
     public void stopWhileParked_endsTheLoop() throws Exception {
         shadowOf(adapter).setEnabled(false);
-        serverSocket().close();
         Thread accept = acceptThread();
-        waitFor(() -> accept.getState() == Thread.State.WAITING);
+        closeUnderAccept(serverSocket(), accept);
+        waitFor(() -> serverSocket() == null && accept.getState() == Thread.State.WAITING);
         bridge.stopServer();
         accept.join(2_000);
         assertEquals(Thread.State.TERMINATED, accept.getState());
+    }
+
+    /**
+     * Closes the socket the accept thread waits on. A real close() makes a blocked accept() throw;
+     * the shadow's only flags it, so the thread is woken by hand — once it is surely inside
+     * accept(), since an interrupt landing anywhere else would end the loop instead.
+     */
+    private static void closeUnderAccept(BluetoothServerSocket socket, Thread accept) throws Exception {
+        waitFor(() -> accept.getState() == Thread.State.WAITING); // the only wait while it's on
+        socket.close();
+        accept.interrupt();
     }
 
     private BluetoothServerSocket serverSocket() {

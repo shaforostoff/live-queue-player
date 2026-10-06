@@ -729,7 +729,6 @@ final class StorageBrowser {
     }
 
     Uri findSdCardDocumentUri() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return null;
         StorageManager sm = context.getSystemService(StorageManager.class);
         if (sm == null) return null;
         for (StorageVolume vol : sm.getStorageVolumes()) {

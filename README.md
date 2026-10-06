@@ -51,7 +51,7 @@ it will be added to its play queue.
 
 ## Installation
 
-Supports Android 6.0+
+Supports Android 7.0+
 
 [<img src="https://shaforostoff.github.io/res/get-it-on/f-droid.png"
      alt="Get it on F-Droid"

@@ -115,8 +115,7 @@ public final class FileTransferService extends android.app.Service implements Bl
     /** The sender has nothing in flight, or nothing to resume until the user is back. */
     void finish() {
         sender.attachService(null);
-        if (Build.VERSION.SDK_INT >= 24) stopForeground(STOP_FOREGROUND_REMOVE);
-        else stopForeground(true);
+        stopForeground(STOP_FOREGROUND_REMOVE);
         stopSelf();
     }
 

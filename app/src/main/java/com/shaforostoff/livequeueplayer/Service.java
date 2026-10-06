@@ -112,9 +112,8 @@ public class Service extends android.service.media.MediaBrowserService {
     private long idleSinceElapsedMs = 0L;
     // Real time, unlike the idle timer: memory held while the device sleeps is still held. A
     // non-wakeup alarm never wakes the device for this; it fires at the first wake after it is due.
-    private final AlarmManager.OnAlarmListener parkAlarm =
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.N ? this::parkIfStillPaused : null;
-    private final Runnable parkFallback = this::parkIfStillPaused; // API 23: no OnAlarmListener
+    private final AlarmManager.OnAlarmListener parkAlarm = this::parkIfStillPaused;
+    private final Runnable parkFallback = this::parkIfStillPaused; // if AlarmManager is missing
 
     public Service() {
     }
@@ -769,11 +768,7 @@ public class Service extends android.service.media.MediaBrowserService {
         // thread writing to the secondary output — the real battery cost of sitting idle. Nothing is
         // playing and no activity is visible here, so nothing can want it.
         SilenceStreamer.release();
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-            stopForeground(STOP_FOREGROUND_REMOVE);
-        } else {
-            stopForeground(true);
-        }
+        stopForeground(STOP_FOREGROUND_REMOVE);
         sForegroundActive = false;
         // onDestroy() tears down the player, notification and MediaSession.
         stopSelf();
@@ -804,11 +799,7 @@ public class Service extends android.service.media.MediaBrowserService {
             // media notification for the idle placeholder so nothing playing-looking lingers.
             notifications.showIdleHostPlaceholder();
         } else {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                stopForeground(STOP_FOREGROUND_REMOVE);
-            } else {
-                stopForeground(true);
-            }
+            stopForeground(STOP_FOREGROUND_REMOVE);
             sForegroundActive = false;
             notifications.onMediaPlayerReset();
         }
@@ -1029,24 +1020,20 @@ public class Service extends android.service.media.MediaBrowserService {
         cancelParkTimer();
         if (destroyed || sIsPlaying || sCurrentIndex < 0
                 || audioPlayer == null || audioPlayer instanceof ParkedEngine) return;
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-            AlarmManager am = (AlarmManager) getSystemService(ALARM_SERVICE);
-            if (am != null) {
-                am.set(AlarmManager.ELAPSED_REALTIME,
-                        SystemClock.elapsedRealtime() + PARK_AFTER_PAUSE_MS,
-                        "LiveQueuePlayer:park", parkAlarm, progressHandler);
-                return;
-            }
+        AlarmManager am = (AlarmManager) getSystemService(ALARM_SERVICE);
+        if (am != null) {
+            am.set(AlarmManager.ELAPSED_REALTIME,
+                    SystemClock.elapsedRealtime() + PARK_AFTER_PAUSE_MS,
+                    "LiveQueuePlayer:park", parkAlarm, progressHandler);
+            return;
         }
         progressHandler.postDelayed(parkFallback, PARK_AFTER_PAUSE_MS);
     }
 
     private void cancelParkTimer() {
         progressHandler.removeCallbacks(parkFallback);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-            AlarmManager am = (AlarmManager) getSystemService(ALARM_SERVICE);
-            if (am != null) am.cancel(parkAlarm);
-        }
+        AlarmManager am = (AlarmManager) getSystemService(ALARM_SERVICE);
+        if (am != null) am.cancel(parkAlarm);
     }
 
     /**

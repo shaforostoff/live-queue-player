@@ -4,16 +4,23 @@ import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
+import android.content.ContentProvider;
+import android.content.ContentValues;
+import android.content.res.AssetFileDescriptor;
 import android.content.Context;
+import android.database.Cursor;
 import android.net.Uri;
+import android.os.ParcelFileDescriptor;
 
 import org.junit.Test;
 import org.junit.runner.RunWith;
+import org.robolectric.Robolectric;
 import org.robolectric.RobolectricTestRunner;
 import org.robolectric.RuntimeEnvironment;
 import org.robolectric.annotation.Config;
 
 import java.io.File;
+import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -79,13 +86,26 @@ public class AlacMediaDataSourceTest {
     }
 
     @Test
-    public void close_deletesTheStagedCopy() throws Exception {
-        AlacMediaDataSource src = open("stereo16_faststart.m4a");
+    public void seekableFile_isReadInPlace() throws Exception {
+        AlacMediaDataSource src = open("stereo16_moov_last.m4a");
         src.getSize();
+        assertEquals("no copy for a file that seeks", 0, stagedFiles());
+        src.close();
+        assertEquals("closed reads as empty", -1, src.readAt(0, new byte[4], 0, 4));
+    }
+
+    /** A provider whose descriptor cannot be read in place: decode from a staged copy instead. */
+    @Test
+    public void unseekableProvider_decodesFromACopy_andCloseDeletesIt() throws Exception {
+        SliceProvider.file = copyFixture("stereo16_moov_last.m4a");
+        Robolectric.setupContentProvider(SliceProvider.class, SliceProvider.AUTHORITY);
+        AlacMediaDataSource src = new AlacMediaDataSource(context,
+                Uri.parse("content://" + SliceProvider.AUTHORITY + "/track.m4a"));
+        byte[] wav = readAll(src);
         assertEquals(1, stagedFiles());
+        assertEquals("f27b74f4bc293cabbf8a02d184f7f920", md5(Arrays.copyOfRange(wav, 44, wav.length)));
         src.close();
         assertEquals(0, stagedFiles());
-        assertEquals("closed reads as empty", -1, src.readAt(0, new byte[4], 0, 4));
     }
 
     @Test
@@ -125,6 +145,10 @@ public class AlacMediaDataSourceTest {
     }
 
     private AlacMediaDataSource open(String resource) throws IOException {
+        return new AlacMediaDataSource(context, Uri.fromFile(copyFixture(resource)));
+    }
+
+    private File copyFixture(String resource) throws IOException {
         File file = new File(context.getFilesDir(), resource);
         try (InputStream in = getClass().getResourceAsStream("/alac/" + resource);
              OutputStream out = new FileOutputStream(file)) {
@@ -132,7 +156,7 @@ public class AlacMediaDataSourceTest {
             int n;
             while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
         }
-        return new AlacMediaDataSource(context, Uri.fromFile(file));
+        return file;
     }
 
     /** Reads the whole stream front to back in MediaPlayer-sized chunks. */
@@ -151,6 +175,30 @@ public class AlacMediaDataSourceTest {
     private int stagedFiles() {
         File[] files = context.getCacheDir().listFiles((d, n) -> n.startsWith("alac") && n.endsWith(".m4a"));
         return files == null ? 0 : files.length;
+    }
+
+    /**
+     * Serves {@link #file} as a slice (an asset-style descriptor with a declared length), which
+     * {@code openFileDescriptor} refuses as "Not a whole file" while {@code openInputStream} still
+     * streams it. Robolectric backs createPipe() with a seekable file, so a real pipe is not
+     * available here; either way the data source cannot read in place and must stage a copy.
+     */
+    public static class SliceProvider extends ContentProvider {
+        static final String AUTHORITY = "alac.test.slice";
+        static File file;
+
+        @Override
+        public AssetFileDescriptor openAssetFile(Uri uri, String mode) throws FileNotFoundException {
+            ParcelFileDescriptor pfd = ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY);
+            return new AssetFileDescriptor(pfd, 0, file.length());
+        }
+
+        @Override public boolean onCreate() { return true; }
+        @Override public Cursor query(Uri u, String[] p, String s, String[] a, String o) { return null; }
+        @Override public String getType(Uri uri) { return "audio/mp4"; }
+        @Override public Uri insert(Uri uri, ContentValues values) { return null; }
+        @Override public int delete(Uri uri, String s, String[] a) { return 0; }
+        @Override public int update(Uri uri, ContentValues v, String s, String[] a) { return 0; }
     }
 
     private static int le16(byte[] b, int off) {

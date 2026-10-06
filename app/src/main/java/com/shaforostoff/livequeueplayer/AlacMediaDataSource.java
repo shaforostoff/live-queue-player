@@ -7,6 +7,7 @@ import android.media.MediaDataSource;
 import android.media.MediaExtractor;
 import android.media.MediaFormat;
 import android.net.Uri;
+import android.os.ParcelFileDescriptor;
 
 import com.beatofthedrum.alacdecoder.AlacContext;
 import com.beatofthedrum.alacdecoder.AlacUtils;
@@ -55,7 +56,8 @@ final class AlacMediaDataSource extends MediaDataSource {
   private final Uri uri;
   // All state below is guarded by this; MediaPlayer and MediaExtractor read from their own threads.
   private boolean opened;
-  /** The compressed file, staged in the cache dir: the decoder needs a seekable file. */
+  /** A copy of the compressed file in the cache dir, made only when the provider's descriptor
+   *  cannot seek (see {@link #openInPlace}); null when the file is read where it is. */
   private File staged;
   private AlacContext ac;
   private int bytesPerSample;
@@ -226,9 +228,13 @@ final class AlacMediaDataSource extends MediaDataSource {
   }
 
   private void open() throws IOException {
-    staged = File.createTempFile(STAGED_PREFIX, ".m4a", context.getCacheDir());
-    copyToFile(context, uri, staged);
-    ac = AlacUtils.AlacOpenFileInput(staged.getAbsolutePath());
+    ac = openInPlace();
+    if (ac == null) {
+      // Not a seekable file (a provider that streams through a pipe): decode from a copy instead.
+      staged = File.createTempFile(STAGED_PREFIX, ".m4a", context.getCacheDir());
+      copyToFile(context, uri, staged);
+      ac = AlacUtils.AlacOpenFileInput(staged.getAbsolutePath());
+    }
     if (ac.error) throw new IOException(ac.error_message);
     int channels      = AlacUtils.AlacGetNumChannels(ac);
     int sampleRate    = AlacUtils.AlacGetSampleRate(ac);
@@ -255,6 +261,36 @@ final class AlacMediaDataSource extends MediaDataSource {
     decodeBuffer = new int[1024 * 24 * 3]; // one ALAC frame, max 24bps (matches upstream demo)
     packetPcm = new byte[(int) largest];
     packetPcmStart = starts;
+  }
+
+  /**
+   * Decode straight from the provider's file descriptor. Local documents (internal storage, the SD
+   * card) come back as a real file, which seeks like any other, so the track needs no copy: the
+   * copy of a 20-40 MB track used to be the bulk of prepare(), and its space in the cache dir. Null
+   * when the descriptor is a pipe or the decoder cannot use it, so the caller stages a copy.
+   */
+  private AlacContext openInPlace() {
+    ParcelFileDescriptor pfd;
+    try {
+      pfd = context.getContentResolver().openFileDescriptor(uri, "r");
+    } catch (Exception e) {
+      return null;
+    }
+    if (pfd == null) return null;
+    if (pfd.getStatSize() < 0) { // not a regular file: a pipe or a socket, which cannot seek
+      try {
+        pfd.close();
+      } catch (IOException ignored) {
+      }
+      return null;
+    }
+    // Closed with the decoder (AlacCloseFile), which closes the descriptor with it.
+    AlacContext opened = AlacUtils.AlacOpenFileInput(new ParcelFileDescriptor.AutoCloseInputStream(pfd));
+    if (opened.error) {
+      AlacUtils.AlacCloseFile(opened);
+      return null;
+    }
+    return opened;
   }
 
   /** Index of the packet holding PCM byte {@code pcmPos}; skips packets that decode to nothing. */

@@ -14,31 +14,40 @@ public class AlacUtils
 {
     public static AlacContext AlacOpenFileInput(String inputfilename)
     {
+		java.io.FileInputStream fistream;
+		try
+		{
+			fistream = new java.io.FileInputStream(inputfilename);
+		}
+		catch (java.io.FileNotFoundException fe)
+		{
+			AlacContext ac = new AlacContext();
+			ac.error_message = "Input file not found";
+			ac.error = true;
+			return (ac);
+		}
+		return AlacOpenFileInput(fistream);
+	}
+
+	// Not upstream: decodes from an already-open file stream — a file, or a content provider's file
+	// descriptor — which must be seekable. Where upstream reopened the file by name to get back to
+	// music data that precedes the movie headers, this repositions the stream instead. The stream is
+	// closed by AlacCloseFile, also after an error.
+	public static AlacContext AlacOpenFileInput(java.io.FileInputStream fistream)
+	{
 		int headerRead;
 		QTMovieT qtmovie = new QTMovieT();
 		DemuxResT demux_res = new DemuxResT();
 		AlacContext ac = new AlacContext();
 		AlacInputStream input_stream;
 		AlacFile alac;
-		
+
 		ac.error = false;
-		
-		try
-		{
-			java.io.FileInputStream fistream;
-			fistream = new java.io.FileInputStream(inputfilename);
-			input_stream = new AlacInputStream(fistream);
-			ac.file_stream = fistream;
-		}
-		catch (java.io.FileNotFoundException fe)
-		{
-			ac.error_message = "Input file not found";
-			ac.error = true;
-			return (ac);
-		}
-		
+
+		input_stream = new AlacInputStream(fistream);
+		ac.file_stream = fistream;
 		ac.input_stream = input_stream;
-		
+
 		/* if qtmovie_read returns successfully, the stream is up to
 		 * the movie data, which can be used directly by the decoder */
 		headerRead = DemuxUtils.qtmovie_read(input_stream, qtmovie, demux_res);
@@ -61,42 +70,22 @@ public class AlacUtils
 		else if(headerRead == 3)
 		{
 			/*
-			** This section is used when the stream system being used doesn't support seeking
-			** We have kept track within the file where we need to go to, we close the file and
-			** skip bytes to go directly to that point
+			** The music data came before the movie headers. Its position was recorded on the way
+			** past (saved_mdat_pos counts bytes from the start of the file); go back there.
 			*/
-			
 			try
 			{
-				ac.input_stream.close();
+				fistream.getChannel().position(qtmovie.saved_mdat_pos);
 			}
-			catch(java.io.IOException ioe)
+			catch (java.io.IOException ioe)
 			{
 				ac.error_message = "Error when seeking to start of music data";
 				ac.error = true;
 				return (ac);
 			}
-			
-			try
-			{
-				java.io.FileInputStream fistream;
-				fistream = new java.io.FileInputStream(inputfilename);
-				input_stream = new AlacInputStream(fistream);
-				ac.input_stream = input_stream;
-				ac.file_stream = fistream;
-				
-				qtmovie.qtstream.stream = input_stream;
-				qtmovie.qtstream.currentPos = 0;
-				StreamUtils.stream_skip(qtmovie.qtstream, qtmovie.saved_mdat_pos);
-			}
-			catch (java.io.FileNotFoundException fe)
-			{
-				ac.error_message = "Input file not found";
-				ac.error = true;
-				return (ac);
-			}
+			qtmovie.qtstream.currentPos = qtmovie.saved_mdat_pos;
 		}
-		
+
 		/* initialise the sound converter */
 		
 		alac = AlacDecodeUtils.create_alac(demux_res.sample_size, demux_res.num_channels);

@@ -84,6 +84,40 @@ final class StorageBrowser {
      *  the file that caused it). Guarded by documentListingCache. */
     private long listingCacheGeneration;
 
+    /**
+     * The open location's root — a document tree's root document, or a file-system root folder —
+     * where received files are written. Immutable, and replaced whenever the root changes, so the
+     * Bluetooth read thread can take a consistent copy while the user navigates on the main thread.
+     */
+    static final class Root {
+        static final Root NONE = new Root(null, null);
+        /** Root document of the open tree; null when browsing files. */
+        final Uri document;
+        /** Root folder when browsing files; null when browsing a document tree. */
+        final File folder;
+
+        private Root(Uri document, File folder) {
+            this.document = document;
+            this.folder = folder;
+        }
+    }
+
+    private volatile Root root = Root.NONE;
+
+    /** Safe from any thread; see {@link Root}. */
+    Root getRoot() {
+        return root;
+    }
+
+    /** Re-derive {@link #root} after a change to the location fields. Main thread. */
+    private void publishRoot() {
+        if (browsingDocumentTree) {
+            root = hasDocumentLocation() ? new Root(documentUriStack.get(0), null) : Root.NONE;
+        } else {
+            root = currentFileRootDirectory != null ? new Root(null, currentFileRootDirectory) : Root.NONE;
+        }
+    }
+
     StorageBrowser(Context context) {
         this.context = context;
     }
@@ -136,6 +170,7 @@ final class StorageBrowser {
         currentFileDirectory = null;
         currentFileRootDirectory = null;
         clearListingCache();
+        publishRoot();
     }
 
     // -- file (java.io.File) navigation --------------------------------------
@@ -154,6 +189,7 @@ final class StorageBrowser {
         if (currentFileRootDirectory == null) {
             currentFileRootDirectory = dir;
         }
+        publishRoot();
 
         File[] files = dir.listFiles();
         if (files == null || files.length == 0) {
@@ -187,6 +223,7 @@ final class StorageBrowser {
             currentTreeUri = treeUri;
             browsingDocumentTree = true;
             documentUriStack.add(rootDocumentUri);
+            publishRoot();
             return true;
         } catch (Exception ignored) {
             clearBrowsingState();
@@ -454,12 +491,15 @@ final class StorageBrowser {
     }
 
     Uri findDocumentChildByName(Uri parentDocumentUri, String childName) {
-        if (currentTreeUri == null || childName == null) {
+        if (parentDocumentUri == null || childName == null) {
             return null;
         }
         try {
+            // The tree comes from the parent's own URI (/tree/<id>/document/<id>), not from
+            // currentTreeUri: the Bluetooth receiver calls this off the main thread, and the user may
+            // have opened another tree since it resolved the parent.
             String parentDocumentId = DocumentsContract.getDocumentId(parentDocumentUri);
-            Uri childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(currentTreeUri, parentDocumentId);
+            Uri childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(parentDocumentUri, parentDocumentId);
             String[] projection = {
                     DocumentsContract.Document.COLUMN_DOCUMENT_ID,
                     DocumentsContract.Document.COLUMN_DISPLAY_NAME
@@ -474,7 +514,7 @@ final class StorageBrowser {
                     // Form-insensitive: an existing "Niño.m3u8" is the same file whether its name
                     // or ours spells the ñ precomposed or as "n" + combining tilde.
                     if (TextNormalizer.equals(displayName, childName)) {
-                        return DocumentsContract.buildDocumentUriUsingTree(currentTreeUri, documentId);
+                        return DocumentsContract.buildDocumentUriUsingTree(parentDocumentUri, documentId);
                     }
                 }
             }
@@ -637,6 +677,7 @@ final class StorageBrowser {
         currentFileRootDirectory = null;
         documentUriStack.clear();
         documentUriStack.addAll(stack.subList(0, depth));
+        publishRoot();
         return true;
     }
 
@@ -657,6 +698,7 @@ final class StorageBrowser {
         documentUriStack.clear();
         currentFileDirectory = dir;
         currentFileRootDirectory = root.isDirectory() ? root : dir;
+        publishRoot();
         return true;
     }
 

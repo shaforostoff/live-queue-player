@@ -164,10 +164,11 @@ final class BluetoothFileReceiver implements BluetoothQueueBridge.FileSink {
         expected = size;
         written = 0;
         String partName = "." + targetName + "." + (size >= 0 ? Long.toString(size) : "unknown") + ".part";
-        boolean docTree = storageBrowser.isBrowsingDocumentTree() && storageBrowser.hasDocumentLocation();
+        // One consistent copy: this runs on the Bluetooth read thread while the user may be navigating.
+        StorageBrowser.Root root = storageBrowser.getRoot();
         try {
-            if (docTree) {
-                Uri dir = storageBrowser.getDocumentRootUri();
+            if (root.document != null) {
+                Uri dir = root.document;
                 for (int i = 0; i < segments.size() - 1 && dir != null; i++) {
                     dir = documentFolder(dir, segments.get(i));
                 }
@@ -198,9 +199,8 @@ final class BluetoothFileReceiver implements BluetoothQueueBridge.FileSink {
                 written = have;
                 out = resolver.openOutputStream(part, have > 0 ? "wa" : "w");
             } else {
-                File root = storageBrowser.getCurrentFileRootDirectory();
-                if (root == null) return "no_folder";
-                File target = new File(root, String.join("/", segments));
+                if (root.folder == null) return "no_folder";
+                File target = new File(root.folder, String.join("/", segments));
                 File dir = target.getParentFile();
                 if (target.exists()) {
                     dropRecordedPartial();

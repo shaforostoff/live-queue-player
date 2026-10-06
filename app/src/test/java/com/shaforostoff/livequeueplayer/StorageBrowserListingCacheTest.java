@@ -86,7 +86,10 @@ public class StorageBrowserListingCacheTest {
             if (duringQuery != null) duringQuery.run();
             MatrixCursor cursor = new MatrixCursor(projection);
             for (int i = 0; i < 300; i++) {
-                cursor.addRow(new Object[] {"root/t" + i + ".mp3", "t" + i + ".mp3", "audio/mpeg"});
+                MatrixCursor.RowBuilder row = cursor.newRow();
+                row.add(DocumentsContract.Document.COLUMN_DOCUMENT_ID, "root/t" + i + ".mp3");
+                row.add(DocumentsContract.Document.COLUMN_DISPLAY_NAME, "t" + i + ".mp3");
+                row.add(DocumentsContract.Document.COLUMN_MIME_TYPE, "audio/mpeg");
             }
             return cursor;
         }

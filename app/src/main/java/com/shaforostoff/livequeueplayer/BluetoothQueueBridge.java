@@ -8,6 +8,7 @@ import android.bluetooth.BluetoothSocket;
 import android.os.SystemClock;
 
 import org.json.JSONArray;
+import org.json.JSONException;
 import org.json.JSONObject;
 
 import java.io.ByteArrayInputStream;
@@ -25,7 +26,7 @@ import java.util.zip.GZIPOutputStream;
 /**
  * Minimal classic Bluetooth bridge for queue-fill messages.
  */
-final class BluetoothQueueBridge {
+final class BluetoothQueueBridge implements BluetoothFileLink {
 
     static final class TrackRequest {
         final String file;
@@ -55,6 +56,21 @@ final class BluetoothQueueBridge {
         void onConnectionStateChanged(boolean connected, String message);
     }
 
+    /**
+     * The file-transfer side channel: every "file_*" message and every binary chunk frame. Called
+     * on the read thread, not posted to the UI thread, so begin / chunks / end arrive strictly in
+     * wire order and a slow write on the receiving side pushes back on the sender through RFCOMM.
+     */
+    interface FileSink {
+        void onFileMessage(String type, JSONObject obj);
+        /** {@code frame} is the raw frame: marker byte, 4-byte transfer id, then the bytes. */
+        void onFileChunk(byte[] frame);
+        /** A socket is up — the first one, or a reconnect after {@link #onLinkLost}. */
+        void onLinkUp();
+        /** The socket this sink was fed from is gone; whatever was in flight on it is lost. */
+        void onLinkLost();
+    }
+
     /** Swallows callbacks while no activity is attached (e.g. mid-rotation). */
     private static final Listener NO_OP = new Listener() {
         @Override public void onQueueRequestsReceived(List<TrackRequest> tracks) {}
@@ -69,10 +85,15 @@ final class BluetoothQueueBridge {
     // Sanity cap on the length prefix: a desynced/corrupt frame can otherwise read a garbage
     // length and either try to allocate gigabytes or throw NegativeArraySizeException.
     private static final int MAX_FRAME_BYTES = 8 * 1024 * 1024;
+    // First byte of a binary file-chunk frame. JSON frames start with '{' or '[' and gzip ones with
+    // 0x1F, so this can't collide; a peer without file transfer fails to parse it and drops it.
+    private static final byte FILE_CHUNK_MARKER = 0x02;
+    static final int FILE_CHUNK_HEADER = 5;
 
     // The bridge is application-scoped (see App), so it outlives any single activity. The current
     // activity attaches via setListener(); the volatile ref lets read/connect threads swap safely.
     private volatile Listener listener = NO_OP;
+    private volatile FileSink fileSink;
     private final Object socketLock = new Object();
 
     private BluetoothServerSocket serverSocket;
@@ -108,6 +129,11 @@ final class BluetoothQueueBridge {
      */
     void setListener(Listener listener) {
         this.listener = (listener != null) ? listener : NO_OP;
+    }
+
+    /** Attaches the file-transfer handler, or {@code null} to drop file traffic. */
+    void setFileSink(FileSink sink) {
+        this.fileSink = sink;
     }
 
     /** True while the RFCOMM server socket is accepting (host/receiver role). */
@@ -280,6 +306,41 @@ final class BluetoothQueueBridge {
         }
     }
 
+    @Override
+    public boolean send(String type, Object... keysAndValues) {
+        try {
+            JSONObject msg = new JSONObject().put("type", type);
+            for (int i = 0; i + 1 < keysAndValues.length; i += 2) {
+                msg.put((String) keysAndValues[i], keysAndValues[i + 1]);
+            }
+            return sendRaw(msg.toString());
+        } catch (JSONException e) {
+            return false; // only for a NaN/infinite number, which no message carries
+        }
+    }
+
+    /** Sends one binary chunk of transfer {@code id}: {@code len} bytes of {@code buf}, uncompressed. */
+    @Override
+    public boolean sendFileChunk(int id, byte[] buf, int len) {
+        byte[] frame = new byte[FILE_CHUNK_HEADER + len];
+        frame[0] = FILE_CHUNK_MARKER;
+        frame[1] = (byte) (id >>> 24);
+        frame[2] = (byte) (id >>> 16);
+        frame[3] = (byte) (id >>> 8);
+        frame[4] = (byte) id;
+        System.arraycopy(buf, 0, frame, FILE_CHUNK_HEADER, len);
+        try {
+            return sendBytes(frame);
+        } catch (Exception e) {
+            handleSendFailure();
+            return false;
+        }
+    }
+
+    static int fileChunkId(byte[] frame) {
+        return ((frame[1] & 0xFF) << 24) | ((frame[2] & 0xFF) << 16) | ((frame[3] & 0xFF) << 8) | (frame[4] & 0xFF);
+    }
+
     /** A write failure means the socket is dead; treat it like the read loop hitting EOF. */
     private void handleSendFailure() {
         BluetoothSocket failed;
@@ -290,7 +351,8 @@ final class BluetoothQueueBridge {
         else listener.onConnectionStateChanged(false, "Bluetooth send failed");
     }
 
-    boolean isConnected() {
+    @Override
+    public boolean isConnected() {
         synchronized (socketLock) {
             return connectedSocket != null && connectedSocket.isConnected();
         }
@@ -390,6 +452,8 @@ final class BluetoothQueueBridge {
             readThread = newReadThread;
         }
         listener.onConnectionStateChanged(true, message);
+        FileSink sink = fileSink;
+        if (sink != null) sink.onLinkUp();
         if (oldReadThread != null) oldReadThread.interrupt();
         newReadThread.start();
     }
@@ -409,6 +473,11 @@ final class BluetoothQueueBridge {
                 // so this is the single point that keeps the Service's idle watchdog from retiring
                 // a live remote session. Framing errors above deliberately do not count as traffic.
                 sLastInboundElapsedMs = SystemClock.elapsedRealtime();
+                if (length >= FILE_CHUNK_HEADER && data[0] == FILE_CHUNK_MARKER) {
+                    FileSink sink = fileSink;
+                    if (sink != null) sink.onFileChunk(data);
+                    continue;
+                }
                 // GZIP magic: 0x1F 0x8B
                 if (length >= 2 && (data[0] & 0xFF) == 0x1F && (data[1] & 0xFF) == 0x8B) {
                     data = decompress(data);
@@ -419,7 +488,10 @@ final class BluetoothQueueBridge {
                         try {
                             JSONObject obj = new JSONObject(line);
                             String type = obj.optString("type", "");
-                            if ("match_result".equals(type) || type.isEmpty()) {
+                            if (type.startsWith("file_")) {
+                                FileSink sink = fileSink;
+                                if (sink != null) sink.onFileMessage(type, obj);
+                            } else if ("match_result".equals(type) || type.isEmpty()) {
                                 listener.onMatchResultReceived(line);
                             } else {
                                 listener.onRemoteQueueMessageReceived(type, obj);
@@ -445,6 +517,8 @@ final class BluetoothQueueBridge {
             }
         } catch (Exception ignored) {
         } finally {
+            FileSink sink = fileSink;
+            if (sink != null) sink.onLinkLost();
             handleSocketClosed(socket);
         }
     }

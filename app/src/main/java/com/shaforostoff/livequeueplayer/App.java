@@ -45,6 +45,22 @@ public class App extends Application {
         return storageBrowser;
     }
 
+    private BluetoothFileSender fileSender;
+    private BluetoothFileReceiver fileReceiver;
+
+    /** App-scoped like the bridge, so a rotation neither cancels a transfer nor loses its state. */
+    synchronized BluetoothFileSender getFileSender() {
+        if (fileSender == null) fileSender = new BluetoothFileSender(this, getBluetoothBridge());
+        return fileSender;
+    }
+
+    synchronized BluetoothFileReceiver getFileReceiver() {
+        if (fileReceiver == null) {
+            fileReceiver = new BluetoothFileReceiver(this, storageBrowser, getBluetoothBridge());
+        }
+        return fileReceiver;
+    }
+
     public synchronized BluetoothQueueBridge getBluetoothBridge() {
         if (bluetoothBridge == null) {
             bluetoothBridge = new BluetoothQueueBridge();

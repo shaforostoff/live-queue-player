@@ -86,6 +86,8 @@ public class FileBrowserQueueActivity extends Activity {
     @FunctionalInterface
     private interface RelativePathResolver { String resolve(Uri entryUri); }
 
+    /** Cap on the unmatched requests a match_result lists back for a file transfer offer. */
+    private static final int MAX_MISSING_REPORTED = 500;
     private static final int PERMISSION_REQUEST_CODE = 2001;
     private static final int TREE_REQUEST_CODE = 2002;
     private static final String ACTION_SEND_MULTIPLE_COMPAT = "android.intent.action.SEND_MULTIPLE";
@@ -170,6 +172,11 @@ public class FileBrowserQueueActivity extends Activity {
     private Uri pendingBackScrollUri;
     private BluetoothController btController;
     private RemoteQueueController remoteQueueController;
+    // Pushes tracks the host could not match (REMOTE_SEND) / writes the ones pushed here (REMOTE_RECEIVE).
+    // Both app-scoped (see App), so a transfer runs on across a rotation; only the callback is ours.
+    private BluetoothFileSender fileSender;
+    private BluetoothFileReceiver fileReceiver;
+    private TextView remoteTransferStatus;
     private String lastPushedPlayKey;
     private View localQueuePanel;
     private View remoteQueuePanel;
@@ -422,6 +429,9 @@ public class FileBrowserQueueActivity extends Activity {
             if (serverMode == 1) {
                 mode = Mode.REMOTE_RECEIVE;
                 btController.startRemoteSetupAsServer();
+                fileReceiver = ((App) getApplication()).getFileReceiver();
+                fileReceiver.setCallback(this::onRemoteFileReceived);
+                btController.setFileSink(fileReceiver);
                 // Pin the playback service to the foreground for the whole hosting session, while
                 // this activity is still visible and the promotion is permitted. Without this, the
                 // first remote play command arriving with the screen off has no legal way to
@@ -2959,6 +2969,17 @@ public class FileBrowserQueueActivity extends Activity {
                 }
             }
 
+            // What the client may offer to push over Bluetooth (see BluetoothFileSender).
+            JSONArray missing = new JSONArray();
+            for (int i = 0; i < tracks.size() && missing.length() < MAX_MISSING_REPORTED; i++) {
+                if (foundUris.get(i) != null) continue;
+                BluetoothQueueBridge.TrackRequest req = tracks.get(i);
+                try {
+                    missing.put(new JSONObject().put("file", req.file).put("path", req.path));
+                } catch (Exception ignored) {
+                }
+            }
+
             final int fName = nameCount, fTag = tagCount, fFuzzy = fuzzyCount, fNone = notFound.size();
             final String fNoneName = notFound.size() == 1 ? notFound.get(0) : null;
             final String fTagName   = tagCount   == 1 ? tagMatchedTitle   : null;
@@ -2977,14 +2998,91 @@ public class FileBrowserQueueActivity extends Activity {
                     Toast.makeText(this, getString(R.string.requested_files_not_found, notFound.size()), Toast.LENGTH_SHORT).show();
                 }
                 // Send after addToQueue so a client requestQueue triggered by match_result sees the new state.
-                sendMatchResult(fName, fTag, fFuzzy, fNone, fTagName, fFuzzyName, fNoneName);
+                sendMatchResult(fName, fTag, fFuzzy, fNone, fTagName, fFuzzyName, fNoneName, missing);
             });
         }).start();
     }
 
-    private void sendMatchResult(int name, int tag, int fuzzy, int none, String tagName, String fuzzyName, String noneName) {
+    private void sendMatchResult(int name, int tag, int fuzzy, int none, String tagName, String fuzzyName,
+                                 String noneName, JSONArray missing) {
         btController.send("match_result", "name", name, "tag", tag, "fuzzy", fuzzy, "none", none,
-                "tag_name", tagName, "fuzzy_name", fuzzyName, "none_name", noneName);
+                "tag_name", tagName, "fuzzy_name", fuzzyName, "none_name", noneName,
+                "missing", missing.length() > 0 ? missing : null);
+    }
+
+    /** A track pushed by the client has landed (or was already there): queue it as requested. */
+    private void onRemoteFileReceived(String name, Uri uri) {
+        if (isDestroyed()) return;
+        addToQueue(name, uri);
+        notifyRemoteQueueChanged();
+        Toast.makeText(this, getString(R.string.received_file, name), Toast.LENGTH_SHORT).show();
+    }
+
+    /** Offers to push the tracks the host reported missing, to the same root-relative paths there. */
+    private void offerMissingTransfer(JSONArray missing) {
+        int n = missing.length();
+        if (n == 0) return;
+        String message = n == 1
+                ? getString(R.string.transfer_missing_one, missing.optJSONObject(0).optString("file"))
+                : getString(R.string.transfer_missing_many, n);
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.transfer_missing_title)
+                .setMessage(message)
+                .setPositiveButton(R.string.transfer_send, (d, w) -> startMissingTransfer(missing))
+                .setNegativeButton(android.R.string.cancel, null)
+                .show();
+    }
+
+    private void startMissingTransfer(JSONArray missing) {
+        final boolean isDocTree = storageBrowser.isBrowsingDocumentTree() && storageBrowser.hasDocumentLocation();
+        final Uri rootDocUri = isDocTree ? storageBrowser.getDocumentRootUri() : null;
+        final File fileRoot = storageBrowser.getCurrentFileRootDirectory();
+        new Thread(() -> {
+            // The host was sent paths relative to this device's root, so they resolve straight back.
+            List<BluetoothFileSender.Job> jobs = new ArrayList<>(missing.length());
+            int unavailable = 0;
+            for (int i = 0; i < missing.length(); i++) {
+                JSONObject item = missing.optJSONObject(i);
+                String path = item != null ? item.optString("path", "") : "";
+                Uri uri = path.isEmpty() ? null
+                        : isDocTree ? storageBrowser.resolveDirectDocumentPath(rootDocUri, path)
+                                    : storageBrowser.resolveDirectFilePath(fileRoot, path);
+                if (uri == null) {
+                    unavailable++;
+                    continue;
+                }
+                jobs.add(new BluetoothFileSender.Job(uri, path, item.optString("file", path)));
+            }
+            final int fUnavailable = unavailable;
+            runOnUiThread(() -> {
+                if (isDestroyed() || fileSender == null) return;
+                if (fUnavailable > 0) {
+                    Toast.makeText(this, getString(R.string.transfer_unavailable, fUnavailable), Toast.LENGTH_LONG).show();
+                }
+                fileSender.enqueue(jobs);
+            });
+        }).start();
+    }
+
+    private void onFileTransferProgress(int index, int total, String name, int percent) {
+        if (remoteTransferStatus == null) return;
+        remoteTransferStatus.setText(getString(R.string.transfer_progress, index, total, name, percent));
+        remoteTransferStatus.setVisibility(View.VISIBLE);
+    }
+
+    private void onFileTransferWaiting(int index, int total, String name) {
+        if (remoteTransferStatus == null) return;
+        remoteTransferStatus.setText(getString(R.string.transfer_waiting, index, total, name));
+        remoteTransferStatus.setVisibility(View.VISIBLE);
+    }
+
+    private void onFileTransferFinished(int sent, int existing, int failed) {
+        if (remoteTransferStatus != null) remoteTransferStatus.setVisibility(View.GONE);
+        StringBuilder sb = new StringBuilder();
+        if (sent > 0)     appendMatchCategory(sb, getString(R.string.transfer_sent, sent));
+        if (existing > 0) appendMatchCategory(sb, getString(R.string.transfer_existing, existing));
+        if (failed > 0)   appendMatchCategory(sb, getString(R.string.transfer_failed, failed));
+        if (sb.length() > 0) Toast.makeText(this, sb.toString(), Toast.LENGTH_LONG).show();
     }
 
     private void showMatchResultToast(String jsonLine) {
@@ -3022,6 +3120,8 @@ public class FileBrowserQueueActivity extends Activity {
             }
             if (sb.length() > 0)
                 Toast.makeText(this, sb.toString(), Toast.LENGTH_LONG).show();
+            JSONArray missing = obj.optJSONArray("missing");
+            if (missing != null) offerMissingTransfer(missing);
         } catch (Exception ignored) {
         }
     }
@@ -3199,6 +3299,29 @@ public class FileBrowserQueueActivity extends Activity {
             View volume   = findViewById(R.id.btn_remote_volume);
             View eq       = findViewById(R.id.btn_remote_eq);
             remoteQueueController = new RemoteQueueController(this, btController, list, refresh, stop, play, volume, eq);
+        }
+        if (fileSender == null) {
+            fileSender = ((App) getApplication()).getFileSender();
+            fileSender.setCallback(new BluetoothFileSender.Callback() {
+                @Override public void onProgress(int index, int total, String name, int percent) {
+                    onFileTransferProgress(index, total, name, percent);
+                }
+                @Override public void onWaitingForLink(int index, int total, String name) {
+                    onFileTransferWaiting(index, total, name);
+                }
+                @Override public void onFinished(int sent, int existing, int failed) {
+                    onFileTransferFinished(sent, existing, failed);
+                }
+            });
+            btController.setFileSink(fileSender);
+        }
+        remoteTransferStatus = findViewById(R.id.remote_transfer_status);
+        if (remoteTransferStatus != null) {
+            remoteTransferStatus.setOnClickListener(v -> new AlertDialog.Builder(this)
+                    .setTitle(R.string.transfer_stop_title)
+                    .setPositiveButton(R.string.transfer_stop, (d, w) -> fileSender.cancel())
+                    .setNegativeButton(android.R.string.cancel, null)
+                    .show());
         }
         View remoteLabel = findViewById(R.id.remote_queue_label);
         if (remoteLabel != null) remoteLabel.setOnClickListener(v -> showLocalQueueInRemoteMode());
@@ -3577,6 +3700,16 @@ public class FileBrowserQueueActivity extends Activity {
         uiHandler.removeCallbacks(playbackStateSyncRunnable);
         Service.removeStateListener(serviceStateListener);
         if (remoteQueueController != null) remoteQueueController.shutdown();
+        if (fileSender != null) {
+            fileSender.setCallback(null);
+            // Leaving remote mode for good: nothing will resume these, so tell the host to drop them.
+            if (!isChangingConfigurations()) fileSender.cancel();
+        }
+        if (fileReceiver != null) {
+            fileReceiver.setCallback(null);
+            // The partial stays on disk: a later session may still resume it.
+            if (!isChangingConfigurations()) fileReceiver.suspend();
+        }
         // Preserve the app-scoped Bluetooth bridge across configuration changes (e.g. rotation);
         // only tear the connection down when the activity is genuinely finishing.
         btController.onActivityDestroyed(isChangingConfigurations());

@@ -70,6 +70,17 @@
       a:visibility="gone" />
   </LinearLayout>
 
+  <TextView
+    a:id="@+id/remote_transfer_status"
+    a:layout_width="match_parent"
+    a:layout_height="wrap_content"
+    a:padding="6dp"
+    a:singleLine="true"
+    a:ellipsize="middle"
+    a:textSize="14sp"
+    a:background="?android:attr/selectableItemBackground"
+    a:visibility="gone" />
+
   <ListView
     a:id="@+id/remote_queue_list"
     a:layout_width="match_parent"

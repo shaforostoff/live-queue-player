@@ -54,6 +54,7 @@ public class BluetoothFileTransferTest {
   private final List<String> received = new ArrayList<>();
   private volatile int[] finished; // sent, existing, failed, host full (1/0)
   private volatile boolean waitedForLink;
+  private volatile String status = ""; // the last status line, as "index/total name"
   private final java.util.concurrent.atomic.AtomicInteger waitReports = new java.util.concurrent.atomic.AtomicInteger();
 
   @Before
@@ -64,8 +65,11 @@ public class BluetoothFileTransferTest {
     receiver = newReceiver(new Pipe(toClient, () -> sender));
     sender = new BluetoothFileSender(context, new Pipe(toHost, () -> receiver));
     sender.setCallback(new BluetoothFileSender.Callback() {
-      @Override public void onProgress(int index, int total, String name, int percent) {}
+      @Override public void onProgress(int index, int total, String name, int percent) {
+        status = index + "/" + total + " " + name;
+      }
       @Override public void onWaitingForLink(int index, int total, String name) {
+        status = index + "/" + total + " " + name;
         waitedForLink = true;
         waitReports.incrementAndGet();
       }
@@ -308,6 +312,40 @@ public class BluetoothFileTransferTest {
     awaitFinished();
     assertArrayEquals(new int[]{1, 0, 0, 0}, finished);
     assertFalse(sender.isPending("song.mp3"));
+  }
+
+  @Test
+  public void aFileQueuedMidRunCountsInTheLineInFlight() throws Exception {
+    File one = write(new File(sourceRoot, "one.mp3"), randomBytes(1_000));
+    File two = write(new File(sourceRoot, "two.mp3"), randomBytes(1_000));
+    wire.up = false; // hold the first one in flight
+
+    sender.enqueue(Arrays.asList(job(one, "one.mp3")));
+    await(() -> status.equals("1/1 one.mp3"));
+    sender.enqueue(Arrays.asList(job(two, "two.mp3")));
+    await(() -> status.equals("1/2 one.mp3")); // not left at 1/1 until the next file
+
+    wire.reconnect();
+    awaitFinished();
+    assertArrayEquals(new int[]{2, 0, 0, 0}, finished);
+    assertEquals("2/2 two.mp3", status);
+  }
+
+  @Test
+  public void aRunAfterStopCountsFromOne() throws Exception {
+    File one = write(new File(sourceRoot, "one.mp3"), randomBytes(1_000));
+    File two = write(new File(sourceRoot, "two.mp3"), randomBytes(1_000));
+    File three = write(new File(sourceRoot, "three.mp3"), randomBytes(1_000));
+    wire.up = false;
+
+    sender.enqueue(Arrays.asList(job(one, "one.mp3"), job(two, "two.mp3")));
+    await(() -> status.equals("1/2 one.mp3"));
+    sender.cancel();
+    sender.enqueue(Arrays.asList(job(three, "three.mp3")));
+    await(() -> status.equals("1/1 three.mp3"));
+
+    wire.reconnect();
+    await(() -> new File(targetRoot, "three.mp3").isFile());
   }
 
   @Test

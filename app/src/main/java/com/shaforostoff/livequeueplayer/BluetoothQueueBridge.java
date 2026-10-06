@@ -5,6 +5,11 @@ import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
 import android.bluetooth.BluetoothServerSocket;
 import android.bluetooth.BluetoothSocket;
+import android.content.BroadcastReceiver;
+import android.content.Context;
+import android.content.Intent;
+import android.content.IntentFilter;
+import android.os.Build;
 import android.os.SystemClock;
 
 import org.json.JSONArray;
@@ -105,6 +110,10 @@ final class BluetoothQueueBridge implements BluetoothFileLink {
     private volatile boolean running;
 
     private BluetoothAdapter serverAdapter;
+    private final Context appContext;
+    /** Wakes an accept loop parked while Bluetooth is off; see {@link #awaitAdapterOn()}. */
+    private final Object adapterLock = new Object();
+    private BroadcastReceiver adapterStateReceiver; // registered while the server runs; main thread
     private volatile boolean wantConnected;
     private volatile BluetoothDevice lastDevice;
     /** Set when the reconnect loop gave up on its own (not by an explicit disconnect). */
@@ -123,7 +132,8 @@ final class BluetoothQueueBridge implements BluetoothFileLink {
     // watchdog must see the traffic even when this bridge instance is not the one it can reach.
     private static volatile long sLastInboundElapsedMs;
 
-    BluetoothQueueBridge() {
+    BluetoothQueueBridge(Context context) {
+        appContext = context.getApplicationContext();
     }
 
     /** @see #sLastInboundElapsedMs */
@@ -181,6 +191,7 @@ final class BluetoothQueueBridge implements BluetoothFileLink {
         if (!openServerSocket()) return false;
 
         running = true;
+        registerAdapterStateReceiver();
         acceptThread = new Thread(this::acceptLoop, "bt-queue-accept");
         acceptThread.start();
         listener.onConnectionStateChanged(false, "Bluetooth server is listening");
@@ -210,6 +221,17 @@ final class BluetoothQueueBridge implements BluetoothFileLink {
             } catch (Exception e) {
                 if (!running) break;
                 closeServerSocket();
+                if (!serverAdapter.isEnabled()) {
+                    // Turned off: no retry can succeed until it is back on, and retrying every 5 s
+                    // until then kept this thread waking for nothing. Wait for the state broadcast.
+                    listener.onConnectionStateChanged(false, "Bluetooth is off, the server resumes when it is on");
+                    if (!awaitAdapterOn()) break;
+                    attempt = 0;
+                    if (openServerSocket()) {
+                        listener.onConnectionStateChanged(false, "Bluetooth server is listening");
+                    }
+                    continue;
+                }
                 if (attempt == 0) {
                     listener.onConnectionStateChanged(false, "Bluetooth server dropped, restarting...");
                 }
@@ -231,6 +253,52 @@ final class BluetoothQueueBridge implements BluetoothFileLink {
             acceptThread.interrupt();
             acceptThread = null;
         }
+        unregisterAdapterStateReceiver();
+    }
+
+    /** Blocks the accept thread until Bluetooth is on again. False if the server stopped meanwhile. */
+    private boolean awaitAdapterOn() {
+        synchronized (adapterLock) {
+            // Checked under the lock the receiver notifies with, so a STATE_ON landing between the
+            // check and the wait cannot be missed.
+            while (running && !serverAdapter.isEnabled()) {
+                try {
+                    adapterLock.wait();
+                } catch (InterruptedException e) {
+                    return false;
+                }
+            }
+        }
+        return running;
+    }
+
+    private void registerAdapterStateReceiver() {
+        if (adapterStateReceiver != null) return;
+        adapterStateReceiver = new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context context, Intent intent) {
+                int state = intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR);
+                if (state != BluetoothAdapter.STATE_ON) return;
+                synchronized (adapterLock) {
+                    adapterLock.notifyAll();
+                }
+            }
+        };
+        IntentFilter filter = new IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            appContext.registerReceiver(adapterStateReceiver, filter, Context.RECEIVER_EXPORTED);
+        } else {
+            appContext.registerReceiver(adapterStateReceiver, filter);
+        }
+    }
+
+    private void unregisterAdapterStateReceiver() {
+        if (adapterStateReceiver == null) return;
+        try {
+            appContext.unregisterReceiver(adapterStateReceiver);
+        } catch (IllegalArgumentException ignored) {
+        }
+        adapterStateReceiver = null;
     }
 
     @SuppressLint("MissingPermission")

@@ -85,7 +85,7 @@ public class App extends Application {
 
     public synchronized BluetoothQueueBridge getBluetoothBridge() {
         if (bluetoothBridge == null) {
-            bluetoothBridge = new BluetoothQueueBridge();
+            bluetoothBridge = new BluetoothQueueBridge(this);
         }
         return bluetoothBridge;
     }

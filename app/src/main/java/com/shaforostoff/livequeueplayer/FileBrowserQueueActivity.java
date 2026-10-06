@@ -97,6 +97,12 @@ public class FileBrowserQueueActivity extends Activity {
     private static final String PREF_PLAYLIST_FOLDER_URI  = "playlist_folder_uri";
     private static final String PREF_PLAYLIST_FOLDER_NAME = "playlist_folder_name";
     private static final long PLAYBACK_SYNC_INTERVAL_MS = 1_000L;
+    /**
+     * As the remote host the 1s poll outlives onStop (see there). With nothing playing and no
+     * client connected there is nothing for it to keep in sync or push, so after this much wake
+     * time it stops; playback starting or a client connecting starts it again.
+     */
+    private static final long BACKGROUND_SYNC_IDLE_STOP_MS = 30 * 60 * 1_000L;
     private static final int PROGRESS_LEVEL_MAX = 10_000;
     private static final int SORT_FILENAME = 0;
     private static final int SORT_YEAR = 1;
@@ -194,17 +200,27 @@ public class FileBrowserQueueActivity extends Activity {
     private Uri lastHighlightedPreviewUri;
     private ListView fileBrowserList;
     // Runs syncWithServiceState() on every state change the Service publishes (see onStart/onStop).
-    private final Runnable serviceStateListener = this::syncWithServiceState;
+    private final Runnable serviceStateListener = () -> {
+        syncWithServiceState();
+        if (Service.sIsPlaying) resumeBackgroundSync();
+    };
     private final Handler uiHandler = new Handler(Looper.getMainLooper());
     private final Runnable playbackStateSyncRunnable = new Runnable() {
         @Override
         public void run() {
             syncWithServiceState();
-            if (!isDestroyed()) {
-                uiHandler.postDelayed(this, PLAYBACK_SYNC_INTERVAL_MS);
+            if (isDestroyed()) return;
+            if (!activityStarted && backgroundSyncIdleTooLong()) {
+                backgroundSyncStopped = true;
+                return;
             }
+            uiHandler.postDelayed(this, PLAYBACK_SYNC_INTERVAL_MS);
         }
     };
+    /** uptimeMillis() of the last onStop, playing track or connected client, whichever is latest. */
+    private long backgroundSyncLastBusyMs;
+    /** The poll stopped itself for idling in the background; see BACKGROUND_SYNC_IDLE_STOP_MS. */
+    private boolean backgroundSyncStopped;
     private StorageBrowser storageBrowser;
     private PlaylistResolver playlistResolver;
 
@@ -309,6 +325,7 @@ public class FileBrowserQueueActivity extends Activity {
                 if (connected && mode == Mode.REMOTE_SEND && remoteQueueController != null) {
                     remoteQueueController.onConnected();
                 }
+                if (connected) resumeBackgroundSync();
             }
         });
 
@@ -3485,6 +3502,7 @@ public class FileBrowserQueueActivity extends Activity {
         Service.addStateListener(serviceStateListener);
         syncWithServiceState();
         scrollToHighlightedFileEntry();
+        backgroundSyncStopped = false;
         uiHandler.removeCallbacks(playbackStateSyncRunnable);
         uiHandler.postDelayed(playbackStateSyncRunnable, PLAYBACK_SYNC_INTERVAL_MS);
         ensureSilenceStreamer();
@@ -3580,6 +3598,24 @@ public class FileBrowserQueueActivity extends Activity {
         pushPlayStateIfChanged();
     }
 
+    private boolean backgroundSyncIdleTooLong() {
+        long now = SystemClock.uptimeMillis();
+        if (Service.sIsPlaying || btController.isConnected()) {
+            backgroundSyncLastBusyMs = now;
+            return false;
+        }
+        return now - backgroundSyncLastBusyMs >= BACKGROUND_SYNC_IDLE_STOP_MS;
+    }
+
+    /** Restart a poll that stopped itself in the background; a no-op otherwise. */
+    private void resumeBackgroundSync() {
+        if (!backgroundSyncStopped || isDestroyed()) return;
+        backgroundSyncStopped = false;
+        backgroundSyncLastBusyMs = SystemClock.uptimeMillis();
+        uiHandler.removeCallbacks(playbackStateSyncRunnable);
+        uiHandler.postDelayed(playbackStateSyncRunnable, PLAYBACK_SYNC_INTERVAL_MS);
+    }
+
     private void setPlaybackOffset(int offset) {
         servicePlaybackOffset = offset;
         QueueStore.savePlaybackOffset(this, offset);
@@ -3615,6 +3651,8 @@ public class FileBrowserQueueActivity extends Activity {
             Service.removeStateListener(serviceStateListener);
             uiHandler.removeCallbacks(playbackStateSyncRunnable);
         }
+        // The background idle stretch starts no earlier than leaving the screen.
+        backgroundSyncLastBusyMs = SystemClock.uptimeMillis();
         resetFileBrowserPreview();
         if (Service.sCurrentUri == null) {
             SilenceStreamer.fadeOutAndRelease();

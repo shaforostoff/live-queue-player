@@ -65,7 +65,12 @@ final class StorageBrowser {
     private File currentFileDirectory;
     private File currentFileRootDirectory;
 
-    /** LRU cache of large document-folder listings, keyed by document Uri (access-ordered). */
+    /**
+     * LRU cache of large document-folder listings, keyed by document Uri (access-ordered). Guarded
+     * by itself: the browser reads it on the main thread, but a file received over Bluetooth
+     * invalidates its folder from the read thread, and access order makes even get() a structural
+     * change. Never held across a SAF query.
+     */
     private final LinkedHashMap<String, List<FileBrowserQueueActivity.FileEntry>> documentListingCache =
             new LinkedHashMap<String, List<FileBrowserQueueActivity.FileEntry>>(
                     LISTING_CACHE_MAX_FOLDERS + 1, 0.75f, true) {
@@ -75,6 +80,9 @@ final class StorageBrowser {
                     return size() > LISTING_CACHE_MAX_FOLDERS;
                 }
             };
+    /** Bumped by every invalidation, so a listing queried across one is not cached (it may predate
+     *  the file that caused it). Guarded by documentListingCache. */
+    private long listingCacheGeneration;
 
     StorageBrowser(Context context) {
         this.context = context;
@@ -127,7 +135,7 @@ final class StorageBrowser {
         documentUriStack.clear();
         currentFileDirectory = null;
         currentFileRootDirectory = null;
-        documentListingCache.clear();
+        clearListingCache();
     }
 
     // -- file (java.io.File) navigation --------------------------------------
@@ -203,25 +211,36 @@ final class StorageBrowser {
     List<FileBrowserQueueActivity.FileEntry> readCurrentDocumentDirectory() {
         Uri currentDocumentUri = documentUriStack.get(documentUriStack.size() - 1);
         String key = currentDocumentUri.toString();
-        List<FileBrowserQueueActivity.FileEntry> cached = documentListingCache.get(key);
-        if (cached != null) {
-            return cached;
+        long generation;
+        synchronized (documentListingCache) {
+            List<FileBrowserQueueActivity.FileEntry> cached = documentListingCache.get(key);
+            if (cached != null) {
+                return cached;
+            }
+            generation = listingCacheGeneration;
         }
         List<FileBrowserQueueActivity.FileEntry> listing = readDocumentChildren(currentDocumentUri, true);
         if (listing != null && listing.size() > LISTING_CACHE_MIN_ITEMS) {
-            documentListingCache.put(key, listing);
+            synchronized (documentListingCache) {
+                if (generation == listingCacheGeneration) documentListingCache.put(key, listing);
+            }
         }
         return listing;
     }
 
     /** Drops every cached listing, giving their memory back; the next read of each re-queries. */
     void clearListingCache() {
-        documentListingCache.clear();
+        synchronized (documentListingCache) {
+            listingCacheGeneration++;
+            documentListingCache.clear();
+        }
     }
 
     /** Drops any cached listing for {@code documentUri} so the next read re-queries it. */
     void invalidateDocumentListing(Uri documentUri) {
-        if (documentUri != null) {
+        if (documentUri == null) return;
+        synchronized (documentListingCache) {
+            listingCacheGeneration++;
             documentListingCache.remove(documentUri.toString());
         }
     }

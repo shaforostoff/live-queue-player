@@ -127,6 +127,11 @@ class BluetoothController {
         return bridge.isConnected();
     }
 
+    /** The user is back: pick reconnecting up again if it gave up while they were away. */
+    void resumeReconnectIfGaveUp() {
+        bridge.resumeReconnectIfGaveUp();
+    }
+
     boolean sendRaw(String line) {
         return bridge.sendRaw(line);
     }

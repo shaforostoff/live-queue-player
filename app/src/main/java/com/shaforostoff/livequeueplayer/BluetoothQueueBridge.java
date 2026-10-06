@@ -107,6 +107,15 @@ final class BluetoothQueueBridge implements BluetoothFileLink {
     private BluetoothAdapter serverAdapter;
     private volatile boolean wantConnected;
     private volatile BluetoothDevice lastDevice;
+    /** Set when the reconnect loop gave up on its own (not by an explicit disconnect). */
+    private volatile boolean reconnectGaveUp;
+
+    // Each attempt at an absent device keeps the radio paging for ~5 s, so retrying every 5 s
+    // forever held it busy about half the time for as long as the process lived. Retry quickly for
+    // a few minutes (a drop mid-set), then slowly, then stop until the user is back.
+    private static final long RECONNECT_FAST_PHASE_MS = 5 * 60 * 1_000L;
+    private static final long RECONNECT_SLOW_DELAY_MS = 30_000L;
+    private static final long RECONNECT_GIVE_UP_MS = 30 * 60 * 1_000L;
 
     // elapsedRealtime() of the last inbound remote frame, or 0 when nothing has ever arrived.
     // Stamped on the read thread, read by the playback Service's idle watchdog (which retires a
@@ -151,6 +160,12 @@ final class BluetoothQueueBridge implements BluetoothFileLink {
         if (attempt <= 0) return 1000L;
         if (attempt == 1) return 2000L;
         return 5000L;
+    }
+
+    /** Delay before the next client reconnect attempt, or -1 to give up. */
+    static long reconnectDelayMs(int attempt, long failingForMs) {
+        if (failingForMs >= RECONNECT_GIVE_UP_MS) return -1;
+        return failingForMs < RECONNECT_FAST_PHASE_MS ? backoffDelayMs(attempt) : RECONNECT_SLOW_DELAY_MS;
     }
 
     private static String safeName(BluetoothDevice device) {
@@ -222,9 +237,20 @@ final class BluetoothQueueBridge implements BluetoothFileLink {
     boolean connect(BluetoothDevice device) {
         if (device == null) return false;
         wantConnected = true;
+        reconnectGaveUp = false;
         lastDevice = device;
         startConnectAttempt();
         return true;
+    }
+
+    /**
+     * Restart reconnecting to the remembered device if the loop gave up on its own; called when the
+     * user is back in the app. An explicit disconnect is left alone. True if it restarted.
+     */
+    boolean resumeReconnectIfGaveUp() {
+        BluetoothDevice device = lastDevice;
+        if (!reconnectGaveUp || wantConnected || device == null) return false;
+        return connect(device);
     }
 
     private void startConnectAttempt() {
@@ -236,10 +262,11 @@ final class BluetoothQueueBridge implements BluetoothFileLink {
         thread.start();
     }
 
-    /** Retries the remembered device with backoff until it connects or reconnection is cancelled. */
+    /** Retries the remembered device with backoff until it connects, is cancelled, or gives up. */
     @SuppressLint("MissingPermission")
     private void runConnectLoop() {
         Thread self = Thread.currentThread();
+        long startedAt = SystemClock.elapsedRealtime();
         try {
             int attempt = 0;
             while (wantConnected && !self.isInterrupted()) {
@@ -254,11 +281,21 @@ final class BluetoothQueueBridge implements BluetoothFileLink {
                 } catch (Exception e) {
                     closeSocketSilently(socket);
                     if (!wantConnected || self.isInterrupted()) return;
-                    if (attempt == 0) {
+                    long delay = reconnectDelayMs(attempt++, SystemClock.elapsedRealtime() - startedAt);
+                    if (delay < 0) {
+                        synchronized (socketLock) {
+                            if (connectThread != self) return; // superseded by a newer attempt
+                            wantConnected = false;
+                            reconnectGaveUp = true;
+                        }
+                        listener.onConnectionStateChanged(false, "Stopped reconnecting to " + safeName(device));
+                        return;
+                    }
+                    if (attempt == 1) {
                         listener.onConnectionStateChanged(false, "Reconnecting to " + safeName(device) + "...");
                     }
                     try {
-                        Thread.sleep(backoffDelayMs(attempt++));
+                        Thread.sleep(delay);
                     } catch (InterruptedException ie) {
                         return;
                     }
@@ -361,6 +398,7 @@ final class BluetoothQueueBridge implements BluetoothFileLink {
     /** Explicit, user/mode-initiated disconnect — cancels any pending auto-reconnect. */
     void disconnect() {
         wantConnected = false;
+        reconnectGaveUp = false;
         BluetoothSocket toClose;
         Thread connectToInterrupt;
         Thread readToInterrupt;

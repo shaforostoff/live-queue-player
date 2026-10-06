@@ -3500,6 +3500,7 @@ public class FileBrowserQueueActivity extends Activity {
             scrollTo(queueList, currentPlayingQueueIndex);
         }
         if (mode == Mode.REMOTE_SEND && remoteQueueController != null) {
+            btController.resumeReconnectIfGaveUp();
             remoteQueueController.requestQueue();
         }
     }

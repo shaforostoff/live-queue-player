@@ -214,6 +214,11 @@ final class StorageBrowser {
         return listing;
     }
 
+    /** Drops every cached listing, giving their memory back; the next read of each re-queries. */
+    void clearListingCache() {
+        documentListingCache.clear();
+    }
+
     /** Drops any cached listing for {@code documentUri} so the next read re-queries it. */
     void invalidateDocumentListing(Uri documentUri) {
         if (documentUri != null) {

@@ -33,6 +33,28 @@ public class App extends Application {
         storageBrowser = new StorageBrowser(this);
     }
 
+    /**
+     * Give the caches back when the system is about to reclaim memory. Only from BACKGROUND up:
+     * UI_HIDDEN arrives every time the app leaves the screen, and dropping the caches there would
+     * throw away the warm folder listings (each a ~1 s SAF query to rebuild) of a user who merely
+     * switched apps. BACKGROUND means this process is on the list the system kills from, so freeing
+     * memory now is what may keep it alive.
+     */
+    @Override
+    public void onTrimMemory(int level) {
+        super.onTrimMemory(level);
+        if (level < TRIM_MEMORY_BACKGROUND) return;
+        storageBrowser.clearListingCache();
+        // A remote-receive host matches requested tracks by title and artist against the tag cache
+        // alone, with the screen off; clearing it mid-session would quietly lose those matches
+        // until the library is browsed again.
+        BluetoothQueueBridge bridge;
+        synchronized (this) {
+            bridge = bluetoothBridge;
+        }
+        if (bridge == null || !bridge.isServerRunning()) metadataExtractor.clearCache();
+    }
+
     public MetadataExtractor getMetadataExtractor() {
         return metadataExtractor;
     }

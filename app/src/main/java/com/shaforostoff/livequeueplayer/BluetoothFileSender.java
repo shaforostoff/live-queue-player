@@ -16,8 +16,10 @@ import java.io.File;
 import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.LinkedBlockingDeque;
 import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -36,12 +38,15 @@ import java.util.concurrent.TimeUnit;
  * <p>A job marked {@link Job#compress} is re-encoded to AAC first (see {@link AacTranscoder}) and
  * lands as an .m4a beside where the original would have; {@code file_begin} then also carries the
  * {@code requested} path, so the host places it where the original was asked for. The encoded copy
- * is made once and kept until the job is done, so a resume sends the same bytes.
+ * is made once and kept until the job is done, so a resume sends the same bytes. Encoding runs on
+ * its own thread, one file at a time and one file ahead: the next queued file is encoded while the
+ * one before it is sent, so the worker waits on the encoder only when it outruns it.
  *
- * <p>A partial wake lock is held while bytes are moving, so a transfer keeps going after the screen
- * times out; it is let go while waiting for the link. {@link FileTransferService} keeps the
- * process from being frozen when the user switches away: it runs while a run is in flight, and
- * stops when the bridge gives up reconnecting (see {@link #onLinkAbandoned}) until the link is back.
+ * <p>A partial wake lock is held while bytes are moving or a file is being encoded, so a transfer
+ * keeps going after the screen times out; it is let go while waiting for the link.
+ * {@link FileTransferService} keeps the process from being frozen when the user switches away: it
+ * runs while a run is in flight, and stops when the bridge gives up reconnecting (see
+ * {@link #onLinkAbandoned}) until the link is back.
  */
 final class BluetoothFileSender implements BluetoothQueueBridge.FileSink {
 
@@ -51,12 +56,48 @@ final class BluetoothFileSender implements BluetoothQueueBridge.FileSink {
         final String name;
         boolean compress; // re-encode to AAC before sending
         int generation; // the cancel generation it was queued in; a cancel orphans it
-        File encoded;   // worker only: the AAC copy, once made
+        Encoding encoding; // under lock: its re-encoding, once started
+        File encoded;      // under lock: the AAC copy, once made
 
         Job(Uri uri, String path, String name) {
             this.uri = uri;
             this.path = path;
             this.name = name;
+        }
+    }
+
+    /** A job's re-encoding on {@link #encodeExecutor}, possibly while the file before it is sent. */
+    private static final class Encoding {
+        final CountDownLatch done = new CountDownLatch(1);
+        volatile int percent;
+        volatile int index; // the job's place in the run once the worker waits on it; 0 until then
+    }
+
+    /**
+     * A partial wake lock taken with a timeout and renewed while work goes on, so a stuck thread
+     * can't hold the CPU up for good.
+     */
+    private static final class Awake {
+        private final PowerManager.WakeLock wakeLock;
+        private long renewedAt;
+
+        Awake(Context context, String tag) {
+            PowerManager pm = (PowerManager) context.getSystemService(Context.POWER_SERVICE);
+            wakeLock = pm != null ? pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, tag) : null;
+            if (wakeLock != null) wakeLock.setReferenceCounted(false);
+        }
+
+        /** Takes or renews it; cheap to call per chunk. */
+        synchronized void keep() {
+            if (wakeLock == null) return;
+            long now = SystemClock.elapsedRealtime();
+            if (wakeLock.isHeld() && now - renewedAt < WAKE_RENEW_MS) return;
+            wakeLock.acquire(WAKE_TIMEOUT_MS);
+            renewedAt = now;
+        }
+
+        synchronized void release() {
+            if (wakeLock != null && wakeLock.isHeld()) wakeLock.release();
         }
     }
 
@@ -85,8 +126,6 @@ final class BluetoothFileSender implements BluetoothQueueBridge.FileSink {
     private static final long DONE_TIMEOUT_MS = 60_000;
     private static final long PROGRESS_INTERVAL_MS = 250;
     private static final long LINK_POLL_MS = 500;
-    // The wake lock is taken with a timeout, renewed while bytes move, so a stuck worker can't hold
-    // the CPU up for good.
     private static final long WAKE_TIMEOUT_MS = 2 * 60_000;
     private static final long WAKE_RENEW_MS = 30_000;
     private static final String ENCODED_DIR = "bt-send";
@@ -99,10 +138,13 @@ final class BluetoothFileSender implements BluetoothQueueBridge.FileSink {
     private final Context context;
     private final BluetoothFileLink link;
     private final Handler uiHandler = new Handler(Looper.getMainLooper());
-    private final PowerManager.WakeLock wakeLock;
+    private final Awake sending;
+    private final Awake encoding;
     private final File encodedDir;
     Encoder encoder = AacTranscoder::transcode; // package-private for a test
-    private long wakeRenewedAt;
+    // Encodes one file at a time, ahead of the worker; its thread goes when there is nothing to do.
+    private final ThreadPoolExecutor encodeExecutor = new ThreadPoolExecutor(0, 1, 30, TimeUnit.SECONDS,
+            new LinkedBlockingQueue<>(), r -> new Thread(r, "bt-file-encode"));
     private Callback callback;  // UI thread
     private Report lastStatus;  // UI thread: the last progress/waiting line, replayed on attach
     private FileTransferService service; // UI thread: the foreground service while it is up
@@ -128,9 +170,8 @@ final class BluetoothFileSender implements BluetoothQueueBridge.FileSink {
     BluetoothFileSender(Context context, BluetoothFileLink link) {
         this.context = context.getApplicationContext();
         this.link = link;
-        PowerManager pm = (PowerManager) this.context.getSystemService(Context.POWER_SERVICE);
-        wakeLock = pm != null ? pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "LiveQueuePlayer:FileSend") : null;
-        if (wakeLock != null) wakeLock.setReferenceCounted(false);
+        sending = new Awake(this.context, "LiveQueuePlayer:FileSend");
+        encoding = new Awake(this.context, "LiveQueuePlayer:FileEncode");
         // Copies left by a process that died mid-run: nothing will resume them.
         encodedDir = new File(this.context.getCacheDir(), ENCODED_DIR);
         File[] stale = encodedDir.listFiles();
@@ -202,6 +243,7 @@ final class BluetoothFileSender implements BluetoothQueueBridge.FileSink {
             }
             runTotal += fresh.size();
             if (worker != null) {
+                encodeAhead(); // the queue may have run dry behind the file in flight
                 refreshStatus();
                 return;
             }
@@ -218,6 +260,7 @@ final class BluetoothFileSender implements BluetoothQueueBridge.FileSink {
     void cancel() {
         synchronized (lock) {
             generation++;
+            for (Job job : jobs) discardEncoded(job);
             jobs.clear();
             int id = currentId;
             if (id > 0) link.send("file_abort", "id", id);
@@ -279,9 +322,14 @@ final class BluetoothFileSender implements BluetoothQueueBridge.FileSink {
                     worker = null;
                     break;
                 }
-                if (job.generation != generation) continue;
+                if (job.generation != generation) {
+                    discardEncoded(job);
+                    continue;
+                }
                 at = ++runIndex;
                 current = job; // pending from here on, through its re-encoding
+                startEncoding(job); // unless it already was, ahead of time
+                encodeAhead();      // the next one, behind it
             }
             Result result;
             while ((result = sendAwake(job, at)) == Result.INTERRUPTED) {
@@ -294,11 +342,7 @@ final class BluetoothFileSender implements BluetoothQueueBridge.FileSink {
             synchronized (lock) {
                 current = null;
                 currentId = -1;
-            }
-            if (job.encoded != null) {
-                //noinspection ResultOfMethodCallIgnored
-                job.encoded.delete();
-                job.encoded = null;
+                discardEncoded(job);
             }
             if (result == Result.SENT) sent++;
             else if (result == Result.EXISTING) existing++;
@@ -308,7 +352,10 @@ final class BluetoothFileSender implements BluetoothQueueBridge.FileSink {
                 hostFull = true;
                 failed++;
                 synchronized (lock) {
-                    if (job.generation == generation) jobs.clear();
+                    if (job.generation == generation) {
+                        for (Job next : jobs) discardEncoded(next);
+                        jobs.clear();
+                    }
                 }
             }
         }
@@ -334,33 +381,25 @@ final class BluetoothFileSender implements BluetoothQueueBridge.FileSink {
 
     /** {@link #sendOne} with the CPU held awake for its duration. */
     private Result sendAwake(Job job, int index) {
-        keepAwake();
+        sending.keep();
         try {
             return sendOne(job, index);
         } finally {
-            if (wakeLock != null && wakeLock.isHeld()) wakeLock.release();
+            sending.release();
         }
     }
 
-    /** Takes or renews the wake lock; cheap to call per chunk. */
-    private void keepAwake() {
-        if (wakeLock == null) return;
-        long now = SystemClock.elapsedRealtime();
-        if (wakeLock.isHeld() && now - wakeRenewedAt < WAKE_RENEW_MS) return;
-        wakeLock.acquire(WAKE_TIMEOUT_MS);
-        wakeRenewedAt = now;
-    }
-
     private Result sendOne(Job job, int index) {
-        if (job.compress && job.encoded == null && !encode(job, index)) {
+        if (job.compress && !awaitEncoded(job, index)) {
             if (job.generation != generation) return Result.CANCELLED;
             job.compress = false; // it can't be converted here: send it as it is
         }
         int epoch = linkEpoch;
         int id = nextId++;
-        Uri source = job.encoded != null ? Uri.fromFile(job.encoded) : job.uri;
-        String path = job.encoded != null ? m4aName(job.path) : job.path;
-        String name = job.encoded != null ? m4aName(job.name) : job.name;
+        File encoded = job.encoded; // set before awaitEncoded returned, and kept till the job is done
+        Uri source = encoded != null ? Uri.fromFile(encoded) : job.uri;
+        String path = encoded != null ? m4aName(job.path) : job.path;
+        String name = encoded != null ? m4aName(job.name) : job.name;
         long size = sizeOf(source);
         try (InputStream in = context.getContentResolver().openInputStream(source)) {
             if (in == null) return Result.FAILED;
@@ -401,7 +440,7 @@ final class BluetoothFileSender implements BluetoothQueueBridge.FileSink {
                 if (now - lastProgress >= PROGRESS_INTERVAL_MS) {
                     lastProgress = now;
                     progress(index, job.name, done, size);
-                    keepAwake();
+                    sending.keep();
                 }
             }
             if (!link.send("file_end", "id", id)) return interruption(epoch);
@@ -415,24 +454,94 @@ final class BluetoothFileSender implements BluetoothQueueBridge.FileSink {
         }
     }
 
-    /** Re-encodes {@code job} into {@link #encodedDir}; false if cancelled or it can't be done. */
-    private boolean encode(Job job, int index) {
-        //noinspection ResultOfMethodCallIgnored
-        encodedDir.mkdirs();
-        File out = new File(encodedDir, nextId + ".m4a");
-        report(cb -> cb.onCompressing(index, runTotal, job.name, 0));
-        boolean ok = encoder.encode(context, job.uri, out, percent -> {
-            keepAwake();
-            report(cb -> cb.onCompressing(index, runTotal, job.name, percent));
-            return job.generation == generation;
-        });
-        if (ok && job.generation == generation && out.length() > 0) {
-            job.encoded = out;
-            return true;
+    /** Starts re-encoding {@code job}, unless it is under way or done already, or not wanted. Under lock. */
+    private void startEncoding(Job job) {
+        if (!job.compress || job.encoding != null || job.generation != generation) return;
+        Encoding e = new Encoding();
+        job.encoding = e;
+        encodeExecutor.execute(() -> encode(job, e));
+    }
+
+    /**
+     * Starts on the next queued file, to have it ready when the one in flight is through. Only the
+     * next: a run of a hundred files doesn't fill the cache with a hundred copies. Under lock.
+     */
+    private void encodeAhead() {
+        for (Job next : jobs) {
+            if (next.generation != generation) continue;
+            startEncoding(next);
+            return;
         }
+    }
+
+    /** Encoder thread: makes {@code job}'s copy in {@link #encodedDir}, or nothing if it can't. */
+    private void encode(Job job, Encoding e) {
+        File out = null;
+        boolean ok = false;
+        try {
+            if (job.generation != generation) return; // cancelled while waiting its turn
+            //noinspection ResultOfMethodCallIgnored
+            encodedDir.mkdirs();
+            out = File.createTempFile("send", ".m4a", encodedDir);
+            encoding.keep();
+            ok = encoder.encode(context, job.uri, out, percent -> {
+                encoding.keep();
+                e.percent = percent;
+                int index = e.index;
+                if (index > 0) report(cb -> cb.onCompressing(index, runTotal, job.name, percent));
+                return job.generation == generation;
+            }) && out.length() > 0;
+        } catch (Exception ex) {
+            ok = false;
+        } finally {
+            encoding.release();
+            synchronized (lock) {
+                // Also once cancelled: the job was dropped without waiting for this.
+                if (ok && job.generation == generation) {
+                    job.encoded = out;
+                } else if (out != null) {
+                    //noinspection ResultOfMethodCallIgnored
+                    out.delete();
+                }
+            }
+            e.done.countDown();
+        }
+    }
+
+    /**
+     * Worker: waits for {@code job}'s copy, showing its progress meanwhile unless it is ready
+     * already. False if cancelled, or it couldn't be made.
+     */
+    private boolean awaitEncoded(Job job, int index) {
+        Encoding e;
+        synchronized (lock) {
+            startEncoding(job);
+            e = job.encoding;
+            if (e == null) return job.encoded != null;
+        }
+        if (e.done.getCount() > 0) {
+            e.index = index;
+            report(cb -> cb.onCompressing(index, runTotal, job.name, e.percent));
+        }
+        try {
+            // Wake to notice a cancel even if the encoder is slow to.
+            while (!e.done.await(LINK_POLL_MS, TimeUnit.MILLISECONDS)) {
+                if (job.generation != generation) return false;
+            }
+        } catch (InterruptedException ex) {
+            return false;
+        }
+        synchronized (lock) {
+            return job.encoded != null;
+        }
+    }
+
+    /** Deletes a dropped job's copy; one still being made deletes itself. Under lock. */
+    private static void discardEncoded(Job job) {
+        if (job.encoded == null) return;
         //noinspection ResultOfMethodCallIgnored
-        out.delete();
-        return false;
+        job.encoded.delete();
+        job.encoded = null;
     }
 
     /** {@code path} with its file name's extension, if any, replaced by .m4a. */

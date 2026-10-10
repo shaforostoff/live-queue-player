@@ -405,6 +405,11 @@ public class FileBrowserQueueActivity extends Activity {
                 showLyricsOverlayForQueueEntry(queueEntries.get(position));
                 return;
             }
+            if (isPausedTrack(position)) {
+                cancelFadeOutAndContinue(); // carry on where it paused, not from the start
+                if (mode == Mode.REMOTE_RECEIVE) pushPlayState();
+                return;
+            }
             if (isStopFadeInProgress()) {
                 playQueueFrom(position, true);
             } else if (!Service.sIsPlaying && !isQueueTransitionActive()) {
@@ -2759,7 +2764,8 @@ public class FileBrowserQueueActivity extends Activity {
         }
         int id = obj.optInt("id", -1);
         int pos = findQueueIndexById(id);
-        if (pos >= 0) playQueueFrom(pos, isStopFadeInProgress());
+        if (pos >= 0 && isPausedTrack(pos)) cancelFadeOutAndContinue();
+        else if (pos >= 0) playQueueFrom(pos, isStopFadeInProgress());
         // Clear synchronously so pushPlayState() sees "playing" rather than "fading".
         // sIsPlaying is still true (the fading player is alive until the KILL intent is
         // processed), so the client flips Resume→Stop immediately rather than waiting for
@@ -3536,6 +3542,11 @@ public class FileBrowserQueueActivity extends Activity {
      */
     private boolean isStopFadeInProgress() {
         return Service.sFadeOutInProgress;
+    }
+
+    /** Row {@code position} is the track the Service holds paused. */
+    private boolean isPausedTrack(int position) {
+        return isPlaybackPaused() && queueEntries.get(position).id == Service.sCurrentEntryId;
     }
 
     private boolean isPlaybackPaused() {

@@ -120,7 +120,8 @@ final class PlaylistResolver {
     }
 
     private Uri resolveDocumentTargetUri(Uri playlistUri, String pathValue) {
-        if (storageBrowser.getCurrentTreeUri() == null || playlistUri == null) {
+        // No browser: the playback service resolving a playlist opened from another app.
+        if (storageBrowser == null || storageBrowser.getCurrentTreeUri() == null || playlistUri == null) {
             return null;
         }
 

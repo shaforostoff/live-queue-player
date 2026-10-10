@@ -97,7 +97,13 @@ final class AacTranscoder {
 
             ok = encode(decoder, new PcmSource(decoder, factor), encoder, muxer, rate, channels, progress);
             muxer.stop(); // throws if nothing was written
-            if (ok) Mp4TagWriter.write(out, readTags(context, uri));
+            if (ok) {
+                try {
+                    Mp4TagWriter.write(out, readTags(context, uri));
+                } catch (IOException e) {
+                    // The file is left as it was: send it untagged rather than not compressed.
+                }
+            }
         } catch (Exception e) {
             ok = false;
         } finally {

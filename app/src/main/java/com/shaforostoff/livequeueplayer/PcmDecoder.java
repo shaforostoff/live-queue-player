@@ -30,6 +30,8 @@ final class PcmDecoder {
     /** Rate/layout of the PCM the codec emits — the container's values are only the starting guess. */
     volatile int sampleRate;
     volatile int channelCount;
+    /** An {@link android.media.AudioFormat} encoding; the codec's default is 16-bit. */
+    volatile int pcmEncoding = android.media.AudioFormat.ENCODING_PCM_16BIT;
     final long durationUs;
     volatile long positionUs;
 
@@ -61,6 +63,7 @@ final class PcmDecoder {
                 ? fmt.getInteger(MediaFormat.KEY_CHANNEL_COUNT) : 2;
         durationUs = fmt.containsKey(MediaFormat.KEY_DURATION)
                 ? fmt.getLong(MediaFormat.KEY_DURATION) : 0;
+        if (fmt.containsKey("pcm-encoding")) pcmEncoding = fmt.getInteger("pcm-encoding");
         String mime = fmt.getString(MediaFormat.KEY_MIME);
         codec = MediaCodec.createDecoderByType(mime);
         codec.configure(fmt, null, null, 0);
@@ -124,6 +127,7 @@ final class PcmDecoder {
             int channels = out.getInteger(MediaFormat.KEY_CHANNEL_COUNT);
             if (channels > 0) channelCount = channels;
         }
+        if (out.containsKey("pcm-encoding")) pcmEncoding = out.getInteger("pcm-encoding");
     }
 
     /** Queue one access unit, or the end-of-stream marker once the extractor runs dry. */

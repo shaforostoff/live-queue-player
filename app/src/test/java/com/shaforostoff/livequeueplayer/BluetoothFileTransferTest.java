@@ -54,6 +54,7 @@ public class BluetoothFileTransferTest {
   private BluetoothFileReceiver receiver;
   private final List<String> received = new ArrayList<>();
   private final List<String> requested = new ArrayList<>(); // the path each landing stands in for
+  private final List<String> compressing = new java.util.concurrent.CopyOnWriteArrayList<>(); // "index/total"
   private volatile int[] finished; // sent, existing, failed, host full (1/0)
   private volatile boolean waitedForLink;
   private volatile String status = ""; // the last status line, as "index/total name"
@@ -72,6 +73,7 @@ public class BluetoothFileTransferTest {
       }
       @Override public void onCompressing(int index, int total, String name, int percent) {
         status = "compressing " + index + "/" + total + " " + name;
+        if (!compressing.contains(index + "/" + total)) compressing.add(index + "/" + total);
       }
       @Override public void onWaitingForLink(int index, int total, String name) {
         status = index + "/" + total + " " + name;
@@ -410,7 +412,7 @@ public class BluetoothFileTransferTest {
     assertEquals(Arrays.asList("song.m4a"), Arrays.asList(landed.getParentFile().list()));
     assertEquals(Arrays.asList("A/song.flac"), requested);
     assertEquals(1, encodes.get());
-    assertEquals(0, encodedCopies());
+    await(() -> encodedCopies() == 0);
   }
 
   @Test
@@ -434,7 +436,7 @@ public class BluetoothFileTransferTest {
     assertArrayEquals(encoded, Files.readAllBytes(new File(targetRoot, "song.m4a").toPath()));
     assertEquals(1, encodes.get());
     assertEquals(encoded.length, wire.deliveredBytes.get());
-    assertEquals(0, encodedCopies());
+    await(() -> encodedCopies() == 0);
   }
 
   @Test
@@ -478,7 +480,53 @@ public class BluetoothFileTransferTest {
     assertArrayEquals(new int[]{0, 0, 0, 0}, finished);
     assertEquals(0, targetRoot.list().length);
     assertEquals(0, wire.deliveredBytes.get());
-    assertEquals(0, encodedCopies());
+    await(() -> encodedCopies() == 0);
+  }
+
+  @Test
+  public void theNextTrackIsEncodedWhileTheOneBeforeItIsSent() throws Exception {
+    File first = write(new File(sourceRoot, "one.flac"), randomBytes(100_000));
+    File second = write(new File(sourceRoot, "two.flac"), randomBytes(100_000));
+    List<String> encodedNames = new java.util.concurrent.CopyOnWriteArrayList<>();
+    sender.encoder = (ctx, uri, out, progress) -> {
+      encodedNames.add(uri.getLastPathSegment());
+      progress.step(50);
+      return writeQuietly(out, randomBytes(uri.getLastPathSegment().length() * 10_000));
+    };
+    wire.dropAfterChunks = 2;
+
+    sender.enqueue(Arrays.asList(compressed(job(first, "one.flac")), compressed(job(second, "two.flac"))));
+    // The first is stuck mid-send, and the second is ready behind it.
+    await(() -> waitedForLink);
+    await(() -> encodedNames.size() == 2 && encodedCopies() == 2);
+    assertEquals(Arrays.asList("one.flac", "two.flac"), encodedNames);
+    wire.reconnect();
+    awaitFinished();
+
+    assertArrayEquals(new int[]{2, 0, 0, 0}, finished);
+    assertTrue(new File(targetRoot, "one.m4a").isFile());
+    assertTrue(new File(targetRoot, "two.m4a").isFile());
+    assertEquals(Arrays.asList("one.flac", "two.flac"), requested);
+    // Only the first was waited for; the second never held the run up.
+    assertEquals(Arrays.asList("1/2"), compressing);
+    await(() -> encodedCopies() == 0);
+  }
+
+  @Test
+  public void stoppingDropsACopyMadeAhead() throws Exception {
+    File first = write(new File(sourceRoot, "one.flac"), randomBytes(100_000));
+    File second = write(new File(sourceRoot, "two.flac"), randomBytes(100_000));
+    sender.encoder = (ctx, uri, out, progress) -> writeQuietly(out, randomBytes(50_000));
+    wire.dropAfterChunks = 2;
+
+    sender.enqueue(Arrays.asList(compressed(job(first, "one.flac")), compressed(job(second, "two.flac"))));
+    await(() -> waitedForLink);
+    await(() -> encodedCopies() == 2);
+    sender.cancel();
+    awaitFinished();
+
+    assertArrayEquals(new int[]{0, 0, 0, 0}, finished);
+    await(() -> encodedCopies() == 0);
   }
 
   @Test

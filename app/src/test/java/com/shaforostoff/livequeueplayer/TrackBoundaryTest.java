@@ -151,6 +151,25 @@ public class TrackBoundaryTest {
         assertTrue(Service.sIsPlaying);
     }
 
+    /** The activity now also syncs edits made while paused; a resume must play on from them. */
+    @Test
+    public void setPendingQueueWhilePaused_thenResumeAndCompletion_playsTheEdit() {
+        persistQueue(1, 2);
+        playFromIndex(0, false);
+        prepareCurrent();
+        sendSelf(Launcher.PAUSE);
+        persistQueue(1, 10);
+        Intent i = selfIntent(Launcher.SET_PENDING_QUEUE);
+        i.putExtra(Service.EXTRA_CURRENT_ENTRY_ID, 1);
+        service.onStartCommand(i, 0, nextId());
+        sendSelf(Launcher.PLAY);
+        invariants();
+
+        service.onMediaPlayerComplete();
+        invariants();
+        assertEquals(10, Service.sCurrentEntryId);
+    }
+
     @Test
     public void setPendingQueue_withThePlayingRowGone_leavesPendingAlone() {
         persistQueue(1, 2);

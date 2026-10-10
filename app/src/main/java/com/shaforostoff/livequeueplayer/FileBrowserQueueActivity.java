@@ -1800,14 +1800,14 @@ public class FileBrowserQueueActivity extends Activity {
         ensureQueueTagsCachedAsync();
 
         // Keep the running service queue aligned with the visible queue.
-        if (Service.sIsPlaying && !isStopFadeInProgress()) {
+        if (trackLoaded()) {
             syncServicePendingQueue();
         }
     }
 
     private boolean removeQueueAt(int position) {
         if (position < 0 || position >= queueEntries.size()) return false;
-        if (position == currentPlayingQueueIndex && isPlaybackActiveOrFading()) {
+        if (position == currentPlayingQueueIndex && trackLoaded()) {
             return false;
         }
         if (anchorEntryId > 0 && queueEntries.get(position).id == anchorEntryId) {
@@ -1815,7 +1815,7 @@ public class FileBrowserQueueActivity extends Activity {
             persistAnchor();
         }
         queueEntries.remove(position);
-        boolean playbackActive = isPlaybackActiveOrFading();
+        boolean playbackActive = trackLoaded();
         if (playbackActive && currentPlayingQueueIndex >= 0 && position <= currentPlayingQueueIndex) {
             if (currentPlayingQueueIndex == position) {
                 currentPlayingQueueIndex = -1;
@@ -1833,7 +1833,7 @@ public class FileBrowserQueueActivity extends Activity {
         queueAdapter.notifyDataSetChanged();
         updateQueueHint();
         persistQueue();
-        if (Service.sIsPlaying && !isStopFadeInProgress()) {
+        if (trackLoaded()) {
             syncServicePendingQueue();
         }
         return true;
@@ -1900,7 +1900,7 @@ public class FileBrowserQueueActivity extends Activity {
     }
 
     private void syncServicePendingQueue() {
-        if (currentPlayingQueueIndex < 0) {
+        if (currentPlayingQueueIndex < 0 || !canSendServiceIntents()) {
             return;
         }
 
@@ -2015,7 +2015,7 @@ public class FileBrowserQueueActivity extends Activity {
     private void onQueueDragDropped() {
         queueAdapter.notifyDataSetChanged();
         persistQueue();
-        if (Service.sIsPlaying && !isStopFadeInProgress()) {
+        if (trackLoaded()) {
             syncServicePendingQueue();
         }
         notifyRemoteQueueChanged();
@@ -2736,7 +2736,7 @@ public class FileBrowserQueueActivity extends Activity {
         if (fromPos < 0 || toPos < 0 || toPos >= queueEntries.size()) return;
         moveQueueItem(fromPos, toPos);
         persistQueue();
-        if (Service.sIsPlaying && !isStopFadeInProgress()) syncServicePendingQueue();
+        if (trackLoaded()) syncServicePendingQueue();
     }
 
     private void handleRemoteRemoveTrack(JSONObject obj) {
@@ -3342,6 +3342,14 @@ public class FileBrowserQueueActivity extends Activity {
 
     private boolean isPlaybackActiveOrFading() {
         return Service.sIsPlaying || isStopFadeInProgress() || isQueueTransitionActive();
+    }
+
+    /**
+     * The Service holds a track (playing, fading or paused), and with it a pending list that queue
+     * edits must reach: a resume, or a cancelled fade, plays on from that list.
+     */
+    private boolean trackLoaded() {
+        return isPlaybackActiveOrFading() || isPlaybackPaused();
     }
 
     private boolean hasBrowseBehavior() {

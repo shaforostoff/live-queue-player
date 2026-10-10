@@ -6,10 +6,12 @@ import android.media.AudioDeviceCallback;
 import android.media.AudioDeviceInfo;
 import android.media.AudioFormat;
 import android.media.AudioManager;
+import android.media.AudioRouting;
 import android.media.AudioTrack;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Handler;
+import android.os.HandlerThread;
 import android.os.Looper;
 
 import java.util.concurrent.atomic.AtomicInteger;
@@ -36,6 +38,12 @@ final class SilenceStreamer {
     static volatile long previewDurationMs;
 
     static volatile SilenceStreamer current;
+
+    /**
+     * Where routing changes are reported. Not the main thread: the topology callback that restarts
+     * the streamer runs there, and this must act before it, whatever the main thread is doing.
+     */
+    private static Handler sRoutingHandler;
 
     /**
      * Wake time a paused track may keep the streamer running while no activity is on screen. The
@@ -112,6 +120,16 @@ final class SilenceStreamer {
         }
 
         final AudioTrack trackRef = track;
+        // When the preview output goes (earbuds switched off, a cable pulled), Android moves this
+        // track to its default output — the room, if the main output is a cable. Mute it the moment
+        // it lands anywhere but the preview output; the topology callback then restarts or stops it.
+        AudioRouting.OnRoutingChangedListener onRerouted = router -> {
+            try {
+                trackRef.setVolume(onPreviewOutput(router.getRoutedDevice(), secondary, secondaryIsDefault) ? 1f : 0f);
+            } catch (Exception ignored) {
+            }
+        };
+        track.addOnRoutingChangedListener(onRerouted, routingHandler());
         audioTrack = track;
         final int bufSize = minBuffer * 4;
         running = true;
@@ -188,12 +206,33 @@ final class SilenceStreamer {
             // Clear the shared reference before releasing so a concurrent reader (the decoder-init
             // thread, the UI thread) never touches a released track.
             audioTrack = null;
+            trackRef.removeOnRoutingChangedListener(onRerouted);
             try { trackRef.stop(); } catch (IllegalStateException ignored) {}
             trackRef.release();
             if (died) onStreamerDied();
         }, "SilenceStreamer");
         thread.setDaemon(true);
         thread.start();
+    }
+
+    /**
+     * Whether a track routed to {@code routed} plays where previews belong: the pinned preview
+     * output, or on Android 13 and older (where Bluetooth can't be pinned) any Bluetooth output.
+     * An unknown route counts as fine: muting on it could silence a healthy preview.
+     */
+    static boolean onPreviewOutput(AudioDeviceInfo routed, AudioDeviceInfo secondary, boolean secondaryIsDefault) {
+        if (routed == null) return true;
+        if (secondary != null) return AudioOutputRouter.contains(new AudioDeviceInfo[]{routed}, secondary);
+        return !secondaryIsDefault || AudioOutputRouter.isBluetooth(routed);
+    }
+
+    private static synchronized Handler routingHandler() {
+        if (sRoutingHandler == null) {
+            HandlerThread thread = new HandlerThread("SilenceStreamer-routing");
+            thread.start();
+            sRoutingHandler = new Handler(thread.getLooper());
+        }
+        return sRoutingHandler;
     }
 
     void stop() {

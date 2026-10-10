@@ -64,6 +64,19 @@ public class AudioOutputRouterTest {
         assertNull(AudioOutputRouter.sResolvedMain);
     }
 
+    /** The preview stream is muted the moment it lands anywhere but the preview output. */
+    @Test
+    public void previewRerouted_offThePreviewOutput_isNotOnIt() {
+        // Pinned to wired earbuds: falling to the Bluetooth main (or the speaker) is a leak.
+        assertTrue(SilenceStreamer.onPreviewOutput(wired, wired, false));
+        assertFalse(SilenceStreamer.onPreviewOutput(bluetooth, wired, false));
+        // Android 13: Bluetooth earbuds can't be pinned, so the cable to the mixer is the leak.
+        assertTrue(SilenceStreamer.onPreviewOutput(bluetooth, null, true));
+        assertFalse(SilenceStreamer.onPreviewOutput(wired, null, true));
+        assertTrue("an unknown route must not silence a preview",
+                SilenceStreamer.onPreviewOutput(null, wired, false));
+    }
+
     private static AudioDeviceInfo device(int type) {
         return AudioDeviceInfoBuilder.newBuilder().setType(type).build();
     }

@@ -198,6 +198,10 @@ final class AudioOutputRouter {
         );
     }
 
+    static boolean isBluetooth(AudioDeviceInfo device) {
+        return findBluetooth(new AudioDeviceInfo[]{device}) != null;
+    }
+
     private static boolean isBluetoothConnected(AudioManager am, AudioDeviceInfo[] outputs) {
         return findBluetooth(outputs) != null;
     }

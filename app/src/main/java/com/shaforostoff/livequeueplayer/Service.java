@@ -980,6 +980,17 @@ public class Service extends android.service.media.MediaBrowserService {
                 + " playlist.size=" + size + " sIsPlaying=" + sIsPlaying + " hasPlayer=" + hasPlayer + "]");
     }
 
+    /**
+     * The output {@code reporter}'s track plays to went away (a cable pulled, a speaker dropped).
+     * Pause, as the PAUSE command does, rather than play on out of whatever Android falls back to:
+     * the DJ's earbuds or the phone speaker.
+     */
+    void onMainOutputLost(PlaybackEngine reporter) {
+        if (reporter != audioPlayer || !sIsPlaying) return;
+        setState(false);
+        notifyPlaybackState(false, sCurrentIndex, sCurrentUri);
+    }
+
     void onAudioFocusLoss(int currentPositionMs) {
         releasePlaybackWakeLock();
         hwListener.setState(false);

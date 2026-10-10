@@ -118,6 +118,33 @@ public class TrackBoundaryTest {
     }
 
     @Test
+    public void mainOutputLost_pausesAndPlayResumesTheSameTrack() {
+        startQueue(2);
+        prepareCurrent();
+        FakeEngine track0 = service.lastEngine;
+
+        service.onMainOutputLost(track0);  // the cable to the mixer is pulled
+        invariants();
+        assertFalse(Service.sIsPlaying);
+        assertFalse(track0.started);
+        assertEquals(0, Service.sCurrentIndex);
+
+        sendSelf(Launcher.PLAY);
+        invariants();
+        assertTrue("resume must reuse the paused player", track0.started && track0 == service.lastEngine);
+    }
+
+    @Test
+    public void mainOutputLost_fromASupersededPlayer_isIgnored() {
+        startQueue(2);
+        FakeEngine track0 = service.lastEngine;
+        sendSelf(Launcher.SKIP);
+        prepareCurrent();
+        service.onMainOutputLost(track0);
+        assertTrue(Service.sIsPlaying);
+    }
+
+    @Test
     public void stopFadeRacingCompletion_doesNotAdvance() {
         startQueue(2);
         prepareCurrent();

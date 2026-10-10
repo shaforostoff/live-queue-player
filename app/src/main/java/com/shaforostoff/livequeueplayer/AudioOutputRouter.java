@@ -22,6 +22,8 @@ final class AudioOutputRouter {
     static volatile AudioDeviceInfo sResolvedPrimary;
     static volatile AudioDeviceInfo sResolvedSecondary;
     static volatile boolean sResolvedSecondaryIsDefault;
+    /** The output the main player plays to: the chosen one, or Android's default pick; null for the speaker. */
+    static volatile AudioDeviceInfo sResolvedMain;
 
     /**
      * Whether a second output was available when the current track started. The equalizer must stay
@@ -69,10 +71,11 @@ final class AudioOutputRouter {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) {
             sResolvedPrimary = null;
             sResolvedSecondary = null;
+            sResolvedMain = null;
             return;
         }
         AudioManager am = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
-        if (am == null) { sResolvedPrimary = null; sResolvedSecondary = null; return; }
+        if (am == null) { sResolvedPrimary = null; sResolvedSecondary = null; sResolvedMain = null; return; }
 
         AudioDeviceInfo[] outputs = am.getDevices(AudioManager.GET_DEVICES_OUTPUTS);
         int preferred = getPreferredOutput(context);
@@ -116,9 +119,30 @@ final class AudioOutputRouter {
                 && Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE;
         if (secondaryIsDefault) secondary = null;
 
+        // Nothing pinned: Android's default routing takes Bluetooth first, then a cable.
+        AudioDeviceInfo main = primary;
+        if (main == null) {
+            for (AudioDeviceInfo candidate : new AudioDeviceInfo[]{bluetooth, wired, usb}) {
+                if (candidate != null && candidate != secondary) {
+                    main = candidate;
+                    break;
+                }
+            }
+        }
+
         sResolvedPrimary            = primary;
         sResolvedSecondary          = secondary;
         sResolvedSecondaryIsDefault = secondaryIsDefault;
+        sResolvedMain               = main;
+    }
+
+    /** Whether {@code device} is among {@code devices}; AudioManager hands out new objects each time. */
+    static boolean contains(AudioDeviceInfo[] devices, AudioDeviceInfo device) {
+        if (devices == null || device == null) return false;
+        for (AudioDeviceInfo d : devices) {
+            if (d.getId() == device.getId() && d.getType() == device.getType()) return true;
+        }
+        return false;
     }
 
     static void applyPreferredOutput(Context context, MediaPlayer player) {

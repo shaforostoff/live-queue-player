@@ -42,6 +42,8 @@ class AudioPlayer extends Thread implements MediaPlayer.OnCompletionListener, Pl
   private final Object fadeLock = new Object();
   private final float baseGain;
   private EqController equalizer;
+  // Main thread: the output this track plays to, as resolved when routing was last applied.
+  private AudioDeviceInfo mainOutput;
   private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
   /**
@@ -66,6 +68,9 @@ class AudioPlayer extends Thread implements MediaPlayer.OnCompletionListener, Pl
 
       @Override
       public void onAudioDevicesRemoved(AudioDeviceInfo[] removedDevices) {
+        if (!released && AudioOutputRouter.contains(removedDevices, mainOutput)) {
+          service.onMainOutputLost(AudioPlayer.this);
+        }
         reapplyPreferredOutput();
       }
     };
@@ -85,6 +90,7 @@ class AudioPlayer extends Thread implements MediaPlayer.OnCompletionListener, Pl
       mediaPlayer.setDataSource(service, location);
     }
     AudioOutputRouter.applyPreferredOutput(service, mediaPlayer);
+    mainOutput = AudioOutputRouter.sResolvedMain; // the Service resolved routing just before
     baseGain = new MetadataExtractor(service.getContentResolver()).readReplayGain(location);
 
     mediaPlayer.setAudioAttributes(
@@ -458,6 +464,7 @@ class AudioPlayer extends Thread implements MediaPlayer.OnCompletionListener, Pl
   private void reapplyPreferredOutput() {
     if (released || Build.VERSION.SDK_INT < Build.VERSION_CODES.P) return;
     AudioOutputRouter.resolve(service);
+    mainOutput = AudioOutputRouter.sResolvedMain;
     try {
       AudioOutputRouter.applyPreferredOutput(service, mediaPlayer);
     } catch (IllegalStateException ignored) {

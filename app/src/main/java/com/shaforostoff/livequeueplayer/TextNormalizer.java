@@ -41,15 +41,6 @@ final class TextNormalizer {
         return Normalizer.normalize(s, Normalizer.Form.NFC);
     }
 
-    /** True when c is a combining mark, i.e. the tilde/accent half of a decomposed letter. */
-    static boolean isCombiningMark(char c) {
-        if (c < 0x0300) return false;   // no combining marks below the combining-diacritics block
-        int type = Character.getType(c);
-        return type == Character.NON_SPACING_MARK
-                || type == Character.COMBINING_SPACING_MARK
-                || type == Character.ENCLOSING_MARK;
-    }
-
     /** Form-insensitive, case-sensitive equality. */
     static boolean equals(String a, String b) {
         if (a == null || b == null) return a == b;

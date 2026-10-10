@@ -18,7 +18,6 @@ import java.util.Arrays;
  */
 public class UnicodeFormTest {
 
-    private static final char TILDE = '̃';           // combining tilde
     private static final String NFC_NINO = "Niño";   // Niño, precomposed
     private static final String NFD_NINO = "Niño";  // Niño, n + combining tilde
     private static final String NFC_ANO  = "Año";    // Año, precomposed
@@ -98,14 +97,6 @@ public class UnicodeFormTest {
 
         // ASCII has only one spelling, so callers do exactly one lookup as before.
         assertEquals(1, TextNormalizer.variants("Nino.mp3").length);
-    }
-
-    @Test
-    public void combiningMarkDetection() {
-        assertTrue(TextNormalizer.isCombiningMark(TILDE));
-        assertTrue(TextNormalizer.isCombiningMark('́'));   // combining acute
-        assertFalse(TextNormalizer.isCombiningMark('ñ'));
-        assertFalse(TextNormalizer.isCombiningMark('n'));
     }
 
     // -- FuzzySearch ---------------------------------------------------------

@@ -29,6 +29,7 @@ import java.util.Random;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BooleanSupplier;
 
@@ -52,6 +53,7 @@ public class BluetoothFileTransferTest {
   private BluetoothFileSender sender;
   private BluetoothFileReceiver receiver;
   private final List<String> received = new ArrayList<>();
+  private final List<String> requested = new ArrayList<>(); // the path each landing stands in for
   private volatile int[] finished; // sent, existing, failed, host full (1/0)
   private volatile boolean waitedForLink;
   private volatile String status = ""; // the last status line, as "index/total name"
@@ -67,6 +69,9 @@ public class BluetoothFileTransferTest {
     sender.setCallback(new BluetoothFileSender.Callback() {
       @Override public void onProgress(int index, int total, String name, int percent) {
         status = index + "/" + total + " " + name;
+      }
+      @Override public void onCompressing(int index, int total, String name, int percent) {
+        status = "compressing " + index + "/" + total + " " + name;
       }
       @Override public void onWaitingForLink(int index, int total, String name) {
         status = index + "/" + total + " " + name;
@@ -384,7 +389,127 @@ public class BluetoothFileTransferTest {
     assertArrayEquals(theirs, Files.readAllBytes(new File(folder, "Ma\u00f1ana.mp3").toPath()));
   }
 
+  @Test
+  public void aCompressedTrackLandsAsM4aWhereTheOriginalWasAskedFor() throws Exception {
+    File source = write(new File(sourceRoot, "A/song.flac"), randomBytes(100_000));
+    byte[] encoded = randomBytes(30_000);
+    AtomicInteger encodes = new AtomicInteger();
+    sender.encoder = (ctx, uri, out, progress) -> {
+      encodes.incrementAndGet();
+      assertEquals(Uri.fromFile(source), uri);
+      progress.step(50);
+      return writeQuietly(out, encoded);
+    };
+
+    sender.enqueue(Arrays.asList(compressed(job(source, "A/song.flac"))));
+    awaitFinished();
+
+    assertArrayEquals(new int[]{1, 0, 0, 0}, finished);
+    File landed = new File(targetRoot, "A/song.m4a");
+    assertArrayEquals(encoded, Files.readAllBytes(landed.toPath()));
+    assertEquals(Arrays.asList("song.m4a"), Arrays.asList(landed.getParentFile().list()));
+    assertEquals(Arrays.asList("A/song.flac"), requested);
+    assertEquals(1, encodes.get());
+    assertEquals(0, encodedCopies());
+  }
+
+  @Test
+  public void aDroppedCompressedSendResumesTheSameCopy() throws Exception {
+    File source = write(new File(sourceRoot, "song.wav"), randomBytes(100_000));
+    byte[] encoded = randomBytes(60_000);
+    AtomicInteger encodes = new AtomicInteger();
+    sender.encoder = (ctx, uri, out, progress) -> {
+      encodes.incrementAndGet();
+      return writeQuietly(out, encoded);
+    };
+    wire.dropAfterChunks = 3;
+
+    sender.enqueue(Arrays.asList(compressed(job(source, "song.wav"))));
+    await(() -> waitedForLink);
+    assertEquals(1, encodedCopies()); // kept for the resume
+    wire.reconnect();
+    awaitFinished();
+
+    assertArrayEquals(new int[]{1, 0, 0, 0}, finished);
+    assertArrayEquals(encoded, Files.readAllBytes(new File(targetRoot, "song.m4a").toPath()));
+    assertEquals(1, encodes.get());
+    assertEquals(encoded.length, wire.deliveredBytes.get());
+    assertEquals(0, encodedCopies());
+  }
+
+  @Test
+  public void aTrackThatCanNotBeConvertedIsSentAsItIs() throws Exception {
+    byte[] audio = randomBytes(50_000);
+    File source = write(new File(sourceRoot, "odd.flac"), audio);
+    sender.encoder = (ctx, uri, out, progress) -> false;
+
+    sender.enqueue(Arrays.asList(compressed(job(source, "odd.flac"))));
+    awaitFinished();
+
+    assertArrayEquals(new int[]{1, 0, 0, 0}, finished);
+    assertArrayEquals(audio, Files.readAllBytes(new File(targetRoot, "odd.flac").toPath()));
+    assertEquals(Arrays.asList("odd.flac"), requested);
+  }
+
+  @Test
+  public void stoppingWhileConvertingSendsNothing() throws Exception {
+    File source = write(new File(sourceRoot, "long.flac"), randomBytes(50_000));
+    java.util.concurrent.CountDownLatch converting = new java.util.concurrent.CountDownLatch(1);
+    sender.encoder = (ctx, uri, out, progress) -> {
+      writeQuietly(out, new byte[10]);
+      converting.countDown();
+      for (int p = 0; p < 100_000; p++) {
+        if (!progress.step(p % 100)) return false;
+        try {
+          Thread.sleep(1);
+        } catch (InterruptedException e) {
+          return false;
+        }
+      }
+      throw new AssertionError("never told to stop");
+    };
+
+    sender.enqueue(Arrays.asList(compressed(job(source, "long.flac"))));
+    assertTrue(converting.await(10, TimeUnit.SECONDS));
+    assertTrue(sender.isPending("long.flac"));
+    sender.cancel();
+    awaitFinished();
+
+    assertArrayEquals(new int[]{0, 0, 0, 0}, finished);
+    assertEquals(0, targetRoot.list().length);
+    assertEquals(0, wire.deliveredBytes.get());
+    assertEquals(0, encodedCopies());
+  }
+
+  @Test
+  public void m4aNameReplacesOnlyTheFileNamesExtension() {
+    assertEquals("A/song.m4a", BluetoothFileSender.m4aName("A/song.flac"));
+    assertEquals("A.b/song.m4a", BluetoothFileSender.m4aName("A.b/song"));
+    assertEquals("x.y.m4a", BluetoothFileSender.m4aName("x.y.wav"));
+  }
+
   // -- helpers ---------------------------------------------------------------
+
+  private static BluetoothFileSender.Job compressed(BluetoothFileSender.Job job) {
+    job.compress = true;
+    return job;
+  }
+
+  private static boolean writeQuietly(File f, byte[] data) {
+    try {
+      write(f, data);
+      return true;
+    } catch (Exception e) {
+      return false;
+    }
+  }
+
+  /** Re-encoded copies left in the sender's cache folder. */
+  private int encodedCopies() {
+    String[] left = new File(context.getCacheDir(), "bt-send").list();
+    return left == null ? 0 : left.length;
+  }
+
 
   private interface SinkRef { BluetoothQueueBridge.FileSink get(); }
 
@@ -481,7 +606,10 @@ public class BluetoothFileTransferTest {
     StorageBrowser storage = new StorageBrowser(context);
     storage.listFolder(targetRoot);
     BluetoothFileReceiver r = new BluetoothFileReceiver(context, storage, link);
-    r.setCallback((name, path, uri) -> received.add(name + " " + uri.getPath()));
+    r.setCallback((name, path, uri) -> {
+      received.add(name + " " + uri.getPath());
+      requested.add(path);
+    });
     return r;
   }
 

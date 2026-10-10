@@ -34,7 +34,9 @@ import java.util.Map;
  * <p>Per file the client sends {@code file_begin {id, path, file, size}}, which this answers with
  * {@code file_ready {id, ok, offset, reason}}; on ok come binary chunks carrying the bytes from
  * {@code offset} on, then {@code file_end {id}}, answered with {@code file_done {id, ok}}. Everything
- * runs on the bridge's read thread, so disk writes pace the sender. An existing file is never
+ * runs on the bridge's read thread, so disk writes pace the sender. A file the client re-encoded
+ * before sending lands under its new name, and {@code file_begin} also names the {@code requested}
+ * path it stands in for: that is the path reported to {@link Callback#onFileReceived}. An existing file is never
  * overwritten. Only audio files are taken, never under a hidden name, and only while the volume
  * keeps {@link #minFreeAfter} free ({@code reason: "no_space"} otherwise).
  *
@@ -56,7 +58,7 @@ final class BluetoothFileReceiver implements BluetoothQueueBridge.FileSink {
     interface Callback {
         /**
          * On the UI thread, once a file has landed whole (or was already there). {@code path} is
-         * the root-relative path the client asked for.
+         * the root-relative path the client asked for: the original's, for a re-encoded file.
          */
         void onFileReceived(String name, String path, Uri uri);
     }
@@ -86,6 +88,7 @@ final class BluetoothFileReceiver implements BluetoothQueueBridge.FileSink {
     private Object parent;   // the target's folder: a DocFolder or a File
     private String targetName;
     private String targetPath;
+    private String requestedPath; // what targetPath stands in for, as reported on landing
     private long expected;
     private long written;    // the partial's length, including any resumed prefix
 
@@ -150,7 +153,8 @@ final class BluetoothFileReceiver implements BluetoothQueueBridge.FileSink {
         int id = obj.optInt("id", -1);
         switch (type) {
             case "file_begin":
-                begin(id, obj.optString("path", ""), obj.optString("file", ""), obj.optLong("size", -1));
+                begin(id, obj.optString("path", ""), obj.optString("file", ""), obj.optLong("size", -1),
+                        obj.optString("requested", ""));
                 break;
             case "file_end":
                 end(id);
@@ -209,8 +213,9 @@ final class BluetoothFileReceiver implements BluetoothQueueBridge.FileSink {
         partFile = null;
     }
 
-    private void begin(int id, String path, String file, long size) {
+    private void begin(int id, String path, String file, long size, String requested) {
         onLinkLost(); // whatever was open is not what this begins
+        requestedPath = requested.isEmpty() ? null : requested; // open() defaults it to the target
         String reason = open(path.isEmpty() ? file : path, size);
         if (reason == null) currentId = id;
         long offset = reason == null ? written : 0;
@@ -229,6 +234,7 @@ final class BluetoothFileReceiver implements BluetoothQueueBridge.FileSink {
         }
         targetName = segments.get(segments.size() - 1);
         targetPath = String.join("/", segments);
+        if (requestedPath == null) requestedPath = targetPath;
         if (!isAudioName(targetName)) {
             dropRecordedPartial();
             return "not_audio";
@@ -276,7 +282,7 @@ final class BluetoothFileReceiver implements BluetoothQueueBridge.FileSink {
         if (existing != null) {
             if (repeatsLanded) return "done";
             dropRecordedPartial();
-            deliver(targetName, targetPath, existing);
+            deliver(targetName, requestedPath, existing);
             return "exists";
         }
         Uri part = dir.child(partName);
@@ -317,7 +323,7 @@ final class BluetoothFileReceiver implements BluetoothQueueBridge.FileSink {
         if (target.exists()) {
             if (repeatsLanded) return "done";
             dropRecordedPartial();
-            deliver(targetName, targetPath, Uri.fromFile(target));
+            deliver(targetName, requestedPath, Uri.fromFile(target));
             return "exists";
         }
         if (!dir.isDirectory() && !dir.mkdirs()) return "no_folder";
@@ -440,7 +446,7 @@ final class BluetoothFileReceiver implements BluetoothQueueBridge.FileSink {
             currentId = -1;
             landedKey = TextNormalizer.compose(targetPath);
             landedSize = expected;
-            deliver(targetName, targetPath, landed);
+            deliver(targetName, requestedPath, landed);
         } else if (id == currentId) {
             dropActive(); // short, failed to write, or failed to rename: not worth resuming
         }

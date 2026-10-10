@@ -73,7 +73,10 @@
   <string name="transfer_missing_one">\"%1$s\" (%2$s) non è stato trovato lì. Inviarlo via Bluetooth? Viene salvato nella stessa cartella, relativa alla cartella musicale del dispositivo remoto.</string>
   <string name="transfer_missing_many">%1$d tracce (%2$s) non sono state trovate lì. Inviarle via Bluetooth? Ognuna viene salvata nella stessa cartella, relativa alla cartella musicale del dispositivo remoto.</string>
   <string name="transfer_send">Invia</string>
+  <string name="transfer_send_compressed">Compresso</string>
+  <string name="transfer_compressed_note">\n\nCompresso, come AAC a 128 kbit/s salvato come .m4a: circa %s.</string>
   <string name="transfer_progress">Invio %1$d/%2$d: %3$s · %4$d%%</string>
+  <string name="transfer_compressing">Compressione %1$d/%2$d: %3$s · %4$d%%</string>
   <string name="transfer_waiting">Connessione persa, riprenderà %1$d/%2$d: %3$s</string>
   <string name="transfer_stop_title">Interrompere l\'invio dei file?</string>
   <string name="transfer_stop">Interrompi</string>

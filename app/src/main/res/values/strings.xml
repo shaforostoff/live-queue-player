@@ -77,7 +77,10 @@
   <string name="transfer_missing_one">\"%1$s\" (%2$s) was not found there. Send it over Bluetooth? It is saved in the same folder, relative to the remote\'s music folder.</string>
   <string name="transfer_missing_many">%1$d tracks (%2$s) were not found there. Send them over Bluetooth? Each is saved in the same folder, relative to the remote\'s music folder.</string>
   <string name="transfer_send">Send</string>
+  <string name="transfer_send_compressed">Compressed</string>
+  <string name="transfer_compressed_note">\n\nCompressed, as AAC at 128 kbit/s saved as .m4a: about %s.</string>
   <string name="transfer_progress">Sending %1$d/%2$d: %3$s · %4$d%%</string>
+  <string name="transfer_compressing">Compressing %1$d/%2$d: %3$s · %4$d%%</string>
   <string name="transfer_waiting">Connection lost, will resume %1$d/%2$d: %3$s</string>
   <string name="transfer_stop_title">Stop sending files?</string>
   <string name="transfer_stop">Stop</string>

@@ -33,6 +33,11 @@ import java.util.concurrent.TimeUnit;
  * file up; a connect with nothing to resume tells the host so ({@code file_abort} without an id),
  * letting it delete a leftover partial. A host that is out of space ends the run.
  *
+ * <p>A job marked {@link Job#compress} is re-encoded to AAC first (see {@link AacTranscoder}) and
+ * lands as an .m4a beside where the original would have; {@code file_begin} then also carries the
+ * {@code requested} path, so the host places it where the original was asked for. The encoded copy
+ * is made once and kept until the job is done, so a resume sends the same bytes.
+ *
  * <p>A partial wake lock is held while bytes are moving, so a transfer keeps going after the screen
  * times out; it is let go while waiting for the link. {@link FileTransferService} keeps the
  * process from being frozen when the user switches away: it runs while a run is in flight, and
@@ -44,7 +49,9 @@ final class BluetoothFileSender implements BluetoothQueueBridge.FileSink {
         final Uri uri;
         final String path;
         final String name;
+        boolean compress; // re-encode to AAC before sending
         int generation; // the cancel generation it was queued in; a cancel orphans it
+        File encoded;   // worker only: the AAC copy, once made
 
         Job(Uri uri, String path, String name) {
             this.uri = uri;
@@ -59,6 +66,8 @@ final class BluetoothFileSender implements BluetoothQueueBridge.FileSink {
          * total grows when more are queued mid-run, and the line is then shown again with it.
          */
         void onProgress(int index, int total, String name, int percent);
+        /** UI thread, while {@code name} is being re-encoded before it is sent. */
+        void onCompressing(int index, int total, String name, int percent);
         /** UI thread, when the link goes down with {@code name} still to finish. */
         void onWaitingForLink(int index, int total, String name);
         /**
@@ -80,11 +89,19 @@ final class BluetoothFileSender implements BluetoothQueueBridge.FileSink {
     // the CPU up for good.
     private static final long WAKE_TIMEOUT_MS = 2 * 60_000;
     private static final long WAKE_RENEW_MS = 30_000;
+    private static final String ENCODED_DIR = "bt-send";
+
+    /** Re-encodes a job's track; a test stands in a fake. */
+    interface Encoder {
+        boolean encode(Context context, Uri uri, File out, AacTranscoder.Progress progress);
+    }
 
     private final Context context;
     private final BluetoothFileLink link;
     private final Handler uiHandler = new Handler(Looper.getMainLooper());
     private final PowerManager.WakeLock wakeLock;
+    private final File encodedDir;
+    Encoder encoder = AacTranscoder::transcode; // package-private for a test
     private long wakeRenewedAt;
     private Callback callback;  // UI thread
     private Report lastStatus;  // UI thread: the last progress/waiting line, replayed on attach
@@ -97,7 +114,7 @@ final class BluetoothFileSender implements BluetoothQueueBridge.FileSink {
     // reconnect can never kill a file the worker just began on the new link.
     private final Object lock = new Object();
     private Thread worker;
-    private Job current; // begun, or waiting to be resumed; null between files
+    private Job current; // taken off the queue (being encoded, begun, or waiting to be resumed); null between files
     // Files in the current run, counting those queued after it started. Read when a status line
     // is shown, not when its file began, so a file queued mid-run updates the line in flight.
     private volatile int runTotal;
@@ -114,6 +131,11 @@ final class BluetoothFileSender implements BluetoothQueueBridge.FileSink {
         PowerManager pm = (PowerManager) this.context.getSystemService(Context.POWER_SERVICE);
         wakeLock = pm != null ? pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "LiveQueuePlayer:FileSend") : null;
         if (wakeLock != null) wakeLock.setReferenceCounted(false);
+        // Copies left by a process that died mid-run: nothing will resume them.
+        encodedDir = new File(this.context.getCacheDir(), ENCODED_DIR);
+        File[] stale = encodedDir.listFiles();
+        if (stale != null) for (File f : stale) //noinspection ResultOfMethodCallIgnored
+            f.delete();
     }
 
     /**
@@ -259,6 +281,7 @@ final class BluetoothFileSender implements BluetoothQueueBridge.FileSink {
                 }
                 if (job.generation != generation) continue;
                 at = ++runIndex;
+                current = job; // pending from here on, through its re-encoding
             }
             Result result;
             while ((result = sendAwake(job, at)) == Result.INTERRUPTED) {
@@ -271,6 +294,11 @@ final class BluetoothFileSender implements BluetoothQueueBridge.FileSink {
             synchronized (lock) {
                 current = null;
                 currentId = -1;
+            }
+            if (job.encoded != null) {
+                //noinspection ResultOfMethodCallIgnored
+                job.encoded.delete();
+                job.encoded = null;
             }
             if (result == Result.SENT) sent++;
             else if (result == Result.EXISTING) existing++;
@@ -324,16 +352,24 @@ final class BluetoothFileSender implements BluetoothQueueBridge.FileSink {
     }
 
     private Result sendOne(Job job, int index) {
+        if (job.compress && job.encoded == null && !encode(job, index)) {
+            if (job.generation != generation) return Result.CANCELLED;
+            job.compress = false; // it can't be converted here: send it as it is
+        }
         int epoch = linkEpoch;
         int id = nextId++;
-        long size = sizeOf(job.uri);
-        try (InputStream in = context.getContentResolver().openInputStream(job.uri)) {
+        Uri source = job.encoded != null ? Uri.fromFile(job.encoded) : job.uri;
+        String path = job.encoded != null ? m4aName(job.path) : job.path;
+        String name = job.encoded != null ? m4aName(job.name) : job.name;
+        long size = sizeOf(source);
+        try (InputStream in = context.getContentResolver().openInputStream(source)) {
             if (in == null) return Result.FAILED;
             synchronized (lock) {
                 if (job.generation != generation) return Result.CANCELLED;
                 current = job;
                 currentId = id;
-                if (!link.send("file_begin", "id", id, "path", job.path, "file", job.name, "size", size)) {
+                if (!link.send("file_begin", "id", id, "path", path, "file", name, "size", size,
+                        "requested", path.equals(job.path) ? null : job.path)) {
                     return interruption(epoch);
                 }
             }
@@ -377,6 +413,33 @@ final class BluetoothFileSender implements BluetoothQueueBridge.FileSink {
             link.send("file_abort", "id", id);
             return Result.FAILED;
         }
+    }
+
+    /** Re-encodes {@code job} into {@link #encodedDir}; false if cancelled or it can't be done. */
+    private boolean encode(Job job, int index) {
+        //noinspection ResultOfMethodCallIgnored
+        encodedDir.mkdirs();
+        File out = new File(encodedDir, nextId + ".m4a");
+        report(cb -> cb.onCompressing(index, runTotal, job.name, 0));
+        boolean ok = encoder.encode(context, job.uri, out, percent -> {
+            keepAwake();
+            report(cb -> cb.onCompressing(index, runTotal, job.name, percent));
+            return job.generation == generation;
+        });
+        if (ok && job.generation == generation && out.length() > 0) {
+            job.encoded = out;
+            return true;
+        }
+        //noinspection ResultOfMethodCallIgnored
+        out.delete();
+        return false;
+    }
+
+    /** {@code path} with its file name's extension, if any, replaced by .m4a. */
+    static String m4aName(String path) {
+        int slash = path.lastIndexOf('/');
+        int dot = path.lastIndexOf('.');
+        return (dot > slash + 1 ? path.substring(0, dot) : path) + ".m4a";
     }
 
     /** A send that failed on a dead link is resumable; one that failed on a live link is not. */

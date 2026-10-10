@@ -143,6 +143,15 @@ public final class FileTransferService extends android.app.Service implements Bl
     }
 
     @Override
+    public void onCompressing(int index, int total, String name, int percent) {
+        long now = SystemClock.elapsedRealtime();
+        if (now - notifiedAt < UPDATE_INTERVAL_MS) return;
+        builder.setContentText(getString(R.string.transfer_compressing, index, total, name, percent))
+                .setProgress(100, percent, false);
+        notifyAt(now);
+    }
+
+    @Override
     public void onWaitingForLink(int index, int total, String name) {
         builder.setContentText(getString(R.string.transfer_waiting, index, total, name))
                 .setProgress(0, 0, true);

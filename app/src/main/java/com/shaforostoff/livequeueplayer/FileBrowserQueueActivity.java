@@ -3077,7 +3077,8 @@ public class FileBrowserQueueActivity extends Activity {
 
     /**
      * Offers to push the tracks the host reported missing, to the same root-relative paths there.
-     * They are looked up here first (off the UI thread), so the offer can say how much it is.
+     * They are looked up here first (off the UI thread), so the offer can say how much it is. When
+     * some are above {@link AacTranscoder#WORTH_ABOVE_BPS} it also offers them compressed.
      */
     private void offerMissingTransfer(JSONArray missing) {
         if (missing.length() == 0 || fileSender == null) return;
@@ -3086,7 +3087,9 @@ public class FileBrowserQueueActivity extends Activity {
         new Thread(() -> {
             // The host was sent paths relative to this device's root, so they resolve straight back.
             List<BluetoothFileSender.Job> jobs = new ArrayList<>(missing.length());
+            List<BluetoothFileSender.Job> compressible = new ArrayList<>();
             long totalBytes = 0;
+            long compressedBytes = 0; // the whole batch with the compressible ones compressed
             int unavailable = 0;
             for (int i = 0; i < missing.length(); i++) {
                 JSONObject item = missing.optJSONObject(i);
@@ -3100,12 +3103,21 @@ public class FileBrowserQueueActivity extends Activity {
                     unavailable++;
                     continue;
                 }
-                jobs.add(new BluetoothFileSender.Job(uri, path, item.optString("file", path)));
+                BluetoothFileSender.Job job = new BluetoothFileSender.Job(uri, path, item.optString("file", path));
+                jobs.add(job);
                 long size = BluetoothFileSender.sizeOf(this, uri);
                 if (size > 0) totalBytes += size;
+                long durationMs = AacTranscoder.durationMs(this, uri);
+                if (AacTranscoder.worthCompressing(size, durationMs)) {
+                    compressible.add(job);
+                    compressedBytes += AacTranscoder.estimatedSize(durationMs);
+                } else if (size > 0) {
+                    compressedBytes += size;
+                }
             }
             final int fUnavailable = unavailable;
             final long fTotal = totalBytes;
+            final long fCompressed = compressedBytes;
             runOnUiThread(() -> {
                 if (isDestroyed()) return;
                 if (fUnavailable > 0) {
@@ -3116,12 +3128,22 @@ public class FileBrowserQueueActivity extends Activity {
                 String message = jobs.size() == 1
                         ? getString(R.string.transfer_missing_one, jobs.get(0).name, size)
                         : getString(R.string.transfer_missing_many, jobs.size(), size);
-                new AlertDialog.Builder(this)
+                if (!compressible.isEmpty()) {
+                    message += getString(R.string.transfer_compressed_note,
+                            Formatter.formatShortFileSize(this, fCompressed));
+                }
+                AlertDialog.Builder offer = new AlertDialog.Builder(this)
                         .setTitle(R.string.transfer_missing_title)
                         .setMessage(message)
                         .setPositiveButton(R.string.transfer_send, (d, w) -> sender.enqueue(jobs))
-                        .setNegativeButton(android.R.string.cancel, null)
-                        .show();
+                        .setNegativeButton(android.R.string.cancel, null);
+                if (!compressible.isEmpty()) {
+                    offer.setNeutralButton(R.string.transfer_send_compressed, (d, w) -> {
+                        for (BluetoothFileSender.Job job : compressible) job.compress = true;
+                        sender.enqueue(jobs);
+                    });
+                }
+                offer.show();
             });
         }).start();
     }
@@ -3129,6 +3151,12 @@ public class FileBrowserQueueActivity extends Activity {
     private void onFileTransferProgress(int index, int total, String name, int percent) {
         if (remoteTransferStatus == null) return;
         remoteTransferStatus.setText(getString(R.string.transfer_progress, index, total, name, percent));
+        remoteTransferStatus.setVisibility(View.VISIBLE);
+    }
+
+    private void onFileTransferCompressing(int index, int total, String name, int percent) {
+        if (remoteTransferStatus == null) return;
+        remoteTransferStatus.setText(getString(R.string.transfer_compressing, index, total, name, percent));
         remoteTransferStatus.setVisibility(View.VISIBLE);
     }
 
@@ -3371,6 +3399,9 @@ public class FileBrowserQueueActivity extends Activity {
             fileSender.setCallback(new BluetoothFileSender.Callback() {
                 @Override public void onProgress(int index, int total, String name, int percent) {
                     onFileTransferProgress(index, total, name, percent);
+                }
+                @Override public void onCompressing(int index, int total, String name, int percent) {
+                    onFileTransferCompressing(index, total, name, percent);
                 }
                 @Override public void onWaitingForLink(int index, int total, String name) {
                     onFileTransferWaiting(index, total, name);

@@ -3,22 +3,16 @@ package com.shaforostoff.livequeueplayer;
 import android.content.Context;
 import android.net.Uri;
 import java.io.File;
-import java.io.FileNotFoundException;
-import java.io.IOException;
-import java.io.InputStream;
 import java.util.Locale;
-import java.util.Scanner;
 
 final class ServicePlaylistGenerator {
 
     private final Context context;
     private final ServicePlaylist playlist;
-    private final M3UParser m3UParser;
 
     ServicePlaylistGenerator(Context context, ServicePlaylist playlist) {
         this.context = context;
         this.playlist = playlist;
-        this.m3UParser = new M3UParser(context, this);
     }
 
     private static boolean isM3uUri(Uri location) {
@@ -52,8 +46,7 @@ final class ServicePlaylistGenerator {
 
     private void generate(String title, Uri location) {
         if (isM3uUri(location)) {
-            // special processing if it is a m3u file
-            m3UParser.parse(location);
+            addPlaylist(location);
             return;
         }
 
@@ -68,64 +61,22 @@ final class ServicePlaylistGenerator {
         playlist.add(entry);
     }
 
-    public static final class M3UParser {
-
-        private final Context context;
-        private final ServicePlaylistGenerator generator;
-
-        M3UParser(Context context, ServicePlaylistGenerator generator) {
-            this.context = context;
-            this.generator = generator;
+    /**
+     * The playlist's tracks, resolved as the file browser resolves them. A content:// playlist (an
+     * "Open with" from a file manager) has no folder to resolve relative lines against, so only its
+     * absolute URIs play. Nested playlists are skipped, as in the browser: one that lists itself
+     * would otherwise recurse until the stack overflows.
+     */
+    private void addPlaylist(Uri m3u) {
+        PlaylistResolver resolver = new PlaylistResolver(context.getContentResolver(), null, null);
+        File file = "file".equals(m3u.getScheme()) && m3u.getPath() != null ? new File(m3u.getPath()) : null;
+        int sizeBefore = playlist.size();
+        for (String line : resolver.readLines(m3u)) {
+            Uri target = resolver.resolveTargetUri(file, m3u, line);
+            if (target != null && !isM3uUri(target)) generate(PlaylistResolver.displayName(line), target);
         }
-
-        void parse(Uri m3uLocation) {
-            // Runs inside the Service's onStartCommand: an exception escaping here (an opaque URI
-            // with no path, a provider returning no stream) would crash the process.
-            try {
-                if ("content".equals(m3uLocation.getScheme())) {
-                    InputStream in = context.getContentResolver().openInputStream(m3uLocation);
-                    if (in == null) throw new FileNotFoundException();
-                    try (Scanner scanner = new Scanner(in)) {
-                        parse(scanner, null);
-                    }
-                } else {
-                    File m3uFile = new File(m3uLocation.getPath());
-                    try (Scanner scanner = new Scanner(m3uFile)) {
-                        parse(scanner, m3uFile.getParentFile());
-                    }
-                }
-            } catch (IOException | RuntimeException e) {
-                Exceptions.throwError(context, "File not found!\nLocation: " + m3uLocation);
-            }
-        }
-
-        private Uri resolveLocation(String line, File baseDir) {
-            Uri uri = Uri.parse(line);
-            if (uri.getScheme() == null && baseDir != null && !line.startsWith("/")) {
-                return Uri.fromFile(new File(baseDir, line.replace('\\', '/')).toPath().normalize().toFile());
-            }
-            return uri;
-        }
-
-        private void parse(Scanner input, File baseDir) {
-            while (input.hasNextLine()) {
-                var line = input.nextLine().trim();
-                if (line.length() == 0)
-                    continue;
-                var entry = new ServicePlaylist.Entry();
-                if (line.startsWith("#EXTINF:")) {
-                    if (!input.hasNextLine()) break; // truncated playlist: dangling #EXTINF
-                    var infoAndName = line.split(",");
-                    entry.title = infoAndName[infoAndName.length - 1];
-                    entry.location = resolveLocation(input.nextLine().trim(), baseDir);
-                    generator.generate(entry.title, entry.location);
-                } else if (!line.startsWith("#")) {
-                    entry.title = new File(line).getName();
-                    entry.location = resolveLocation(line, baseDir);
-                    generator.generate(entry.title, entry.location);
-                }
-            }
+        if (playlist.size() == sizeBefore) {
+            Exceptions.throwError(context, context.getString(R.string.no_playable_files_in_playlist, titleFor(m3u)));
         }
     }
 }
-

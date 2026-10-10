@@ -102,7 +102,7 @@ final class ServicePlaylistGenerator {
         private Uri resolveLocation(String line, File baseDir) {
             Uri uri = Uri.parse(line);
             if (uri.getScheme() == null && baseDir != null && !line.startsWith("/")) {
-                return Uri.fromFile(new File(baseDir, line).toPath().normalize().toFile());
+                return Uri.fromFile(new File(baseDir, line.replace('\\', '/')).toPath().normalize().toFile());
             }
             return uri;
         }

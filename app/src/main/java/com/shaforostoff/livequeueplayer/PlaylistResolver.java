@@ -77,6 +77,8 @@ final class PlaylistResolver {
         }
 
         if (playlistFile != null) {
+            // foobar2000 on Windows writes "Artist\song.flac"; a backslash is no separator here.
+            pathValue = pathValue.replace('\\', '/');
             File playlistDir = playlistFile.getParentFile();
             // A playlist written on macOS spells accents decomposed ("n" + combining tilde) where
             // the file on this device is precomposed (or the reverse), and File.exists() is a

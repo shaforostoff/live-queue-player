@@ -55,6 +55,15 @@
         a:textSize="14sp" />
 
       <Button
+        a:id="@+id/btn_preview_volume"
+        a:layout_width="wrap_content"
+        a:layout_height="wrap_content"
+        a:layout_margin="4dp"
+        a:text="@string/remote_volume_button"
+        a:textSize="14sp"
+        a:visibility="gone" />
+
+      <Button
         a:id="@+id/btn_stop_browser"
         a:layout_width="wrap_content"
         a:layout_height="wrap_content"

@@ -18,6 +18,7 @@ final class AudioOutputRouter {
     private static final String KEY_OUTPUT = "preferred_output";
     private static final String KEY_FADE_OUT_SECONDS = "fade_out_seconds";
     static final int DEFAULT_FADE_OUT_SECONDS = 5;
+    private static final String KEY_PREVIEW_VOLUME = "preview_volume";
 
     static volatile AudioDeviceInfo sResolvedPrimary;
     static volatile AudioDeviceInfo sResolvedSecondary;
@@ -64,6 +65,16 @@ final class AudioOutputRouter {
     static void setFadeOutSeconds(Context context, int seconds) {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
                .edit().putInt(KEY_FADE_OUT_SECONDS, seconds).apply();
+    }
+
+    static int getPreviewVolume(Context context) {
+        return context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .getInt(KEY_PREVIEW_VOLUME, SilenceStreamer.PREVIEW_VOLUME_STEPS);
+    }
+
+    static void setPreviewVolume(Context context, int step) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+               .edit().putInt(KEY_PREVIEW_VOLUME, step).apply();
     }
 
     /** Snapshot getDevices() once and derive both primary and secondary from the same list. */

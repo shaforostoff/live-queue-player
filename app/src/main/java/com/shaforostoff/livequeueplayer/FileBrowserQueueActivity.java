@@ -27,6 +27,7 @@ import android.provider.MediaStore;
 import android.util.TypedValue;
 import android.graphics.Rect;
 import android.graphics.drawable.ClipDrawable;
+import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.LayerDrawable;
@@ -40,6 +41,7 @@ import android.widget.EditText;
 import android.widget.BaseAdapter;
 import android.widget.Button;
 import android.widget.ListView;
+import android.widget.PopupWindow;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -163,6 +165,7 @@ public class FileBrowserQueueActivity extends Activity {
     private int anchorEntryId = 0;
     private Button stopButton;
     private Button browserStopButton;
+    private View previewVolumeButton;
     private Button sortButton;
     private Button openStorageButton;
     private View eqButton;
@@ -493,6 +496,8 @@ public class FileBrowserQueueActivity extends Activity {
             resetFileBrowserPreview();
             if (Service.sBrowseMode) stopPlaybackImmediately();
         });
+        previewVolumeButton = findViewById(R.id.btn_preview_volume);
+        previewVolumeButton.setOnClickListener(v -> showPreviewVolumePopup());
 
         // -- kick off storage permission + browse ----------------------------
         // Resume the exact folder first; only fall back to the tree root when there is nothing to
@@ -3303,6 +3308,29 @@ public class FileBrowserQueueActivity extends Activity {
                 && (mode == Mode.DJ || mode == Mode.REMOTE_SEND);
         boolean previewPlaying = fileBrowserPreviewingUri != null && mode == Mode.DJ;
         browserStopButton.setVisibility(browseServicePlaying || previewPlaying ? View.VISIBLE : View.GONE);
+        previewVolumeButton.setVisibility(previewPlaying ? View.VISIBLE : View.GONE);
+    }
+
+    /** Same ▲/▼ popup as the remote Volume button, but for the preview output's own gain. */
+    private void showPreviewVolumePopup() {
+        View content = LayoutInflater.from(this).inflate(R.layout.popup_volume_slider, null);
+        TextView valueText = content.findViewById(R.id.tv_volume_value);
+        valueText.setText(String.valueOf(AudioOutputRouter.getPreviewVolume(this)));
+        content.findViewById(R.id.btn_volume_up).setOnClickListener(v -> nudgePreviewVolume(1, valueText));
+        content.findViewById(R.id.btn_volume_down).setOnClickListener(v -> nudgePreviewVolume(-1, valueText));
+        PopupWindow popup = new PopupWindow(content,
+                (int) (64 * getResources().getDisplayMetrics().density), ViewGroup.LayoutParams.WRAP_CONTENT, true);
+        popup.setBackgroundDrawable(new ColorDrawable(0));
+        popup.setOutsideTouchable(true);
+        popup.showAsDropDown(previewVolumeButton);
+    }
+
+    private void nudgePreviewVolume(int delta, TextView valueText) {
+        int step = Math.max(0, Math.min(SilenceStreamer.PREVIEW_VOLUME_STEPS,
+                AudioOutputRouter.getPreviewVolume(this) + delta));
+        AudioOutputRouter.setPreviewVolume(this, step);
+        SilenceStreamer.setPreviewVolume(step);
+        valueText.setText(String.valueOf(step));
     }
 
     private void onFadeOutFinished() {

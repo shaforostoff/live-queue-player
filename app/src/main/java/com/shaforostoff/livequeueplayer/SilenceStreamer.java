@@ -39,6 +39,13 @@ final class SilenceStreamer {
 
     static volatile SilenceStreamer current;
 
+    static final int PREVIEW_VOLUME_STEPS = 15;
+    /**
+     * Preview loudness, applied as this track's own gain: Android has no public per-device volume,
+     * and the hardware keys move the main output's.
+     */
+    private static volatile float sPreviewGain = 1f;
+
     /**
      * Where routing changes are reported. Not the main thread: the topology callback that restarts
      * the streamer runs there, and this must act before it, whatever the main thread is doing.
@@ -64,6 +71,8 @@ final class SilenceStreamer {
     private volatile boolean running;
     private volatile boolean fadingOut;
     private volatile boolean pendingFlush;
+    /** False while Android has moved the track off the preview output; it stays muted then. */
+    private volatile boolean routedToPreview = true;
     private final AtomicReference<PcmDecoder> previewDecoder = new AtomicReference<>();
     /** Bumped on every start/stop so a slow background decode can detect it was superseded. */
     private final AtomicInteger previewGen = new AtomicInteger();
@@ -125,12 +134,14 @@ final class SilenceStreamer {
         // it lands anywhere but the preview output; the topology callback then restarts or stops it.
         AudioRouting.OnRoutingChangedListener onRerouted = router -> {
             try {
-                trackRef.setVolume(onPreviewOutput(router.getRoutedDevice(), secondary, secondaryIsDefault) ? 1f : 0f);
+                routedToPreview = onPreviewOutput(router.getRoutedDevice(), secondary, secondaryIsDefault);
+                trackRef.setVolume(gain());
             } catch (Exception ignored) {
             }
         };
         track.addOnRoutingChangedListener(onRerouted, routingHandler());
         audioTrack = track;
+        try { track.setVolume(gain()); } catch (Exception ignored) {}
         final int bufSize = minBuffer * 4;
         running = true;
         isActive = true;
@@ -199,7 +210,7 @@ final class SilenceStreamer {
             if (fadingOut) {
                 final int chunkSize = bufSize / 8; // ~10ms per write paces the loop naturally
                 for (int i = 20; i > 0; i--) {
-                    trackRef.setVolume(i / 20f);
+                    trackRef.setVolume(i / 20f * gain());
                     if (trackRef.write(silence, 0, chunkSize) < 0) break;
                 }
             }
@@ -224,6 +235,21 @@ final class SilenceStreamer {
         if (routed == null) return true;
         if (secondary != null) return AudioOutputRouter.contains(new AudioDeviceInfo[]{routed}, secondary);
         return !secondaryIsDefault || AudioOutputRouter.isBluetooth(routed);
+    }
+
+    private float gain() {
+        return routedToPreview ? sPreviewGain : 0f;
+    }
+
+    /** Step 0..PREVIEW_VOLUME_STEPS over a 40 dB range, 0 being silent; takes effect at once. */
+    static void setPreviewVolume(int step) {
+        sPreviewGain = step <= 0 ? 0f
+                : (float) Math.pow(10.0, -2.0 * (PREVIEW_VOLUME_STEPS - step) / PREVIEW_VOLUME_STEPS);
+        SilenceStreamer inst = current;
+        AudioTrack track = inst != null ? inst.audioTrack : null;
+        if (track != null) {
+            try { track.setVolume(inst.gain()); } catch (Exception ignored) {}
+        }
     }
 
     private static synchronized Handler routingHandler() {
@@ -287,6 +313,7 @@ final class SilenceStreamer {
         if (isActive) return;
         AudioOutputRouter.resolve(context);
         sPreferredOutputAtStart = AudioOutputRouter.getPreferredOutput(context);
+        setPreviewVolume(AudioOutputRouter.getPreviewVolume(context));
         new SilenceStreamer().start();
         // Listen for outputs appearing/disappearing so we can retarget or (re)start — even when
         // start() bailed just now because no secondary output was connected yet.

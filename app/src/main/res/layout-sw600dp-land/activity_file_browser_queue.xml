@@ -54,6 +54,17 @@
         a:textColorHint="@color/inputHint"
         a:textSize="14sp" />
 
+      <ImageButton
+        a:id="@+id/btn_preview_volume"
+        a:layout_width="wrap_content"
+        a:layout_height="match_parent"
+        a:layout_margin="4dp"
+        a:src="@drawable/ic_volume"
+        a:padding="6dp"
+        a:background="@color/buttonBackground"
+        a:contentDescription="@string/remote_volume_button"
+        a:visibility="gone" />
+
       <Button
         a:id="@+id/btn_stop_browser"
         a:layout_width="wrap_content"

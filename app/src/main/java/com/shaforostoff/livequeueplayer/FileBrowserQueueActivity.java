@@ -3113,6 +3113,8 @@ public class FileBrowserQueueActivity extends Activity {
 
     private void applySaveButtonModeState() {
         if (saveButton == null) return;
+        // Playing to the room (DJ, or hosting a remote client), the row keeps the EQ, not Save.
+        saveButton.setVisibility(mode == Mode.DJ || mode == Mode.REMOTE_RECEIVE ? View.GONE : View.VISIBLE);
         if (mode == Mode.REMOTE_SEND) {
             saveButton.setText(R.string.send_queue_button);
             saveButton.setOnClickListener(v -> sendQueueToRemote());

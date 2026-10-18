@@ -6,6 +6,8 @@ import android.media.session.MediaSession;
 import android.media.session.PlaybackState;
 import android.os.Build;
 import android.os.Bundle;
+import android.view.KeyCharacterMap;
+import android.view.KeyEvent;
 
 /**
  * Owns the service's MediaSession: media keys (headset, Bluetooth, the activity's own dispatched
@@ -21,6 +23,27 @@ class HWListener {
     this.service = service;
   }
 
+  /**
+   * A pause nobody pressed. Prelisten earbuds send a transport key of their own when they are taken
+   * out or put away — AirPods-style ear detection — and the system injects it into this session with
+   * no input device behind it, seconds before it even reports the earbuds as gone. Honouring one
+   * stopped the room because the DJ's ears needed a rest. Dropped only while Bluetooth is the second
+   * output: a real remote (which carries its input device) and every on-screen control still work,
+   * and when Bluetooth is what the music plays to, its keys mean what they say.
+   */
+  static boolean isPrelistenPause(KeyEvent key) {
+    if (key == null || key.getDeviceId() != KeyCharacterMap.VIRTUAL_KEYBOARD) return false;
+    switch (key.getKeyCode()) {
+      case KeyEvent.KEYCODE_MEDIA_PAUSE:
+      case KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE:
+      case KeyEvent.KEYCODE_MEDIA_STOP:
+      case KeyEvent.KEYCODE_HEADSETHOOK:
+        return AudioOutputRouter.isBluetoothPrelisten();
+      default:
+        return false;
+    }
+  }
+
   void create() {
     mediaSession = new MediaSession(service, HWListener.class.toString());
 
@@ -30,6 +53,11 @@ class HWListener {
     // skips). This used to also forward every key itself, so a PLAY_PAUSE toggled once at once and
     // then again when the framework's delayed onPlay/onPause landed on the already-toggled state.
     mediaSession.setCallback(new MediaSession.Callback() {
+      @Override public boolean onMediaButtonEvent(Intent mediaButtonIntent) {
+        KeyEvent key = mediaButtonIntent == null ? null
+            : mediaButtonIntent.getParcelableExtra(Intent.EXTRA_KEY_EVENT);
+        return isPrelistenPause(key) || super.onMediaButtonEvent(mediaButtonIntent);
+      }
       @Override public void onPlay()           { send(Launcher.PLAY); }
       @Override public void onPause()          { send(Launcher.PAUSE); }
       @Override public void onSkipToNext()     { send(Launcher.SKIP); }

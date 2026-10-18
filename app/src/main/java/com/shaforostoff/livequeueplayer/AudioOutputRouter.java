@@ -209,6 +209,12 @@ final class AudioOutputRouter {
         );
     }
 
+    /** Whether a Bluetooth output is connected to prelisten on rather than to carry the music. */
+    static boolean isBluetoothPrelisten() {
+        AudioDeviceInfo secondary = sResolvedSecondary;
+        return sResolvedSecondaryIsDefault || (secondary != null && isBluetooth(secondary));
+    }
+
     static boolean isBluetooth(AudioDeviceInfo device) {
         return findBluetooth(new AudioDeviceInfo[]{device}) != null;
     }

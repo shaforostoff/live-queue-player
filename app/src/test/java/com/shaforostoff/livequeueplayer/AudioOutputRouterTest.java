@@ -10,6 +10,7 @@ import android.app.Application;
 import android.content.Context;
 import android.media.AudioDeviceInfo;
 import android.media.AudioManager;
+import android.view.KeyEvent;
 
 import org.junit.Before;
 import org.junit.Test;
@@ -75,6 +76,33 @@ public class AudioOutputRouterTest {
         assertFalse(SilenceStreamer.onPreviewOutput(wired, null, true));
         assertTrue("an unknown route must not silence a preview",
                 SilenceStreamer.onPreviewOutput(null, wired, false));
+    }
+
+    /** The earbuds' own pause, sent when the DJ takes them out, must not stop the room. */
+    @Test
+    public void prelistenEarbudsPause_isIgnored_butARealRemoteStillPauses() {
+        audio.setOutputDevices(Arrays.asList(wired, bluetooth));
+        AudioOutputRouter.setPreferredOutput(app, AudioOutputRouter.OUTPUT_WIRED);
+        AudioOutputRouter.resolve(app);
+        assertTrue(HWListener.isPrelistenPause(injected(KeyEvent.KEYCODE_MEDIA_PAUSE)));
+        assertFalse("the app dispatches this one itself to take the session",
+                HWListener.isPrelistenPause(injected(KeyEvent.KEYCODE_MEDIA_PLAY)));
+        assertFalse("a remote with a real input device behind it still pauses the room",
+                HWListener.isPrelistenPause(new KeyEvent(0, 0, KeyEvent.ACTION_DOWN,
+                        KeyEvent.KEYCODE_MEDIA_PAUSE, 0, 0, 7, 0)));
+    }
+
+    @Test
+    public void bluetoothCarryingTheMusic_keepsItsPauseKey() {
+        audio.setOutputDevices(Arrays.asList(bluetooth)); // nothing to prelisten on: the earbuds are the room
+        AudioOutputRouter.setPreferredOutput(app, AudioOutputRouter.OUTPUT_DEFAULT);
+        AudioOutputRouter.resolve(app);
+        assertFalse(HWListener.isPrelistenPause(injected(KeyEvent.KEYCODE_MEDIA_PAUSE)));
+    }
+
+    /** As the Bluetooth stack delivers them: no input device behind the key. */
+    private static KeyEvent injected(int keyCode) {
+        return new KeyEvent(KeyEvent.ACTION_DOWN, keyCode);
     }
 
     private static AudioDeviceInfo device(int type) {

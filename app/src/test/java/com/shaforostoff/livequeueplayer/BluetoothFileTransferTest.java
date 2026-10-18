@@ -235,6 +235,17 @@ public class BluetoothFileTransferTest {
   }
 
   @Test
+  public void aFileInFlightKeepsTheReceiverBusyUntilItLands() throws Exception {
+    BluetoothFileReceiver r = newReceiver(new Recorder());
+    assertFalse(r.isReceiving());
+    r.onFileMessage("file_begin", begin(1, "A/song.mp3", 4_000));
+    r.onFileChunk(chunk(1, randomBytes(4_000)));
+    assertTrue(r.isReceiving()); // the browser waits a run out before it re-lists
+    r.onFileMessage("file_end", new JSONObject().put("id", 1));
+    assertFalse(r.isReceiving());
+  }
+
+  @Test
   public void relativeSegmentsDropEmptyPartsAndRejectParentSteps() {
     assertEquals(Arrays.asList("A", "B", "c.mp3"), BluetoothFileReceiver.relativeSegments("/A//./B\\c.mp3"));
     assertNull(BluetoothFileReceiver.relativeSegments("A/../../c.mp3"));

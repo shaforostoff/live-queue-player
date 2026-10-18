@@ -184,6 +184,10 @@ public class FileBrowserQueueActivity extends Activity {
     // Both app-scoped (see App), so a transfer runs on across a rotation; only the callback is ours.
     private BluetoothFileSender fileSender;
     private BluetoothFileReceiver fileReceiver;
+    // A transfer run has no end-of-run message, so the browser is re-listed once files have stopped
+    // landing and the receiver has nothing open.
+    private static final long TRANSFER_QUIET_MS = 2_000;
+    private final Runnable browserRefreshAfterTransfer = this::refreshBrowserIfTransferQuiet;
     private TextView remoteTransferStatus;
     private String lastPushedPlayKey;
     private View localQueuePanel;
@@ -708,8 +712,13 @@ public class FileBrowserQueueActivity extends Activity {
     /** Lists {@code dir} into the browser pane. Leaves playback alone: a browse track or a preview
      *  started in another folder keeps playing across the switch. */
     private void navigateTo(File dir) {
-        currentBrowsePlaylistEntry = null;
         clearFileFilterInput();
+        relistFolder(dir);
+    }
+
+    /** Lists {@code dir} into the browser pane, leaving the search filter alone. */
+    private void relistFolder(File dir) {
+        currentBrowsePlaylistEntry = null;
         fileEntriesVersion++;
         fileEntries.clear();
         fileEntries.addAll(storageBrowser.listFolder(dir));
@@ -1021,7 +1030,7 @@ public class FileBrowserQueueActivity extends Activity {
         }
         File dir = storageBrowser.getCurrentFileDirectory();
         if (dir != null) {
-            navigateTo(dir);
+            relistFolder(dir);
         }
     }
 
@@ -2897,6 +2906,31 @@ public class FileBrowserQueueActivity extends Activity {
         else addToQueue(one);
         notifyRemoteQueueChanged();
         Toast.makeText(this, getString(R.string.received_file, name), Toast.LENGTH_SHORT).show();
+        scheduleBrowserRefreshAfterTransfer();
+    }
+
+    /**
+     * Re-lists the current folder once an incoming transfer has gone quiet, so the files and
+     * folders it created show up. Every landing restarts the wait, and a listing costs a blocking
+     * SAF query, so a run of files is re-listed once, at its end.
+     */
+    private void scheduleBrowserRefreshAfterTransfer() {
+        uiHandler.removeCallbacks(browserRefreshAfterTransfer);
+        uiHandler.postDelayed(browserRefreshAfterTransfer, TRANSFER_QUIET_MS);
+    }
+
+    private void refreshBrowserIfTransferQuiet() {
+        if (fileReceiver != null && fileReceiver.isReceiving()) {
+            scheduleBrowserRefreshAfterTransfer(); // mid-file: wait the rest of the run out
+            return;
+        }
+        if (currentBrowsePlaylistEntry != null) return; // a playlist's tracks, not a folder listing
+        // Stay where the user is: whatever row is at the top of the list is put back there.
+        int first = fileBrowserList.getFirstVisiblePosition();
+        if (first >= 0 && first < filteredFileEntries.size()) {
+            pendingBackScrollUri = filteredFileEntries.get(first).uri;
+        }
+        refreshCurrentFolderListing();
     }
 
     private int indexOfQueueEntry(int id) {
@@ -3596,6 +3630,7 @@ public class FileBrowserQueueActivity extends Activity {
     @Override
     protected void onDestroy() {
         uiHandler.removeCallbacks(playbackStateSyncRunnable);
+        uiHandler.removeCallbacks(browserRefreshAfterTransfer);
         Service.removeStateListener(serviceStateListener);
         if (remoteQueueController != null) remoteQueueController.shutdown();
         if (fileSender != null) {

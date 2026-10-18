@@ -148,6 +148,11 @@ final class BluetoothFileReceiver implements BluetoothQueueBridge.FileSink {
         undelivered.clear();
     }
 
+    /** True while a file's bytes are being written, i.e. a transfer run is still going. Any thread. */
+    synchronized boolean isReceiving() {
+        return out != null;
+    }
+
     @Override
     public synchronized void onFileMessage(String type, JSONObject obj) {
         int id = obj.optInt("id", -1);

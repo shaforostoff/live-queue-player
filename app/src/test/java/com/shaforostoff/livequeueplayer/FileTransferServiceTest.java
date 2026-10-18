@@ -4,6 +4,7 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assume.assumeTrue;
 import static org.robolectric.Shadows.shadowOf;
 
 import android.app.Notification;
@@ -42,6 +43,7 @@ public class FileTransferServiceTest {
 
   @Before
   public void setUp() throws Exception {
+    assumeTrue("the foreground service is off", FileTransferService.ENABLED);
     app = (App) RuntimeEnvironment.getApplication();
     shadowApp = shadowOf(app);
     sender = app.getFileSender(); // on the app's bridge, which has no link: the run parks
@@ -51,7 +53,7 @@ public class FileTransferServiceTest {
 
   @After
   public void tearDown() {
-    sender.cancel();
+    if (sender != null) sender.cancel();
   }
 
   @Test

@@ -30,6 +30,14 @@ import android.os.SystemClock;
  */
 public final class FileTransferService extends android.app.Service implements BluetoothFileSender.Callback {
 
+    /**
+     * Off, and with it the manifest entry and the FOREGROUND_SERVICE_CONNECTED_DEVICE permission:
+     * a send now only runs while the app is up front. A compile-time constant, so javac drops the
+     * call in {@link BluetoothFileSender#setForeground} and R8 the whole class — to bring it back,
+     * flip this and restore both manifest lines (see the service's comment there).
+     */
+    static final boolean ENABLED = false;
+
     private static final String CHANNEL = "file_transfer";
     private static final int NOTIFICATION_ID = 2; // 1 is playback (Notifications)
     static final String ACTION_STOP = "com.shaforostoff.livequeueplayer.STOP_FILE_TRANSFER";

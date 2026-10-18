@@ -44,9 +44,11 @@ import java.util.concurrent.TimeUnit;
  *
  * <p>A partial wake lock is held while bytes are moving or a file is being encoded, so a transfer
  * keeps going after the screen times out; it is let go while waiting for the link.
- * {@link FileTransferService} keeps the process from being frozen when the user switches away: it
- * runs while a run is in flight, and stops when the bridge gives up reconnecting (see
- * {@link #onLinkAbandoned}) until the link is back.
+ * {@link FileTransferService} would keep the process from being frozen when the user switches
+ * away — it runs while a run is in flight, and stops when the bridge gives up reconnecting (see
+ * {@link #onLinkAbandoned}) until the link is back — but it is off (see
+ * {@link FileTransferService#ENABLED}), so a run only moves while the app is up front and parks
+ * until the user is back.
  */
 final class BluetoothFileSender implements BluetoothQueueBridge.FileSink {
 
@@ -200,6 +202,7 @@ final class BluetoothFileSender implements BluetoothQueueBridge.FileSink {
 
     /** Starts or stops {@link FileTransferService}. Any thread; applied in order on the UI thread. */
     private void setForeground(boolean on) {
+        if (!FileTransferService.ENABLED) return;
         uiHandler.post(() -> {
             wantForeground = on;
             if (on) {

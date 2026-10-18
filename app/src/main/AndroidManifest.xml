@@ -10,7 +10,6 @@
   <uses-permission a:name="android.permission.MODIFY_AUDIO_SETTINGS"/>
   <uses-permission a:name="android.permission.READ_EXTERNAL_STORAGE" a:maxSdkVersion="32"/>
   <uses-permission a:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"/>
-  <uses-permission a:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE"/>
   <uses-permission a:name="android.permission.READ_MEDIA_AUDIO"/>
   <uses-permission a:name="android.permission.BLUETOOTH" a:maxSdkVersion="30"/>
   <uses-permission a:name="android.permission.BLUETOOTH_ADMIN" a:maxSdkVersion="30"/>
@@ -38,11 +37,14 @@
       </intent-filter>
     </service>
 
-    <!-- Keeps a Bluetooth file push to the host going while the app is in the background. -->
+    <!-- FileTransferService (keeps a Bluetooth file push going while the app is in the
+         background) is off: to bring it back, uncomment this service, re-add the
+         FOREGROUND_SERVICE_CONNECTED_DEVICE uses-permission, and flip FileTransferService.ENABLED.
     <service
       a:name=".FileTransferService"
       a:exported="false"
       a:foregroundServiceType="connectedDevice" />
+    -->
 
     <activity
       a:name=".FileBrowserQueueActivity"

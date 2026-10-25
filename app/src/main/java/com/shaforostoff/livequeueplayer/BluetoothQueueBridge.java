@@ -18,19 +18,30 @@ import org.json.JSONObject;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.Closeable;
 import java.io.DataInputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.OutputStream;
+import java.net.Inet4Address;
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
+import java.net.NetworkInterface;
+import java.net.ServerSocket;
+import java.net.Socket;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.ArrayDeque;
+import java.util.Collections;
 import java.util.List;
 import java.util.UUID;
 import java.util.zip.GZIPInputStream;
 import java.util.zip.GZIPOutputStream;
 
 /**
- * Minimal classic Bluetooth bridge for queue-fill messages.
+ * Minimal classic Bluetooth bridge for queue-fill messages. File traffic moves to a TCP link when
+ * the two phones can reach each other over Wi-Fi (see {@link #onWifiMessage}), and back when it goes.
  */
 final class BluetoothQueueBridge implements BluetoothFileLink {
 
@@ -112,7 +123,21 @@ final class BluetoothQueueBridge implements BluetoothFileLink {
 
         /** The next frame to write, or null once closed. */
         synchronized byte[] take() throws InterruptedException {
-            while (!closed && control.isEmpty() && bulk.isEmpty()) wait();
+            return take(0);
+        }
+
+        /** {@link #take()}, but {@link #PING} once {@code idleMs} (if above 0) pass with nothing to write. */
+        synchronized byte[] take(long idleMs) throws InterruptedException {
+            long deadline = SystemClock.elapsedRealtime() + idleMs;
+            while (!closed && control.isEmpty() && bulk.isEmpty()) {
+                if (idleMs <= 0) {
+                    wait();
+                    continue;
+                }
+                long left = deadline - SystemClock.elapsedRealtime();
+                if (left <= 0) return PING;
+                wait(left);
+            }
             if (closed) return null;
             byte[] frame = control.poll();
             if (frame != null) return frame;
@@ -133,20 +158,33 @@ final class BluetoothQueueBridge implements BluetoothFileLink {
         }
     }
 
-    /** One attached socket, with its outbound queue, and its loss reported to the file sink once. */
+    /**
+     * One attached socket, with its outbound queue, and its loss reported to the file sink once.
+     * A Wi-Fi link carries only file traffic, and its comings and goings are reported by
+     * {@link #switchFileTransport} instead.
+     */
     private static final class Link {
-        final BluetoothSocket socket;
+        final Closeable socket;
+        final InputStream in;
+        final OutputStream out;
+        final boolean wifi;
         final Outbox outbox = new Outbox();
         // The sink fed while this link was up (the last non-null one), told when it goes.
         volatile FileSink sink;
+        volatile boolean closed;
+        volatile long activeAt = SystemClock.elapsedRealtime(); // Wi-Fi: the last frame either way but a ping
         private boolean lostReported;
 
-        Link(BluetoothSocket socket, FileSink sink) {
+        Link(Closeable socket, InputStream in, OutputStream out, boolean wifi, FileSink sink) {
             this.socket = socket;
+            this.in = in;
+            this.out = out;
+            this.wifi = wifi;
             this.sink = sink;
         }
 
         void close() {
+            closed = true;
             outbox.close();
             try {
                 socket.close();
@@ -190,6 +228,17 @@ final class BluetoothQueueBridge implements BluetoothFileLink {
     // paced by the link, not by memory.
     private static final int MAX_QUEUED_CHUNKS = 4;
 
+    // Wi-Fi fast path for file traffic, when both phones share a network (or one is the other's
+    // hotspot). A zero-length frame is a keepalive: each end pings while idle and drops a link that
+    // has gone quiet, so a peer that walked out of range costs seconds, not a TCP timeout.
+    static final byte[] PING = new byte[4];
+    private static final int WIFI_CONNECT_MS = 2_000;
+    private static final int WIFI_PING_MS = 3_000;
+    private static final int WIFI_READ_TIMEOUT_MS = 10_000;
+    private static final long WIFI_IDLE_MS = 60_000;  // no file traffic this long: back to Bluetooth only
+    private static final long WIFI_RETRY_MS = 30_000; // between asks while the peer can't be reached
+    static boolean offerLoopbackForTest;
+
     // The bridge is application-scoped (see App), so it outlives any single activity. The current
     // activity attaches via setListener(); the volatile ref lets read/connect threads swap safely.
     private volatile Listener listener = NO_OP;
@@ -199,6 +248,10 @@ final class BluetoothQueueBridge implements BluetoothFileLink {
     private BluetoothServerSocket serverSocket;
     private Link connected;  // the live link, or null; guarded by socketLock
     private Link previous;   // the last link attached, live or not; guarded by socketLock
+    private Link wifi;       // the Wi-Fi link file traffic takes while it is up; guarded by socketLock
+    private ServerSocket wifiServer; // offered to the peer, open while the link is; guarded by socketLock
+    private String wifiToken;        // what a Wi-Fi peer must send first; guarded by socketLock
+    private long wifiAskedAt = -WIFI_RETRY_MS; // guarded by socketLock
     private Thread acceptThread;
     private Thread connectThread;
     private volatile boolean running;
@@ -536,10 +589,18 @@ final class BluetoothQueueBridge implements BluetoothFileLink {
     @Override
     public boolean sendFileChunk(int id, byte[] buf, int len) {
         Link link;
+        boolean askWifi = false;
         synchronized (socketLock) {
-            link = connected;
+            link = wifi != null ? wifi : connected;
+            long now = SystemClock.elapsedRealtime();
+            if (wifi == null && connected != null && now - wifiAskedAt >= WIFI_RETRY_MS) {
+                wifiAskedAt = now;
+                askWifi = true;
+            }
         }
         if (link == null) return false;
+        // The peer answers with where to reach it; until then, and if that fails, Bluetooth carries it.
+        if (askWifi) send("wifi_hello");
         byte[] frame = new byte[4 + FILE_CHUNK_HEADER + len];
         putLength(frame, FILE_CHUNK_HEADER + len);
         frame[4] = FILE_CHUNK_MARKER;
@@ -563,7 +624,7 @@ final class BluetoothQueueBridge implements BluetoothFileLink {
     @Override
     public boolean isConnected() {
         synchronized (socketLock) {
-            return connected != null && connected.socket.isConnected();
+            return connected != null && !connected.closed;
         }
     }
 
@@ -582,6 +643,7 @@ final class BluetoothQueueBridge implements BluetoothFileLink {
         // Its read thread ends on the closed socket and reports the loss to the file sink from
         // there, off this (often the UI) thread.
         if (toClose != null) toClose.close();
+        dropWifi();
         if (connectToInterrupt != null) connectToInterrupt.interrupt();
         listener.onConnectionStateChanged(false, "Bluetooth disconnected");
         FileSink sink = fileSink;
@@ -594,11 +656,25 @@ final class BluetoothQueueBridge implements BluetoothFileLink {
      * there's nothing to reconnect to — the accept loop is already listening for the next client.
      */
     private void handleSocketClosed(Link link) {
+        if (link.wifi) {
+            synchronized (socketLock) {
+                if (wifi == link) {
+                    wifi = null;
+                } else {
+                    link = null; // already replaced or dropped with the Bluetooth link
+                }
+            }
+            if (link == null) return;
+            link.close();
+            switchFileTransport();
+            return;
+        }
         synchronized (socketLock) {
             if (connected != link) return; // already replaced or handled
             connected = null;
         }
         link.close();
+        dropWifi();
         if (wantConnected && lastDevice != null) {
             listener.onConnectionStateChanged(false, "Connection lost, reconnecting...");
             startConnectAttempt();
@@ -615,7 +691,7 @@ final class BluetoothQueueBridge implements BluetoothFileLink {
     private boolean enqueue(byte[] payload, boolean fileLane) {
         Link link;
         synchronized (socketLock) {
-            link = connected;
+            link = fileLane && wifi != null ? wifi : connected;
         }
         if (link == null) return false;
         // Length prefix and payload in one write, so they leave as one packet.
@@ -635,9 +711,15 @@ final class BluetoothQueueBridge implements BluetoothFileLink {
     /** Writes the link's queued frames until it closes; a failed write retires the link. */
     private void writeLoop(Link link) {
         try {
-            OutputStream out = link.socket.getOutputStream();
+            OutputStream out = link.out;
             byte[] frame;
-            while ((frame = link.outbox.take()) != null) {
+            while ((frame = link.wifi ? link.outbox.take(WIFI_PING_MS) : link.outbox.take()) != null) {
+                if (frame != PING) {
+                    link.activeAt = SystemClock.elapsedRealtime();
+                } else if (SystemClock.elapsedRealtime() - link.activeAt > WIFI_IDLE_MS) {
+                    handleSocketClosed(link); // idle: let the radio rest
+                    return;
+                }
                 out.write(frame);
                 out.flush();
             }
@@ -669,8 +751,18 @@ final class BluetoothQueueBridge implements BluetoothFileLink {
     }
 
     private void attachSocket(BluetoothSocket socket, String message) {
+        try {
+            attachLink(socket, socket.getInputStream(), socket.getOutputStream(), message);
+        } catch (IOException e) {
+            closeSocketSilently(socket);
+        }
+    }
+
+    /** Attaches a Bluetooth link; package-private so a test can stand a socket pair in for one. */
+    void attachLink(Closeable socket, InputStream in, OutputStream out, String message) {
         FileSink sink = fileSink;
-        Link link = new Link(socket, sink);
+        Link link = new Link(socket, in, out, false, sink);
+        dropWifi(); // it belonged to the link this one replaces
         Link old;
         synchronized (socketLock) {
             old = previous;
@@ -691,17 +783,18 @@ final class BluetoothQueueBridge implements BluetoothFileLink {
     }
 
     private void readLoop(Link link) {
-        BluetoothSocket socket = link.socket;
-        try (DataInputStream in = new DataInputStream(socket.getInputStream())) {
-            while (running || socket.isConnected()) {
+        try (DataInputStream in = new DataInputStream(link.in)) {
+            while (!link.closed) {
                 int length = in.readInt();
                 if (length < 0 || length > MAX_FRAME_BYTES) {
                     // Corrupt or desynced framing — there's no way to resync this stream, so treat
                     // it like the connection dying; handleSocketClosed() reconnects if applicable.
                     throw new IOException("Bad frame length: " + length);
                 }
+                if (length == 0) continue; // a Wi-Fi keepalive
                 byte[] data = new byte[length];
                 in.readFully(data);
+                link.activeAt = SystemClock.elapsedRealtime();
                 // Stamp before dispatch: every remote command and state poll passes through here,
                 // so this is the single point that keeps the Service's idle watchdog from retiring
                 // a live remote session. Framing errors above deliberately do not count as traffic.
@@ -721,7 +814,9 @@ final class BluetoothQueueBridge implements BluetoothFileLink {
                         try {
                             JSONObject obj = new JSONObject(line);
                             String type = obj.optString("type", "");
-                            if (type.startsWith("file_")) {
+                            if (type.startsWith("wifi_")) {
+                                onWifiMessage(type, obj);
+                            } else if (type.startsWith("file_")) {
                                 FileSink sink = fileSink;
                                 if (sink != null) sink.onFileMessage(type, obj);
                             } else if ("match_result".equals(type) || type.isEmpty()) {
@@ -753,6 +848,150 @@ final class BluetoothQueueBridge implements BluetoothFileLink {
             // Retire it first, so the sink never sees "lost" while the link still reads as up.
             handleSocketClosed(link);
             link.reportLost();
+        }
+    }
+
+    /**
+     * Read thread. {@code wifi_hello}: the peer has files to push, so this offers a TCP port, its
+     * addresses and a one-time token over the (paired, so trusted) Bluetooth link.
+     * {@code wifi_offer}: tries those addresses; whichever answers takes the file traffic.
+     */
+    private void onWifiMessage(String type, JSONObject obj) {
+        if ("wifi_offer".equals(type)) {
+            new Thread(() -> connectWifi(obj), "wifi-file-connect").start();
+            return;
+        }
+        if (!"wifi_hello".equals(type)) return;
+        ServerSocket server;
+        String token;
+        synchronized (socketLock) {
+            if (connected == null) return;
+            if (wifiServer == null) {
+                try {
+                    wifiServer = new ServerSocket(0);
+                } catch (IOException e) {
+                    return;
+                }
+                wifiToken = UUID.randomUUID().toString();
+                ServerSocket s = wifiServer;
+                String t = wifiToken;
+                new Thread(() -> acceptWifi(s, t), "wifi-file-accept").start();
+            }
+            server = wifiServer;
+            token = wifiToken;
+        }
+        JSONArray hosts = localAddresses();
+        if (hosts.length() > 0) send("wifi_offer", "hosts", hosts, "port", server.getLocalPort(), "token", token);
+    }
+
+    /** Takes Wi-Fi peers that know the token, until the server is closed with the Bluetooth link. */
+    private void acceptWifi(ServerSocket server, String token) {
+        byte[] expected = token.getBytes(StandardCharsets.UTF_8);
+        while (true) {
+            Socket socket;
+            try {
+                socket = server.accept();
+            } catch (IOException e) {
+                return;
+            }
+            try {
+                socket.setSoTimeout(WIFI_READ_TIMEOUT_MS);
+                byte[] got = new byte[expected.length];
+                new DataInputStream(socket.getInputStream()).readFully(got);
+                if (!MessageDigest.isEqual(got, expected)) throw new IOException("bad token");
+                attachWifi(socket);
+            } catch (IOException e) {
+                closeQuietly(socket);
+            }
+        }
+    }
+
+    private void connectWifi(JSONObject offer) {
+        JSONArray hosts = offer.optJSONArray("hosts");
+        int port = offer.optInt("port", -1);
+        byte[] token = offer.optString("token").getBytes(StandardCharsets.UTF_8);
+        if (hosts == null || port <= 0) return;
+        // shortcut: tries the addresses one by one, up to 2 s each; try them at once if a phone lists many.
+        for (int i = 0; i < hosts.length(); i++) {
+            Socket socket = new Socket();
+            try {
+                socket.connect(new InetSocketAddress(hosts.getString(i), port), WIFI_CONNECT_MS);
+                socket.setSoTimeout(WIFI_READ_TIMEOUT_MS);
+                socket.getOutputStream().write(token);
+                attachWifi(socket);
+                return;
+            } catch (Exception e) {
+                closeQuietly(socket);
+            }
+        }
+    }
+
+    private void attachWifi(Socket socket) throws IOException {
+        Link link = new Link(socket, socket.getInputStream(), socket.getOutputStream(), true, null);
+        Link old;
+        synchronized (socketLock) {
+            if (connected == null) {
+                link.close(); // the Bluetooth link it would serve is gone
+                return;
+            }
+            old = wifi;
+            wifi = link;
+        }
+        if (old != null) old.close();
+        new Thread(() -> writeLoop(link), "wifi-file-write").start();
+        switchFileTransport();
+        new Thread(() -> readLoop(link), "wifi-file-read").start();
+    }
+
+    /**
+     * File traffic moved between Bluetooth and Wi-Fi. To the sink that is a dropped link and a
+     * reconnect: a file in flight is begun again on the new one and resumes where it got to.
+     */
+    private void switchFileTransport() {
+        FileSink sink = fileSink;
+        if (sink == null) return;
+        sink.onLinkLost();
+        if (isConnected()) sink.onLinkUp();
+    }
+
+    /** Closes the Wi-Fi link and its server, which go with the Bluetooth link they were set up over. */
+    private void dropWifi() {
+        Link link;
+        ServerSocket server;
+        synchronized (socketLock) {
+            link = wifi;
+            wifi = null;
+            server = wifiServer;
+            wifiServer = null;
+            wifiAskedAt = -WIFI_RETRY_MS; // the next link asks straight away
+        }
+        if (link != null) link.close();
+        closeQuietly(server);
+    }
+
+    /** This device's private-network IPv4 addresses: its Wi-Fi, and its hotspot if it is one. */
+    private static JSONArray localAddresses() {
+        JSONArray hosts = new JSONArray();
+        try {
+            for (NetworkInterface nif : Collections.list(NetworkInterface.getNetworkInterfaces())) {
+                if (!nif.isUp()) continue;
+                for (InetAddress a : Collections.list(nif.getInetAddresses())) {
+                    if (a instanceof Inet4Address
+                            && (a.isSiteLocalAddress() || offerLoopbackForTest && a.isLoopbackAddress())) {
+                        hosts.put(a.getHostAddress());
+                    }
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return hosts;
+    }
+
+    private static void closeQuietly(Closeable c) {
+        if (c == null) return;
+        try {
+            c.close();
+        } catch (Exception ignored) {
         }
     }
 

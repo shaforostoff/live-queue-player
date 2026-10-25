@@ -483,7 +483,7 @@ public class FileBrowserQueueActivity extends Activity {
         applySortButtonLoadingState();
 
         stopButton.setOnClickListener(v -> {
-            if (isStopFadeInProgress() || isPlaybackPaused()) {
+            if (stopButtonResumes()) {
                 cancelFadeOutAndContinue();
             } else if (hasBrowseBehavior() || Service.sBrowseMode) {
                 stopPlaybackImmediately();
@@ -3322,9 +3322,17 @@ public class FileBrowserQueueActivity extends Activity {
                 && !Service.sIsPlaying && Service.sCurrentUri != null;
     }
 
+    /**
+     * Fading, or the Service holds a paused track of any kind: a browse track too, which
+     * {@link #isPlaybackPaused()} leaves out, paused from the notification or by earbuds.
+     */
+    private boolean stopButtonResumes() {
+        return isStopFadeInProgress() || (!Service.sIsPlaying && Service.sCurrentUri != null);
+    }
+
     private void applyStopButtonState() {
         if (stopButton == null) return;
-        if (isStopFadeInProgress() || isPlaybackPaused()) {
+        if (stopButtonResumes()) {
             stopButton.setBackgroundColor(getColor(R.color.stopButtonActive));
             stopButton.setTextColor(getColor(R.color.stopButtonActiveText));
             stopButton.setText(R.string.remote_queue_resume);
